@@ -1,0 +1,16 @@
+{
+  "web/src/components/app/tour/shots/accounts.webp": "f5c39d0c638570eb6e0d3a62a09c1648bc8f301624be631fcc14482b16ee8b1d",
+  "web/src/components/app/tour/shots/add-account.webp": "41042835f29178119d7942371157e9264ff61a28fda5068d0ee8295dd95ee448",
+  "web/src/components/app/tour/shots/analytics.webp": "1efaa794f37e6e03ef9f006d354ddf05ba3a5d9a8439ee2ebc2b240786b2313d",
+  "web/src/components/app/tour/shots/automation-builder.webp": "f87c1660ea970631ce055c9b34633873fc00673a2e63ed4cebc444ce7607ec36",
+  "web/src/components/app/tour/shots/automations.webp": "3e0223f252a2389204c493bee58d55dc99fb244ca7c7daacff384af88149d90a",
+  "web/src/components/app/tour/shots/campaign-overview.webp": "9c9d880e55df53c0b1e97efb4525b0eb6532505e4d952c3a4fffa8cb75dcb099",
+  "web/src/components/app/tour/shots/campaign-steps.webp": "2cae0b7c283f69059c4fa9fa0fc9113aff032e41eaf1c1d1eb5fb095196e31f3",
+  "web/src/components/app/tour/shots/campaigns.webp": "9ea0b86eee2789ea56703b11582e4de5a1e12911f9fdecd46a8fb171980bf467",
+  "web/src/components/app/tour/shots/contacts.webp": "edb747257a6f99e0e120963bca4f3bf83a0ea86c22085b756ec71f8aad0e787a",
+  "web/src/components/app/tour/shots/deals.webp": "c7101dc47ff717e8e78b03a73ef6aff16baa1c7b9fed71a88e624c5b61f7b8c5",
+  "web/src/components/app/tour/shots/deliverability.webp": "fd257945507f6af6d15fd05edd473e8aef8756cd5f28165efaa0078dcd297428",
+  "web/src/components/app/tour/shots/sending-domains.webp": "22559d235deac53832d2843f21d5f027d16728cdb4176aebce89ad84515d685b",
+  "web/src/components/app/tour/shots/unibox.webp": "e9f4bf2b22d35af798a588b6103943fb3c56bca0f08a2f1d7954155b6ba6ef06",
+  "web/src/components/app/tour/shots/warmbly-avatar.webp": "a9b18e572859e0396955258d39d368fe42121c87b5ef68e6ac7eb98f184c2fe0"
+}

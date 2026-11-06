@@ -1,0 +1,11 @@
+; Datamart Warmup DNS for dtm.global. Cloudflare: DNS > Records > Import and Export > Import,
+; upload this file and leave "Proxy imported DNS records" unticked (DNS only).
+warmup-admin.dtm.global.	300	IN	A	100.25.233.20
+warmup-api.dtm.global.	300	IN	A	100.25.233.20
+warmup-ws.dtm.global.	300	IN	A	100.25.233.20
+warmup-t.dtm.global.	300	IN	A	100.25.233.20
+rpiez534hpmerpii34sh2rbfbykqn2ka._domainkey.mail.dtm.global.	300	IN	CNAME	rpiez534hpmerpii34sh2rbfbykqn2ka.dkim.amazonses.com.
+cacytyyzze5o6lzkodhfoofljucii4ag._domainkey.mail.dtm.global.	300	IN	CNAME	cacytyyzze5o6lzkodhfoofljucii4ag.dkim.amazonses.com.
+olajcwznneschulo6ynbx7kxo5rmonce._domainkey.mail.dtm.global.	300	IN	CNAME	olajcwznneschulo6ynbx7kxo5rmonce.dkim.amazonses.com.
+bounce.mail.dtm.global.	300	IN	MX	10 feedback-smtp.us-east-1.amazonses.com.
+bounce.mail.dtm.global.	300	IN	TXT	"v=spf1 include:amazonses.com ~all"

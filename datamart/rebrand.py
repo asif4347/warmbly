@@ -14,13 +14,15 @@ What it does:
   1. Replaces the word "Warmbly" in user-visible text with the brand name.
      "Warmbly Cloud" is left alone: it names their hosted service, whose
      screens stay hidden on a server that is not linked to it.
-  2. Applies the small code patches in PATCHES (logo, cloud banner).
+  2. Applies the small code patches in PATCHES (logo, cloud banner, tour plans)
+     and copies datamart/overrides/ over the checkout (tour screenshots).
   3. Copies datamart/assets/<app>/ over <app>/public/ (favicons, icons).
   4. Rewrites the two PWA manifests.
 
 Lowercase "warmbly" (import paths, storage keys, routes) is never touched.
 """
 
+import hashlib
 import json
 import re
 import shutil
@@ -66,6 +68,18 @@ PATCHES = [
         "web/src/components/app/emails/CloudPoolBanner.tsx",
         "    if (!pool.manageable || pool.loading) return null;",
         "    if (true || !pool.manageable || pool.loading) return null; // datamart: no Warmbly Cloud upsell",
+    ),
+    (
+        # The tour ends on Warmbly's hosted plans, which are not ours to sell.
+        "web/src/components/app/tour/tourSteps.ts",
+        "export const TOUR_SLIDES: FlatSlide[] = TOUR_CHAPTERS.flatMap(",
+        'export const TOUR_SLIDES: FlatSlide[] = TOUR_CHAPTERS.filter((c) => c.id !== "plans").flatMap(',
+    ),
+    (
+        # Skipping the tour jumped to those plans first; now it just closes.
+        "web/src/components/app/tour/ProductTour.tsx",
+        '        if (!jumped && slide.chapter.id !== "plans") {',
+        '        if (false && !jumped && slide.chapter.id !== "plans") { // datamart: no plans chapter',
     ),
 ]
 
@@ -123,6 +137,25 @@ def main(check: bool) -> int:
         if not check:
             f.write_text(text.replace(old, new), encoding="utf-8")
 
+    # Whole files we replace (the tour screenshots). Each is only valid for the
+    # upstream version it was made from; a changed original means re-running
+    # datamart/tools/stamp_tour_shots.py, not shipping a stale copy.
+    overrides = json.loads((ROOT / "datamart" / "overrides.json").read_text())
+    for rel, digest in overrides.items():
+        target = ROOT / rel
+        mine = ROOT / "datamart" / "overrides" / rel
+        if not target.exists():
+            errors.append(f"{rel}: file is gone; drop it from datamart/overrides.json")
+            continue
+        current = hashlib.sha256(target.read_bytes()).hexdigest()
+        if current == hashlib.sha256(mine.read_bytes()).hexdigest():
+            continue  # already applied
+        if current != digest:
+            errors.append(f"{rel}: Warmbly changed it; re-run datamart/tools/stamp_tour_shots.py")
+            continue
+        if not check:
+            shutil.copyfile(mine, target)
+
     assets = ROOT / "datamart" / "assets"
     copied = 0
     for app in APPS:
@@ -153,7 +186,7 @@ def main(check: bool) -> int:
             m.write_text(json.dumps(data, indent=2) + "\n")
 
     mode = "would change" if check else "changed"
-    print(f"{mode}: {words} mentions in {files} files, {len(PATCHES)} patches, {copied} assets, 2 manifests")
+    print(f"{mode}: {words} mentions in {files} files, {len(PATCHES)} patches, {len(overrides)} replaced files, {copied} assets, 2 manifests")
     for e in errors:
         print(f"ERROR {e}", file=sys.stderr)
     return 1 if errors else 0
