@@ -1,0 +1,16 @@
+# LiteLLM, the bridge between Molty and Amazon Bedrock.
+# Claude Haiku 5.5 is listed in Bedrock but not open to this account yet
+# (AccessDenied on 6 Nov 2026); Haiku 4.5 is. Swap the model line when it opens.
+model_list:
+  - model_name: molty
+    litellm_params:
+      model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
+      aws_region_name: us-east-1
+      # Bedrock caches the system prompt between Molty's steps, a large share
+      # of every request, at a tenth of the input price.
+      cache_control_injection_points:
+        - location: message
+          role: system
+
+litellm_settings:
+  drop_params: true

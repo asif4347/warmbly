@@ -1,12 +1,37 @@
 # Layered over docker-compose.yml on the server:
 #
-#   docker compose -f docker-compose.yml -f datamart/deploy/compose.datamart.yml up -d
+#   docker compose -p warmbly -f docker-compose.yml -f datamart/deploy/compose.datamart.yml up -d
 #
-# Every service runs Warmbly's published image for WARMBLY_TAG, except web and
-# admin, which run our rebranded builds of the same release.
+# Every service runs Warmbly's published image for WARMBLY_TAG except the ones
+# below, which run our builds of the same release: web and admin carry the
+# brand, backend and consumer carry the AI allowance and the Molty name.
+
+x-datamart-ai: &datamart-ai
+  DATAMART_AI_FREE_DAILY: ${DATAMART_AI_FREE_DAILY:-15}
+  DATAMART_AI_UNLOCKED_MONTHLY: ${DATAMART_AI_UNLOCKED_MONTHLY:-1500}
+  DATAMART_AI_UNLOCKED_ORGS: ${DATAMART_AI_UNLOCKED_ORGS:-}
 
 services:
   web:
     image: ghcr.io/asif4347/datamart-warmup/web:${WARMBLY_TAG}
   admin:
     image: ghcr.io/asif4347/datamart-warmup/admin:${WARMBLY_TAG}
+  backend:
+    image: ghcr.io/asif4347/datamart-warmup/backend:${WARMBLY_TAG}
+    environment: *datamart-ai
+  consumer:
+    image: ghcr.io/asif4347/datamart-warmup/consumer:${WARMBLY_TAG}
+    environment: *datamart-ai
+
+  # Molty's model. Molty speaks the OpenAI API; LiteLLM turns that into
+  # Bedrock calls signed with the server's own IAM role, so no AWS key sits on
+  # the box. Only the compose network can reach it.
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.104.8
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${AI_API_KEY}
+      AWS_REGION_NAME: us-east-1
+    volumes:
+      - ./datamart/deploy/litellm.yaml:/app/config.yaml:ro

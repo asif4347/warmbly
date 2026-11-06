@@ -1,9 +1,9 @@
 name: Datamart images
 
-# Builds the rebranded web and admin images for one Warmbly release. Every other
-# service runs Warmbly's own published image of the same release, so only the
-# two apps that carry the brand are built here. Started by Datamart sync, or by
-# hand after a change to datamart/.
+# Builds our images for one Warmbly release: web and admin carry the brand,
+# backend and consumer carry the AI allowance and the Molty name. Every other
+# service runs Warmbly's own published image of the same release. Started by
+# Datamart sync, or by hand after a change to datamart/.
 
 on:
   workflow_dispatch:
@@ -29,7 +29,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        app: [web, admin]
+        include:
+          - { app: web, context: ./web, file: ./web/Dockerfile }
+          - { app: admin, context: ./admin, file: ./admin/Dockerfile }
+          - { app: backend, context: ., file: deploy/docker/backend.Dockerfile }
+          - { app: consumer, context: ., file: deploy/docker/consumer.Dockerfile }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,8 +52,8 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: ./${{ matrix.app }}
-          file: ./${{ matrix.app }}/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: true
           platforms: linux/amd64,linux/arm64
           build-args: |

@@ -36,6 +36,9 @@ NAME = BRAND["name"]
 APPS = ["web", "admin"]
 TEXT_SUFFIXES = {".ts", ".tsx", ".html"}
 WORD = re.compile(r"\bWarmbly\b(?! Cloud)")
+# The in-app AI assistant, Remie upstream, is Molty here.
+ASSISTANT = re.compile(r"\bRemie\b")
+ASSISTANT_NAME = "Molty"
 
 # Lines where "Warmbly" is a real value the backend sends or expects, not a
 # brand mention: the webhook signature header, and the Gmail folder warmup mail
@@ -87,6 +90,28 @@ PATCHES = [
         '        if (false && !jumped && slide.chapter.id !== "plans") { // datamart: no plans chapter',
     ),
     (
+        # Billing is off, so upstream meters no AI at all. Charge the Datamart
+        # allowance (datamart/go/datamart_allowance.go) instead.
+        "internal/app/credits/service.go",
+        "\t\t// No metering: report a large remaining balance without debiting.\n\t\treturn selfHostBalance, nil",
+        "\t\t// No metering: report a large remaining balance without debiting.\n"
+        "\t\tif err := s.datamartAllowance(ctx, orgID, amount); err != nil { // datamart\n"
+        "\t\t\treturn 0, err\n"
+        "\t\t}\n"
+        "\t\treturn selfHostBalance, nil",
+    ),
+    (
+        # The name authenticator apps list 2FA codes under.
+        "internal/app/twofa/service.go",
+        '\tissuer        = "Warmbly"',
+        '\tissuer        = "Datamart Warmup"',
+    ),
+    (
+        "internal/app/aiagent/service.go",
+        'Message: "AI usage limit reached, please try again later."',
+        'Message: "You have used today\'s free Molty allowance. It resets at midnight UTC. Ask Datamart to unlock more for your workspace."',
+    ),
+    (
         # The sign-in showcase draws its chart and ring in a hard-coded sky
         # blue; on its charcoal panel they take the red accent.
         "web/src/app/auth/_components/AuthShowcase.tsx",
@@ -99,6 +124,14 @@ PATCHES = [
         'r={r} stroke="#d61700"',
     ),
 ]
+
+# Files that only exist on the datamart branch, copied into the checkout.
+NEW_FILES = {
+    "datamart/go/datamart_allowance.go": "internal/app/credits/datamart_allowance.go",
+}
+
+# Backend sources whose user-facing strings name the product or the assistant.
+GO_TEXT_FILES = ["internal/app/aiagent/service.go"]
 
 # The Datamart theme, appended to each app's global stylesheet so it comes
 # after everything it overrides.
@@ -179,7 +212,8 @@ def main(check: bool) -> int:
         for i, line in enumerate(lines):
             if not KEEP_LINE.search(line):
                 lines[i], k = WORD.subn(NAME, line)
-                n += k
+                lines[i], k2 = ASSISTANT.subn(ASSISTANT_NAME, lines[i])
+                n += k + k2
         new = "".join(lines)
         if n:
             words += n
@@ -201,6 +235,22 @@ def main(check: bool) -> int:
             continue
         if not check:
             f.write_text(text.replace(old, new), encoding="utf-8")
+
+    for src, dest in NEW_FILES.items():
+        if not check:
+            shutil.copyfile(ROOT / src, ROOT / dest)
+
+    for rel in GO_TEXT_FILES:
+        f = ROOT / rel
+        if not f.exists():
+            errors.append(f"{rel}: file is gone")
+            continue
+        text = f.read_text()
+        new = ASSISTANT.sub(ASSISTANT_NAME, WORD.sub(NAME, text))
+        if new != text:
+            words += 1
+            if not check:
+                f.write_text(new)
 
     css = THEME_CSS.read_text()
     for rel in STYLESHEETS:
