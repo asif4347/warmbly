@@ -118,6 +118,40 @@ PATCHES = [
         "                        </span>",
     ),
     (
+        # The demo workspace is suspended from sending and warmup with the
+        # reason "Demo workspace"; its banner says so plainly instead of
+        # sounding like an account review.
+        "web/src/components/layout/SendingRestrictedBar.tsx",
+        "    const suspended = data.suspended;",
+        "    const suspended = data.suspended;\n"
+        '    const demo = suspended && !!data.reason?.startsWith("Demo"); // datamart',
+    ),
+    (
+        "web/src/components/layout/SendingRestrictedBar.tsx",
+        '                suspended\n                    ? "bg-rose-50 border-rose-200 text-rose-900"',
+        '                demo\n                    ? "bg-slate-50 border-slate-200 text-slate-800"\n                    : suspended\n                    ? "bg-rose-50 border-rose-200 text-rose-900"',
+    ),
+    (
+        "web/src/components/layout/SendingRestrictedBar.tsx",
+        '                    {suspended\n                        ? "Sending is paused for this workspace while it is reviewed."',
+        '                    {demo\n                        ? "This is a demo workspace with sample data. Sending and warmup are switched off, so you can explore safely."\n                        : suspended\n                        ? "Sending is paused for this workspace while it is reviewed."',
+    ),
+    (
+        "web/src/components/layout/SendingRestrictedBar.tsx",
+        '<Icon className={`w-4 h-4 mt-px shrink-0 ${suspended ? "text-rose-600" : "text-amber-600"}`} />',
+        '<Icon className={`w-4 h-4 mt-px shrink-0 ${demo ? "text-slate-500" : suspended ? "text-rose-600" : "text-amber-600"}`} />',
+    ),
+    (
+        "web/src/components/layout/SendingRestrictedBar.tsx",
+        "                {data.reason ? <>Reason: {data.reason}. </> : null}\n                Contact support if you think this is wrong.",
+        "                {demo ? null : (\n"
+        "                    <>\n"
+        "                        {data.reason ? <>Reason: {data.reason}. </> : null}\n"
+        "                        Contact support if you think this is wrong.\n"
+        "                    </>\n"
+        "                )}",
+    ),
+    (
         # The name authenticator apps list 2FA codes under.
         "internal/app/twofa/service.go",
         '\tissuer        = "Warmbly"',
