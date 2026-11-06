@@ -42,11 +42,17 @@ WORD = re.compile(r"\bWarmbly\b(?! Cloud)")
 # goes into, which the backend still names "Warmbly".
 KEEP_LINE = re.compile(r'-Warmbly-|placeholder="Warmbly"|for "Warmbly"|default, "Warmbly"')
 
-# The mark drawn by the Logo component, same viewBox as upstream's.
-LOGO_PATH = (
-    '<path fillRule="evenodd" d="M170 112H392C537 112 652 229 652 382C652 535 537 652 392 652H170Z'
-    'M290 232V532H392C470 532 532 466 532 382C532 298 470 232 392 232Z" fill="currentColor" />'
+# The Datamart mark, its four shapes as one path, scaled into the 746x764 box
+# upstream's Logo components draw in. Datamart red in both themes: an inline
+# style, so the dark theme's grey logo gradient does not repaint it.
+DM_D = (
+    "M41.008,0.938c9.558,0,18.338,3.321,25.255,8.87L29.338,2.652C33.032,1.539,36.949,0.938,41.008,0.938z"
+    "M78.159,25.45c0.784,1.833,1.438,3.736,1.947,5.696L36.787,80.062l-21-66.474L78.159,25.45z"
+    "M80.388,50.366C77.372,63.57,67.886,74.306,55.443,79.069L80.388,50.366z"
+    "M21.163,76.523C8.896,69.589,0.612,56.431,0.612,41.333c0-6.387,1.484-12.427,4.124-17.796L21.163,76.523z"
 )
+DM_TRANSFORM = "translate(28 37) scale(8.4)"
+LOGO_PATH = f'<path transform="{DM_TRANSFORM}" d="{DM_D}" style={{{{ fill: "#d61700" }}}} />'
 
 # (file, exact upstream text, replacement). Each anchor must appear exactly once.
 PATCHES = [
@@ -58,8 +64,7 @@ PATCHES = [
     (
         "admin/src/components/Logo.tsx",
         '                d="M222.805 644.772L186.274 108.881L704.5 451.158L484.5 451.158L245.5 196.158L444 463.5L222.805 644.772Z"',
-        '                fillRule="evenodd"\n                d="M170 112H392C537 112 652 229 652 382C652 535 537 652 392 652H170Z'
-        'M290 232V532H392C470 532 532 466 532 382C532 298 470 232 392 232Z"',
+        f'                transform="{DM_TRANSFORM}"\n                d="{DM_D}"\n                style={{{{ fill: "#d61700" }}}}',
     ),
     (
         # On an unlinked server the banner tells members local warmup "is not
@@ -81,7 +86,38 @@ PATCHES = [
         '        if (!jumped && slide.chapter.id !== "plans") {',
         '        if (false && !jumped && slide.chapter.id !== "plans") { // datamart: no plans chapter',
     ),
+    (
+        # The sign-in showcase draws its chart and ring in a hard-coded sky blue.
+        "web/src/app/auth/_components/AuthShowcase.tsx",
+        'd="M0 25 L24 22 L48 23 L72 15 L96 9 L120 3" stroke="#0ea5e9"',
+        'd="M0 25 L24 22 L48 23 L72 15 L96 9 L120 3" stroke="#d61700"',
+    ),
+    (
+        "web/src/app/auth/_components/AuthShowcase.tsx",
+        'r={r} stroke="#0ea5e9"',
+        'r={r} stroke="#d61700"',
+    ),
 ]
+
+# The Datamart theme, appended to each app's global stylesheet so it comes
+# after everything it overrides.
+THEME_CSS = ROOT / "datamart" / "theme" / "datamart.css"
+THEME_MARK = "Datamart theme (appended by datamart/rebrand.py)"
+STYLESHEETS = ["web/src/global.css", "admin/src/global.css"]
+
+# The dark theme keeps its own copy of the sky palette (translucent washes,
+# lightness flipped for dark surfaces). Keep each step's lightness and alpha,
+# turn the hue to Datamart red and lift the chroma a little, red being less
+# saturated than sky at the same oklch chroma.
+DARK_THEME = "web/src/styles/theme-dark.css"
+SKY_OKLCH = re.compile(r"(--color-sky-\d+:\s*oklch\()([\d.]+%)\s+([\d.]+)\s+([\d.]+)")
+
+
+def redden(m: re.Match) -> str:
+    if float(m.group(4)) == 29:
+        return m.group(0)  # already recoloured
+    chroma = min(float(m.group(3)) * 1.35, 0.235)
+    return f"{m.group(1)}{m.group(2)} {chroma:.3f} 29"
 
 
 def kept(path: Path) -> bool:
@@ -136,6 +172,27 @@ def main(check: bool) -> int:
             continue
         if not check:
             f.write_text(text.replace(old, new), encoding="utf-8")
+
+    css = THEME_CSS.read_text()
+    for rel in STYLESHEETS:
+        f = ROOT / rel
+        if not f.exists():
+            errors.append(f"{rel}: file is gone")
+            continue
+        text = f.read_text()
+        if THEME_MARK not in text and not check:
+            f.write_text(text.rstrip("\n") + "\n" + css)
+
+    dark = ROOT / DARK_THEME
+    if not dark.exists():
+        errors.append(f"{DARK_THEME}: file is gone")
+    else:
+        text = dark.read_text()
+        new, n = SKY_OKLCH.subn(redden, text)
+        if n == 0 and " 29)" not in text:
+            errors.append(f"{DARK_THEME}: no sky palette found to recolour")
+        if not check:
+            dark.write_text(new)
 
     # Whole files we replace (the tour screenshots). Each is only valid for the
     # upstream version it was made from; a changed original means re-running

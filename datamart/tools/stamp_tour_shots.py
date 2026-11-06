@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Put the Datamart Warmup logo on the product tour's screenshots.
+"""Put the Datamart Warmup logo and colours on the product tour's screenshots.
 
 The tour shows real screenshots of the dashboard with the Warmbly logo and name
 in the top-left corner. This paints that corner over with the page colour and
-draws our mark and name in its place, and swaps the Slack app avatar for our
-icon. Results go to datamart/overrides/, which rebrand.py copies over the
+draws our mark and name in its place, turns the sky-blue accents Datamart red,
+and swaps the Slack app avatar for our icon. Results go to datamart/overrides/, which rebrand.py copies over the
 checkout, and their upstream hashes go to datamart/overrides.json so a Warmbly
 update that changes a screenshot is caught instead of silently overwritten.
 
@@ -16,6 +16,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,19 +31,31 @@ FONT = ImageFont.truetype("/System/Library/Fonts/HelveticaNeue.ttc", 19, index=1
 BOX = (12, 6, 270, 56)
 
 
-def draw_mark(d: ImageDraw.ImageDraw, x: int, y: int, h: int, fg, bg):
-    """The D: a bar plus a half disc, with a matching hole."""
-    w = h
-    d.rectangle([x, y, x + w - h // 2, y + h], fill=fg)
-    d.pieslice([x + w - h, y, x + w, y + h], -90, 90, fill=fg)
-    t = max(3, h // 5)
-    hh = h - 2 * t
-    d.rectangle([x + t, y + t, x + w - t - hh // 2, y + h - t], fill=bg)
-    d.pieslice([x + w - t - hh, y + t, x + w - t, y + h - t], -90, 90, fill=bg)
+MARK = Image.open(ROOT / "datamart" / "brand-src" / "datamart-logo-512.png").convert("RGBA")
+MARK = MARK.crop(MARK.getbbox())
+
+
+def draw_mark(patch: Image.Image, x: int, y: int, h: int, dim: bool):
+    """The Datamart mark, h pixels tall, washed out on a dimmed page."""
+    m = MARK.copy()
+    m.thumbnail((h, h), Image.LANCZOS)
+    if dim:
+        m.putalpha(m.getchannel("A").point(lambda a: int(a * 0.55)))
+    patch.paste(m, (x, y + (h - m.height) // 2), m)
+
+
+def recolour(im: Image.Image) -> Image.Image:
+    """Turn Warmbly's sky-blue accents Datamart red, keeping each pixel's
+    saturation and brightness so tints and shades stay tints and shades."""
+    hsv = np.array(im.convert("HSV"), dtype=np.int16)
+    h, s = hsv[..., 0], hsv[..., 1]
+    sky = (h >= 130) & (h <= 155) & (s >= 60)  # 185 to 218 degrees, not greys
+    h[sky] = 4  # Datamart red sits near 6 degrees
+    return Image.fromarray(hsv.astype(np.uint8), "HSV").convert("RGB")
 
 
 def stamp(src: Path, dest: Path):
-    im = Image.open(src).convert("RGB")
+    im = recolour(Image.open(src).convert("RGB"))
     s = 3  # draw at 3x and downsample for smooth edges
     region = im.crop(BOX)
     bg = im.getpixel((BOX[2] - 4, 30))
@@ -51,7 +64,7 @@ def stamp(src: Path, dest: Path):
     # The overlay screenshot (a dialog over a dimmed page) uses the dimmed ink.
     dim = sum(bg) < 3 * 215
     ink = tuple(int(c * 0.55 + b * 0.45) for c, b in zip(INK, bg)) if dim else INK
-    draw_mark(d, (28 - BOX[0]) * s, (16 - BOX[1]) * s, 24 * s, ink, bg)
+    draw_mark(patch, (26 - BOX[0]) * s, (15 - BOX[1]) * s, 26 * s, dim)
     big = ImageFont.truetype(FONT.path, FONT.size * s, index=1)
     d.text(((64 - BOX[0]) * s, (31 - BOX[1]) * s), NAME, font=big, fill=ink, anchor="lm")
     patch = patch.resize(region.size, Image.LANCZOS)
@@ -66,12 +79,17 @@ def stamp(src: Path, dest: Path):
 
 
 def avatar(dest: Path):
-    s = 1024
-    im = Image.new("RGB", (s, s), (15, 118, 110))
-    d = ImageDraw.Draw(im)
-    draw_mark(d, int(s * 0.27), int(s * 0.21), int(s * 0.58), (255, 255, 255), (15, 118, 110))
+    im = Image.new("RGB", (256, 256), (255, 255, 255))
+    m = MARK.copy()
+    m.thumbnail((160, 160), Image.LANCZOS)
+    im.paste(m, ((256 - m.width) // 2, (256 - m.height) // 2), m)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    im.resize((256, 256), Image.LANCZOS).save(dest, "WEBP", quality=90)
+    im.save(dest, "WEBP", quality=90)
+
+
+def recolour_only(src: Path, dest: Path):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    recolour(Image.open(src).convert("RGB")).save(dest, "WEBP", quality=90)
 
 
 def main():
@@ -84,7 +102,7 @@ def main():
         elif Image.open(src).size == (1600, 1000):
             stamp(src, OUT / rel)
         else:
-            del hashes[rel]  # no logo in it (a cropped detail), left as it is
+            recolour_only(src, OUT / rel)  # a cropped detail with no logo in it
     (ROOT / "datamart" / "overrides.json").write_text(json.dumps(hashes, indent=2) + "\n")
     print(f"stamped {len(hashes)} files into {OUT.relative_to(ROOT)}")
 

@@ -1,0 +1,49 @@
+
+/* ── Datamart theme (appended by datamart/rebrand.py) ─────────────────────
+   Warmbly's brand colour is Tailwind's sky palette, used in some 2,200
+   places. Redefining that one palette as Datamart red recolours all of them;
+   the dark theme's copy of the palette is hue-shifted by rebrand.py. Red is an
+   accent, not a background, per the Datamart brand guide: the sign-in sky
+   becomes charcoal with a red glow. */
+
+@theme {
+  --color-sky-50: #fff3f1;
+  --color-sky-100: #ffe4e0;
+  --color-sky-200: #ffcbc4;
+  --color-sky-300: #ffa395;
+  --color-sky-400: #fb6a55;
+  --color-sky-500: #ec3a20;
+  --color-sky-600: #d61700;
+  --color-sky-700: #b01400;
+  --color-sky-800: #8f1505;
+  --color-sky-900: #76170b;
+  --color-sky-950: #410701;
+}
+
+.sky-base {
+  background: radial-gradient(ellipse 140% 130% at 60% 18%,
+    #3a3a3a 0%,
+    #2a2a2a 30%,
+    #1c1c1c 60%,
+    #141414 82%,
+    #0d0d0d 100%
+  );
+}
+.sky-breathe {
+  background: radial-gradient(ellipse 95% 75% at 60% 12%,
+    rgba(214, 23, 0, 0.38) 0%,
+    rgba(214, 23, 0, 0.14) 38%,
+    transparent 66%
+  );
+}
+.cloud-drift { display: none; }
+
+.ai-shimmer-text { background-image: linear-gradient(90deg, #64748b 30%, #d61700 50%, #64748b 70%); }
+.ai-stream-caret { background: #d61700; }
+.amo:not(.amo-muted):not(.amo-attention):not(.amo-done) {
+  --amo-a: #ffa395;
+  --amo-b: #e63333;
+  --amo-c: #b01400;
+  color: #d61700;
+}
+.tiptap-body a { color: #b01400; }

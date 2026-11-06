@@ -26,8 +26,8 @@ Platform email is branded through `EMAIL_BRAND_*` settings. One known leftover:
 authenticator apps list 2FA codes under "Warmbly", because that name is fixed
 in the backend.
 
-Icons are placeholders drawn by `datamart/tools/make_icons.py`. Drop real
-files into `datamart/assets/` to replace them.
+Icons come from the Datamart logo in `datamart/brand-src/` via
+`datamart/tools/make_icons.py`. Colours: `datamart/theme/datamart.css`.
 
 ## Updates
 
