@@ -18,6 +18,8 @@ What it does:
      and copies datamart/overrides/ over the checkout (tour screenshots).
   3. Copies datamart/assets/<app>/ over <app>/public/ (favicons, icons).
   4. Rewrites the two PWA manifests.
+  5. Renames the product in the backend's Go strings and comments, and the
+     few lowercase file names people download.
 
 Lowercase "warmbly" (import paths, storage keys, routes) is never touched.
 """
@@ -41,9 +43,8 @@ ASSISTANT = re.compile(r"\bRemie\b")
 ASSISTANT_NAME = "Molty"
 
 # Lines where "Warmbly" is a real value the backend sends or expects, not a
-# brand mention: the webhook signature header, and the Gmail folder warmup mail
-# goes into, which the backend still names "Warmbly".
-KEEP_LINE = re.compile(r'-Warmbly-|placeholder="Warmbly"|for "Warmbly"|default, "Warmbly"')
+# brand mention: the webhook signature header.
+KEEP_LINE = re.compile(r'-Warmbly-')
 
 # The Datamart mark, its four shapes as one path, scaled into the 746x764 box
 # upstream's Logo components draw in. Datamart red in both themes: an inline
@@ -189,8 +190,60 @@ NEW_FILES = {
     "datamart/go/datamart_allowance.go": "internal/app/credits/datamart_allowance.go",
 }
 
-# Backend sources whose user-facing strings name the product or the assistant.
-GO_TEXT_FILES = ["internal/app/aiagent/service.go"]
+# Lowercase names people see: downloaded file names.
+LOWER_SWAPS = [
+    ("warmbly-recovery-codes-", "datamart-warmup-recovery-codes-"),
+    ("`warmbly-${campaign.id}.png`", "`datamart-warmup-${campaign.id}.png`"),
+    ("`warmbly-analytics-${range}.png`", "`datamart-warmup-analytics-${range}.png`"),
+    ('"warmbly-contacts-sample.csv"', '"datamart-warmup-contacts-sample.csv"'),
+]
+
+# Backend: the product name in Go string literals and comments (error
+# messages, emails, the passkey and authenticator names, the folder warmup
+# mail goes into, Slack and CRM labels). Code is never touched: rule.Warmbly
+# is a field. Hyphenated names (X-Warmbly-Signature, Warmbly-Webhooks/1.0)
+# are protocol and stay.
+GO_DIRS = ["internal", "cmd"]
+GO_WORD = re.compile(r"(?<![-\w.])Warmbly(?![-\w])(?! Cloud)")
+
+
+def go_text(src: str) -> tuple[str, int]:
+    """Apply the name swaps inside Go strings and comments only."""
+    out, n, i, L = [], 0, 0, len(src)
+
+    def swap(s: str) -> str:
+        nonlocal n
+        s, a = GO_WORD.subn(NAME, s)
+        s, b = ASSISTANT.subn(ASSISTANT_NAME, s)
+        n += a + b
+        return s
+
+    while i < L:
+        c = src[i]
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            j = L if j < 0 else j
+        elif src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = L if j < 0 else j + 2
+        elif c == "`":
+            j = src.find("`", i + 1)
+            j = L if j < 0 else j + 1
+        elif c in "\"'":
+            j = i + 1
+            while j < L and src[j] != c and src[j] != "\n":
+                j += 2 if src[j] == "\\" else 1
+            j = min(j + 1, L)
+        else:
+            j = i + 1
+            while j < L and src[j] not in "/`\"'":
+                j += 1
+            out.append(src[i:j])
+            i = j
+            continue
+        out.append(swap(src[i:j]))
+        i = j
+    return "".join(out), n
 
 # The Datamart theme, appended to each app's global stylesheet so it comes
 # after everything it overrides.
@@ -299,17 +352,28 @@ def main(check: bool) -> int:
         if not check:
             shutil.copyfile(ROOT / src, ROOT / dest)
 
-    for rel in GO_TEXT_FILES:
-        f = ROOT / rel
-        if not f.exists():
-            errors.append(f"{rel}: file is gone")
+    for f in text_files():
+        if kept(f):
             continue
-        text = f.read_text()
-        new = ASSISTANT.sub(ASSISTANT_NAME, WORD.sub(NAME, text))
+        text = f.read_text(encoding="utf-8")
+        new = text
+        for old, rep in LOWER_SWAPS:
+            new = new.replace(old, rep)
         if new != text:
             words += 1
             if not check:
-                f.write_text(new)
+                f.write_text(new, encoding="utf-8")
+
+    # Tests included, so tests of user-facing text expect the new name.
+    for d in GO_DIRS:
+        for f in sorted((ROOT / d).rglob("*.go")):
+            text = f.read_text(encoding="utf-8")
+            new, n = go_text(text)
+            if n:
+                words += n
+                files += 1
+                if not check:
+                    f.write_text(new, encoding="utf-8")
 
     css = THEME_CSS.read_text()
     for rel in STYLESHEETS:
