@@ -5,6 +5,8 @@ Two routes, served under /molty/ on the app's own domain (Caddy forwards them):
   GET  /molty/unlock?org=<organization id>
        Starts a Stripe Checkout subscription for that workspace and redirects
        to it. No sign-in needed: paying for a workspace only ever unlocks it.
+       Without Stripe settings (today: extra credits are free on request) it
+       shows how to ask Datamart for more, with the workspace's ID to quote.
 
   POST /molty/stripe-webhook
        Stripe's notices. A paid checkout adds the workspace to the Redis set
@@ -111,6 +113,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(doc)
 
+    def request_page(self, org: str):
+        """Extra credits are free on request: tell people how to ask."""
+        doc = (
+            "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>More Molty credits</title>"
+            "<body style='font:16px/1.6 system-ui,sans-serif;max-width:520px;margin:12vh auto;padding:0 16px;color:#141414'>"
+            "<h1 style='font-size:22px;margin-bottom:8px'>Need more Molty credits?</h1>"
+            "<p>Every workspace gets free AI credits each day, and they reset at midnight UTC. "
+            "If your team needs more, ask the Datamart team and we will add credits to your workspace. It is free.</p>"
+            "<p>Quote your workspace ID so we know where to add them:</p>"
+            "<p style='font:15px ui-monospace,Menlo,monospace;background:#f5f5f5;border:1px solid #e6e6e6;"
+            f"border-radius:8px;padding:10px 12px;word-break:break-all;user-select:all'>{html.escape(org)}</p>"
+            "<p><a href='https://dtm.global' target='_blank' rel='noopener' style='display:inline-block;background:#d61700;color:#fff;"
+            "text-decoration:none;font-weight:600;padding:10px 18px;border-radius:8px'>Ask the Datamart team</a></p>"
+            f"<p><a href='{html.escape(APP_URL or '')}/app' style='color:#333'>Back to Datamart Warmup</a></p>"
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(doc)))
+        self.end_headers()
+        self.wfile.write(doc)
+
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/molty/health":
@@ -125,7 +149,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self.page(400, "Workspace missing", "Open Molty from your workspace and try the Unlock button again.")
         if not (stripe.api_key and PRICE_ID):
-            return self.page(503, "Unlocking is not open yet", "Paid Molty is coming soon. Your free daily allowance resets at midnight UTC.")
+            return self.request_page(org)
         try:
             session = stripe.checkout.Session.create(
                 mode="subscription",
