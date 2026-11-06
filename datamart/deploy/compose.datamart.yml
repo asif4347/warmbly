@@ -35,3 +35,19 @@ services:
       AWS_REGION_NAME: us-east-1
     volumes:
       - ./datamart/deploy/litellm.yaml:/app/config.yaml:ro
+
+  # Molty unlock: Stripe checkout and webhook (datamart/billing). Caddy sends
+  # /molty/* on the app's domain here.
+  molty-billing:
+    build: ./datamart/billing
+    image: datamart-warmup/molty-billing:local
+    restart: unless-stopped
+    ports: ["127.0.0.1:8099:8099"]
+    environment:
+      APP_URL: ${APP_URL}
+      REDIS_URL: redis://redis:6379
+      STRIPE_MOLTY_SECRET_KEY: ${STRIPE_MOLTY_SECRET_KEY:-}
+      STRIPE_MOLTY_WEBHOOK_SECRET: ${STRIPE_MOLTY_WEBHOOK_SECRET:-}
+      STRIPE_MOLTY_PRICE_ID: ${STRIPE_MOLTY_PRICE_ID:-}
+    depends_on:
+      redis: { condition: service_healthy }

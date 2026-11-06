@@ -101,6 +101,23 @@ PATCHES = [
         "\t\treturn selfHostBalance, nil",
     ),
     (
+        # When a workspace runs out of its free AI allowance, Molty's error
+        # carries an Unlock link to the billing service (datamart/billing).
+        "web/src/components/app/agent/AgentPanel.tsx",
+        "                        <span>{b.message}</span>",
+        "                        <span>\n"
+        "                            {b.message}\n"
+        '                            {b.code === "usage_cap_exceeded" && (\n'
+        "                                <a\n"
+        "                                    href={`/molty/unlock?org=${useAppStore.getState().currentOrganization?.id ?? \"\"}`}\n"
+        '                                    className="ml-1 font-semibold underline underline-offset-2 hover:text-red-900"\n'
+        "                                >\n"
+        "                                    Unlock Molty\n"
+        "                                </a>\n"
+        "                            )}\n"
+        "                        </span>",
+    ),
+    (
         # The name authenticator apps list 2FA codes under.
         "internal/app/twofa/service.go",
         '\tissuer        = "Warmbly"',

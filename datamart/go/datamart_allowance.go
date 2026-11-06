@@ -8,9 +8,11 @@
 //
 //   - every workspace gets DATAMART_AI_FREE_DAILY credits per UTC day
 //     (default 15, about five Molty messages);
-//   - workspaces listed in DATAMART_AI_UNLOCKED_ORGS (comma-separated
-//     organization IDs) get DATAMART_AI_UNLOCKED_MONTHLY credits per UTC month
-//     instead (default 1500).
+//   - unlocked workspaces get DATAMART_AI_UNLOCKED_MONTHLY credits per UTC
+//     month instead (default 1500). A workspace is unlocked when the Molty
+//     billing service (datamart/billing) has it in the Redis set
+//     datamart:ai:unlocked after a paid Stripe checkout, or when it is listed
+//     by hand in DATAMART_AI_UNLOCKED_ORGS (comma-separated organization IDs).
 //
 // A limit of 0 means no limit. Counting lives in Redis and fails open: a Redis
 // outage never blocks AI, the same as upstream's own caps.
@@ -32,6 +34,9 @@ var (
 	datamartUnlockedMonthly = datamartEnvInt("DATAMART_AI_UNLOCKED_MONTHLY", 1500)
 	datamartUnlocked        = datamartEnvSet("DATAMART_AI_UNLOCKED_ORGS")
 )
+
+// datamartUnlockedKey is the Redis set the billing service keeps.
+const datamartUnlockedKey = "datamart:ai:unlocked"
 
 func datamartEnvInt(name string, def int) int {
 	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name))); err == nil && v >= 0 {
@@ -59,7 +64,11 @@ func (s *creditService) datamartAllowance(ctx context.Context, orgID uuid.UUID, 
 	now := time.Now().UTC()
 	key := "datamart:ai:day:" + orgID.String() + ":" + now.Format("2006-01-02")
 	limit, window := datamartFreeDaily, 26*time.Hour
-	if datamartUnlocked[orgID.String()] {
+	unlocked := datamartUnlocked[orgID.String()]
+	if !unlocked {
+		unlocked, _ = s.cache.SIsMember(ctx, datamartUnlockedKey, orgID.String()).Result()
+	}
+	if unlocked {
 		key = "datamart:ai:month:" + orgID.String() + ":" + now.Format("2006-01")
 		limit, window = datamartUnlockedMonthly, 32*24*time.Hour
 	}

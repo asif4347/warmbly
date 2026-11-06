@@ -1,0 +1,30 @@
+# Caddy on the server (/opt/caddy/Caddyfile), in front of the whole stack.
+# Certificates come from Let's Encrypt; the DNS records are DNS only in Cloudflare.
+warmup.dtm.global {
+	# Molty unlock: Stripe checkout and webhook (datamart/billing).
+	handle /molty/* {
+		reverse_proxy 127.0.0.1:8099
+	}
+	# The landing page owns the bare root and /landing/*; everything else is the app.
+	@landing path / /index.html /landing/*
+	handle @landing {
+		uri strip_prefix /landing
+		root * /srv/landing
+		file_server
+	}
+	handle {
+		reverse_proxy 127.0.0.1:5173
+	}
+}
+warmup-admin.dtm.global {
+	reverse_proxy 127.0.0.1:5174
+}
+warmup-api.dtm.global {
+	reverse_proxy 127.0.0.1:8080
+}
+warmup-ws.dtm.global {
+	reverse_proxy 127.0.0.1:4000
+}
+warmup-t.dtm.global {
+	reverse_proxy 127.0.0.1:3000
+}
