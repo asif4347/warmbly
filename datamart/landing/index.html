@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Datamart Warmup: free email warmup for agencies</title>
+<meta name="description" content="A free warmup network for agencies. Your mailboxes trade warmup mail with other members' mailboxes, so your sender reputation builds before your campaigns go out.">
+<meta property="og:title" content="Datamart Warmup">
+<meta property="og:description" content="Free email warmup, powered by a community of agency mailboxes.">
+<meta property="og:image" content="https://warmup.dtm.global/landing/img/mailboxes.webp">
+<link rel="icon" href="/favicon-32x32.png" sizes="32x32">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --red: #d61700;
+    --red-hover: #b01400;
+    --ink: #141414;
+    --ink-2: #333333;
+    --muted: #5f5f5f;
+    --border: #e6e6e6;
+    --surface: #f5f5f5;
+    --bg: #ffffff;
+    --card: #ffffff;
+    --ring: rgba(214, 23, 0, 0.35);
+    --shadow-md: 0 4px 6px -1px rgba(0,0,0,.08), 0 2px 4px -2px rgba(0,0,0,.06);
+    --shadow-xl: 0 24px 48px -12px rgba(20,20,20,.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --red: #e63333;
+      --red-hover: #f05a4f;
+      --ink: #f2f2f2;
+      --ink-2: #e0e0e0;
+      --muted: #a3a3a3;
+      --border: #2e2e2e;
+      --surface: #141414;
+      --bg: #0d0d0d;
+      --card: #141414;
+      --shadow-md: 0 4px 6px -1px rgba(0,0,0,.5);
+      --shadow-xl: 0 24px 48px -12px rgba(0,0,0,.7);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    font-size: 17px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  img { max-width: 100%; display: block; }
+  a { color: inherit; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+  .skip { position: absolute; left: -9999px; }
+  .skip:focus { left: 16px; top: 16px; background: var(--card); padding: 8px 12px; border-radius: 8px; z-index: 100; }
+  :focus-visible { outline: 3px solid var(--ring); outline-offset: 2px; border-radius: 8px; }
+
+  /* Nav */
+  header.nav { position: sticky; top: 0; z-index: 50; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--border); }
+  header.nav .wrap { display: flex; align-items: center; gap: 24px; height: 68px; }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+  .brand svg { width: 34px; height: 34px; flex: none; }
+  .brand b { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; }
+  .brand span { color: var(--red); }
+  nav.links { display: flex; gap: 28px; margin-left: 24px; }
+  nav.links a { text-decoration: none; color: var(--muted); font-size: 15px; font-weight: 500; transition: color .2s; }
+  nav.links a:hover { color: var(--ink); }
+  .nav-cta { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 20px; border-radius: 8px; font: inherit; font-size: 15px; font-weight: 600; text-decoration: none; cursor: pointer; transition: background-color .2s, border-color .2s, transform .15s, box-shadow .2s; border: 1px solid transparent; }
+  .btn:active { transform: scale(.98); }
+  .btn-red { background: var(--red); color: #fff; box-shadow: 0 6px 16px -6px rgba(214,23,0,.55); }
+  .btn-red:hover { background: var(--red-hover); }
+  .btn-ghost { border-color: var(--border); background: var(--card); color: var(--ink); }
+  .btn-ghost:hover { border-color: var(--muted); }
+  .btn-lg { min-height: 52px; padding: 0 26px; font-size: 16px; }
+  .btn svg { width: 18px; height: 18px; }
+
+  /* Hero */
+  .hero { padding: 88px 0 40px; text-align: center; position: relative; overflow: hidden; }
+  .hero::before { content: ""; position: absolute; inset: -40% -10% auto; height: 620px; background: radial-gradient(closest-side, rgba(214,23,0,.10), transparent 70%); pointer-events: none; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border: 1px solid var(--border); border-radius: 999px; font-size: 14px; font-weight: 600; color: var(--ink-2); background: var(--card); position: relative; }
+  .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--red); display: inline-block; }
+  h1 { font-size: clamp(38px, 6vw, 64px); line-height: 1.06; letter-spacing: -0.035em; font-weight: 800; margin: 22px auto 0; max-width: 900px; position: relative; }
+  h1 em { font-style: normal; color: var(--red); }
+  .lede { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 680px; margin: 22px auto 0; position: relative; }
+  .hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 34px; position: relative; }
+  .fine { font-size: 14px; color: var(--muted); margin-top: 16px; position: relative; }
+
+  .shot { margin: 64px auto 0; max-width: 1080px; position: relative; }
+  .frame { border: 1px solid var(--border); border-radius: 16px; overflow: hidden; background: var(--card); box-shadow: var(--shadow-xl); }
+  .frame .bar { display: flex; gap: 6px; padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .frame .bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--border); }
+  .caption { font-size: 13px; color: var(--muted); margin-top: 14px; text-align: center; }
+
+  /* Sections */
+  section { padding: 96px 0; scroll-margin-top: 68px; }
+  .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--red); }
+  h2 { font-size: clamp(30px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.025em; font-weight: 800; margin: 12px 0 0; }
+  .sub { color: var(--muted); font-size: 18px; max-width: 620px; margin: 16px 0 0; }
+  .center { text-align: center; }
+  .center .sub { margin-left: auto; margin-right: auto; }
+
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-top: 56px; counter-reset: s; }
+  .card { border: 1px solid var(--border); border-radius: 16px; padding: 28px; background: var(--card); transition: transform .2s, box-shadow .2s; }
+  .card:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
+  .icon { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; background: color-mix(in srgb, var(--red) 10%, transparent); color: var(--red); }
+  .icon svg { width: 22px; height: 22px; }
+  .step-n { font-size: 13px; font-weight: 700; color: var(--muted); margin-top: 20px; }
+  .card h3 { font-size: 20px; letter-spacing: -0.01em; margin: 6px 0 8px; }
+  .card p { margin: 0; color: var(--muted); font-size: 16px; }
+
+  .split { display: grid; grid-template-columns: 1fr 1.25fr; gap: 64px; align-items: center; }
+  .checks { list-style: none; padding: 0; margin: 28px 0 0; display: grid; gap: 16px; }
+  .checks li { display: flex; gap: 12px; align-items: flex-start; }
+  .checks svg { width: 22px; height: 22px; color: var(--red); flex: none; margin-top: 2px; }
+  .checks b { display: block; font-weight: 700; }
+  .checks span { color: var(--muted); font-size: 16px; }
+
+  .band { background: var(--surface); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .why { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: start; }
+  .rules { display: grid; gap: 14px; }
+  .rule { display: flex; gap: 14px; padding: 18px 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+  .rule svg { width: 20px; height: 20px; color: var(--ink-2); flex: none; margin-top: 3px; }
+  .rule p { margin: 0; font-size: 16px; }
+  .rule p b { font-weight: 700; }
+
+  .faq { max-width: 780px; margin: 48px auto 0; }
+  details { border-bottom: 1px solid var(--border); }
+  summary { list-style: none; cursor: pointer; padding: 22px 4px; font-weight: 700; font-size: 18px; display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+  summary::-webkit-details-marker { display: none; }
+  summary svg { width: 20px; height: 20px; color: var(--muted); transition: transform .2s; flex: none; }
+  details[open] summary svg { transform: rotate(45deg); }
+  details p { margin: 0 4px 22px; color: var(--muted); }
+
+  .final { text-align: center; padding: 104px 0; }
+  .final .box { border: 1px solid var(--border); border-radius: 24px; padding: 64px 24px; background: radial-gradient(600px 220px at 50% 0%, rgba(214,23,0,.08), transparent), var(--card); }
+
+  footer { border-top: 1px solid var(--border); padding: 36px 0 48px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+  footer .brand svg { width: 26px; height: 26px; }
+  footer .brand b { font-size: 15px; color: var(--ink); }
+  footer nav { margin-left: auto; display: flex; gap: 20px; }
+  footer nav a { text-decoration: none; }
+  footer nav a:hover { color: var(--ink); }
+  footer .legal { flex-basis: 100%; }
+
+  .reveal { opacity: 0; transform: translateY(16px); transition: opacity .5s ease-out, transform .5s ease-out; }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .card, .btn { transition: none; }
+  }
+
+  @media (max-width: 900px) {
+    nav.links { display: none; }
+    .steps { grid-template-columns: 1fr; }
+    .split, .why { grid-template-columns: 1fr; gap: 40px; }
+    section { padding: 72px 0; }
+    .hero { padding-top: 64px; }
+  }
+  @media (max-width: 480px) {
+    .wrap { padding: 0 16px; }
+    .nav-cta .btn-ghost { display: none; }
+    .hero-cta .btn { width: 100%; }
+    footer nav { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="dm-logo" viewBox="0 0 82 82">
+      <path fill="#d61700" fill-rule="evenodd" d="M41.008,0.938c9.558,0,18.338,3.321,25.255,8.87L29.338,2.652C33.032,1.539,36.949,0.938,41.008,0.938L41.008,0.938z"/>
+      <path fill="#d61700" d="M78.159,25.45c0.784,1.833,1.438,3.736,1.947,5.696L36.787,80.062l-21-66.474L78.159,25.45L78.159,25.45z"/>
+      <path fill="#b01400" d="M80.388,50.366C77.372,63.57,67.886,74.306,55.443,79.069L80.388,50.366L80.388,50.366z"/>
+      <path fill="#d61700" d="M21.163,76.523C8.896,69.589,0.612,56.431,0.612,41.333c0-6.387,1.484-12.427,4.124-17.796L21.163,76.523L21.163,76.523z"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Datamart Warmup home">
+      <svg aria-hidden="true"><use href="#dm-logo"/></svg>
+      <b>Datamart <span>Warmup</span></b>
+    </a>
+    <nav class="links" aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#see">What you see</a>
+      <a href="#free">Why it's free</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="/auth/login">Sign in</a>
+      <a class="btn btn-red" href="/auth/register">Join free</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <div class="hero" id="top">
+    <div class="wrap">
+      <span class="pill"><i aria-hidden="true"></i>Free for the Datamart community</span>
+      <h1>Warm up your inboxes with <em>real agency mailboxes</em></h1>
+      <p class="lede">Connect your sending mailboxes and they trade warmup mail with mailboxes run by other agencies in the network. Your sender reputation builds up before your campaigns go out.</p>
+      <div class="hero-cta">
+        <a class="btn btn-red btn-lg" href="/auth/register">
+          Create your free workspace
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+        </a>
+        <a class="btn btn-ghost btn-lg" href="#how">See how it works</a>
+      </div>
+      <p class="fine">No card. No plan. Datamart covers the running costs.</p>
+
+      <figure class="shot reveal">
+        <div class="frame">
+          <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
+          <img src="img/mailboxes.webp" width="1600" height="1000" alt="The Datamart Warmup mailbox list: twenty connected mailboxes with their warmup progress, daily sends, inbox rate and health score.">
+        </div>
+        <figcaption class="caption">The mailbox dashboard, shown with a sample workspace.</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <section id="how">
+    <div class="wrap">
+      <div class="center">
+        <div class="eyebrow">How it works</div>
+        <h2>Three steps, then it runs on its own.</h2>
+        <p class="sub">Warmup works best when mail goes back and forth between many different companies. That is exactly what a community of agencies has.</p>
+      </div>
+      <div class="steps">
+        <article class="card reveal">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></svg></div>
+          <div class="step-n">Step 1</div>
+          <h3>Create your workspace</h3>
+          <p>Each company signs up for its own workspace. Invite your team into it. Other companies never see inside it.</p>
+        </article>
+        <article class="card reveal">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg></div>
+          <div class="step-n">Step 2</div>
+          <h3>Connect your mailboxes</h3>
+          <p>Google Workspace and Gmail, Microsoft 365 and Outlook, or any mailbox with SMTP and IMAP. Passwords are stored encrypted.</p>
+        </article>
+        <article class="card reveal">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg></div>
+          <div class="step-n">Step 3</div>
+          <h3>Warm up with the network</h3>
+          <p>Your mailboxes send to and reply with other members' mailboxes, never with each other. Volume ramps up slowly, day by day.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="see" class="band">
+    <div class="wrap split">
+      <div class="reveal">
+        <div class="eyebrow">What you see</div>
+        <h2>Know where your mail lands.</h2>
+        <p class="sub">Every mailbox gets its own health view, so you can tell when it is ready for real sending.</p>
+        <ul class="checks">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>A health score per mailbox</b><span>Bounces, spam placement and warmup progress in one number.</span></div></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>Inbox placement by provider</b><span>See how much warmup mail reached the inbox at Google and Microsoft.</span></div></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>Domain checks built in</b><span>SPF, DKIM and DMARC are checked before a mailbox starts warming.</span></div></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>You stay in control</b><span>Pause, slow down or stop warmup on any mailbox at any time.</span></div></li>
+        </ul>
+      </div>
+      <figure class="reveal" style="margin:0">
+        <div class="frame">
+          <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
+          <img src="img/deliverability.webp" width="1600" height="1000" loading="lazy" alt="The deliverability dashboard: a deliverability score, bounce and complaint rates, and warmup inbox placement over time.">
+        </div>
+        <figcaption class="caption">Deliverability, shown with a sample workspace.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="free">
+    <div class="wrap why">
+      <div class="reveal">
+        <div class="eyebrow">Why it's free</div>
+        <h2>The members are the network.</h2>
+        <p class="sub">Paid warmup tools charge for access to their pool of mailboxes. Here, the pool is us: every mailbox a member connects makes warmup better for everyone else.</p>
+        <p class="sub">Datamart pays for the servers and running costs, because better deliverability helps every agency in the community, ours included.</p>
+        <div class="hero-cta" style="justify-content:flex-start">
+          <a class="btn btn-red btn-lg" href="/auth/register">Join the network</a>
+        </div>
+      </div>
+      <div class="rules reveal" aria-label="Network rules">
+        <div class="rule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg><p><b>One workspace per company.</b> That is what stops a company's mailboxes from warming each other.</p></div>
+        <div class="rule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><p><b>Only warmup mail moves between members.</b> Your real inbox, contacts and campaigns stay in your workspace.</p></div>
+        <div class="rule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="m4.9 4.9 14.2 14.2"/></svg><p><b>Bad actors are taken out.</b> Mailboxes that tamper with warmup mail or report it as spam leave the pool.</p></div>
+        <div class="rule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg><p><b>Leave whenever you like.</b> Disconnect a mailbox or delete your workspace at any time.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" class="band">
+    <div class="wrap">
+      <div class="center">
+        <div class="eyebrow">FAQ</div>
+        <h2>Questions, answered.</h2>
+      </div>
+      <div class="faq">
+        <details>
+          <summary>Is it really free?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>Yes. No card, no plan and no cap on mailboxes. Datamart covers the servers and running costs.</p>
+        </details>
+        <details>
+          <summary>What do I need to connect a mailbox?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>SMTP and IMAP access to the mailbox, plus SPF, DKIM and DMARC records on its domain. For Gmail and Google Workspace that means an app password. For Microsoft 365, SMTP sending has to be switched on for the mailbox.</p>
+        </details>
+        <details>
+          <summary>Can other members read my email?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>No. Members only ever receive the warmup messages your mailboxes send them. Nobody outside your workspace can see your inbox, your contacts or your campaigns.</p>
+        </details>
+        <details>
+          <summary>Will my own mailboxes warm each other?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>No. Mail within one company looks nothing like real outreach, so your mailboxes are always paired with other members' mailboxes. That is why each company needs its own workspace.</p>
+        </details>
+        <details>
+          <summary>How long should I warm a new mailbox?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>Give a new mailbox at least two weeks before it sends cold email, and keep warmup running at a low level after that. The health score tells you when it is in good shape.</p>
+        </details>
+        <details>
+          <summary>Who can join?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>Agencies and teams in the Datamart community, and the people they bring along. Sign up for your company's workspace and connect your mailboxes.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <div class="final">
+    <div class="wrap">
+      <div class="box reveal">
+        <h2>Your inbox reputation, built by the community.</h2>
+        <p class="sub" style="margin-left:auto;margin-right:auto">It takes a few minutes to set up a workspace and connect your first mailbox.</p>
+        <div class="hero-cta">
+          <a class="btn btn-red btn-lg" href="/auth/register">Create your free workspace</a>
+          <a class="btn btn-ghost btn-lg" href="/auth/login">Sign in</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a class="brand" href="https://dtm.global" aria-label="Datamart">
+      <svg aria-hidden="true"><use href="#dm-logo"/></svg>
+      <b>Datamart</b>
+    </a>
+    <span>Datamart Warmup is a product of Datamart Inc.</span>
+    <nav aria-label="Footer">
+      <a href="https://dtm.global">dtm.global</a>
+      <a href="/auth/login">Sign in</a>
+      <a href="/auth/register">Join free</a>
+    </nav>
+    <p class="legal">&copy; 2026 Datamart Inc. Built on <a href="https://github.com/warmbly/warmbly">Warmbly</a>, open source under the Apache 2.0 license.</p>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var els = document.querySelectorAll(".reveal");
+    if (!("IntersectionObserver" in window)) { els.forEach(function (e) { e.classList.add("in"); }); return; }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+    }, { rootMargin: "0px 0px -10% 0px" });
+    els.forEach(function (e) { io.observe(e); });
+  })();
+</script>
+</body>
+</html>
