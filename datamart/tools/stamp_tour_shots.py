@@ -3,7 +3,7 @@
 
 The tour shows real screenshots of the dashboard with the Warmbly logo and name
 in the top-left corner. This paints that corner over with the page colour and
-draws our mark and name in its place, turns the sky-blue accents Datamart red,
+draws our mark and name in its place, turns the sky-blue accents Datamart charcoal,
 and swaps the Slack app avatar for our icon. Results go to datamart/overrides/, which rebrand.py copies over the
 checkout, and their upstream hashes go to datamart/overrides.json so a Warmbly
 update that changes a screenshot is caught instead of silently overwritten.
@@ -45,12 +45,13 @@ def draw_mark(patch: Image.Image, x: int, y: int, h: int, dim: bool):
 
 
 def recolour(im: Image.Image) -> Image.Image:
-    """Turn Warmbly's sky-blue accents Datamart red, keeping each pixel's
-    saturation and brightness so tints and shades stay tints and shades."""
-    hsv = np.array(im.convert("HSV"), dtype=np.int16)
-    h, s = hsv[..., 0], hsv[..., 1]
+    """Turn Warmbly's sky-blue accents Datamart charcoal, as the app's palette
+    does: pale washes stay pale, strong blues become dark grey."""
+    hsv = np.array(im.convert("HSV"), dtype=np.float32)
+    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     sky = (h >= 130) & (h <= 155) & (s >= 60)  # 185 to 218 degrees, not greys
-    h[sky] = 4  # Datamart red sits near 6 degrees
+    v[sky] = v[sky] * (1 - 0.7 * s[sky] / 255)
+    s[sky] = 0
     return Image.fromarray(hsv.astype(np.uint8), "HSV").convert("RGB")
 
 

@@ -1,23 +1,23 @@
 
 /* ── Datamart theme (appended by datamart/rebrand.py) ─────────────────────
    Warmbly's brand colour is Tailwind's sky palette, used in some 2,200
-   places. Redefining that one palette as Datamart red recolours all of them;
-   the dark theme's copy of the palette is hue-shifted by rebrand.py. Red is an
-   accent, not a background, per the Datamart brand guide: the sign-in sky
-   becomes charcoal with a red glow. */
+   places. Redefining that one palette as Datamart charcoal recolours all of
+   them; the dark theme's copy is neutralised by rebrand.py. Datamart red stays
+   an accent (logo, sign-in glow, the assistant mark), so red in the dashboard
+   always means a warning or an error. */
 
 @theme {
-  --color-sky-50: #fff3f1;
-  --color-sky-100: #ffe4e0;
-  --color-sky-200: #ffcbc4;
-  --color-sky-300: #ffa395;
-  --color-sky-400: #fb6a55;
-  --color-sky-500: #ec3a20;
-  --color-sky-600: #d61700;
-  --color-sky-700: #b01400;
-  --color-sky-800: #8f1505;
-  --color-sky-900: #76170b;
-  --color-sky-950: #410701;
+  --color-sky-50: #f5f5f5;
+  --color-sky-100: #ebebeb;
+  --color-sky-200: #d9d9d9;
+  --color-sky-300: #b8b8b8;
+  --color-sky-400: #8c8c8c;
+  --color-sky-500: #4d4d4d;
+  --color-sky-600: #333333;
+  --color-sky-700: #262626;
+  --color-sky-800: #1f1f1f;
+  --color-sky-900: #171717;
+  --color-sky-950: #0d0d0d;
 }
 
 .sky-base {

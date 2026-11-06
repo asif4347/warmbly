@@ -87,7 +87,8 @@ PATCHES = [
         '        if (false && !jumped && slide.chapter.id !== "plans") { // datamart: no plans chapter',
     ),
     (
-        # The sign-in showcase draws its chart and ring in a hard-coded sky blue.
+        # The sign-in showcase draws its chart and ring in a hard-coded sky
+        # blue; on its charcoal panel they take the red accent.
         "web/src/app/auth/_components/AuthShowcase.tsx",
         'd="M0 25 L24 22 L48 23 L72 15 L96 9 L120 3" stroke="#0ea5e9"',
         'd="M0 25 L24 22 L48 23 L72 15 L96 9 L120 3" stroke="#d61700"',
@@ -106,18 +107,46 @@ THEME_MARK = "Datamart theme (appended by datamart/rebrand.py)"
 STYLESHEETS = ["web/src/global.css", "admin/src/global.css"]
 
 # The dark theme keeps its own copy of the sky palette (translucent washes,
-# lightness flipped for dark surfaces). Keep each step's lightness and alpha,
-# turn the hue to Datamart red and lift the chroma a little, red being less
-# saturated than sky at the same oklch chroma.
+# lightness flipped for dark surfaces). Keep each step's lightness and alpha and
+# drop the colour, so it reads as charcoal and white like the light theme. In
+# the solid-fill block (buttons and badges with white text) the darker steps go
+# darker still, so white text on them keeps its contrast.
 DARK_THEME = "web/src/styles/theme-dark.css"
-SKY_OKLCH = re.compile(r"(--color-sky-\d+:\s*oklch\()([\d.]+%)\s+([\d.]+)\s+([\d.]+)")
+SKY_OKLCH = re.compile(r"(--color-sky-(\d+):\s*oklch\()([\d.]+)%\s+([\d.]+)\s+([\d.]+)")
+SOLID_BLOCK = ".dark :is(.theme-solid"
+LIGHT_BLOCK = ".dark .theme-light {"
+# Light islands inside dark mode (white cards, menus) use the light theme's
+# values, taken from the @theme block in datamart/theme/datamart.css.
+LIGHT_SCALE = dict(re.findall(r"--color-sky-(\d+):\s*(#[0-9a-f]{6})", THEME_CSS.read_text()))
 
 
-def redden(m: re.Match) -> str:
-    if float(m.group(4)) == 29:
-        return m.group(0)  # already recoloured
-    chroma = min(float(m.group(3)) * 1.35, 0.235)
-    return f"{m.group(1)}{m.group(2)} {chroma:.3f} 29"
+def neutralise(text: str) -> tuple[str, int]:
+    out, n, solid, light = [], 0, False, False
+    for line in text.splitlines(keepends=True):
+        if line.startswith(SOLID_BLOCK):
+            solid = True
+        elif line.startswith(LIGHT_BLOCK):
+            light = True
+        elif line.startswith("}"):
+            solid = light = False
+        if light:
+            new = re.sub(r"(--color-sky-(\d+):\s*)oklch\([^)]*\)", lambda m: m.group(1) + LIGHT_SCALE[m.group(2)], line)
+            n += new != line
+            out.append(new)
+            continue
+
+        def grey(m: re.Match) -> str:
+            nonlocal n
+            n += 1
+            light = float(m.group(3))
+            if float(m.group(4)) == 0:
+                return m.group(0)  # already neutral
+            if solid and int(m.group(2)) >= 500:
+                light -= 22
+            return f"{m.group(1)}{light:g}% 0 0"
+
+        out.append(SKY_OKLCH.sub(grey, line))
+    return "".join(out), n
 
 
 def kept(path: Path) -> bool:
@@ -188,8 +217,8 @@ def main(check: bool) -> int:
         errors.append(f"{DARK_THEME}: file is gone")
     else:
         text = dark.read_text()
-        new, n = SKY_OKLCH.subn(redden, text)
-        if n == 0 and " 29)" not in text:
+        new, n = neutralise(text)
+        if n == 0:
             errors.append(f"{DARK_THEME}: no sky palette found to recolour")
         if not check:
             dark.write_text(new)
