@@ -78,6 +78,14 @@ PATCHES = [
         "    if (true || !pool.manageable || pool.loading) return null; // datamart: no Warmbly Cloud upsell",
     ),
     (
+        # Upstream's pool-size notice assumes a workspace warms only against its
+        # own mailboxes and points at Warmbly Cloud. Here every member's
+        # mailboxes form one pool across workspaces, so the notice is wrong.
+        "web/src/components/app/emails/WarmupCoverageNotice.tsx",
+        "    if (!canWarmup || cloudConnected || warmupCount < 1 || warmupCount >= HEALTHY_MIN) return null;",
+        "    if (true || !canWarmup || cloudConnected || warmupCount < 1 || warmupCount >= HEALTHY_MIN) return null; // datamart: shared pool",
+    ),
+    (
         # The tour ends on Warmbly's hosted plans, which are not ours to sell.
         "web/src/components/app/tour/tourSteps.ts",
         "export const TOUR_SLIDES: FlatSlide[] = TOUR_CHAPTERS.flatMap(",
