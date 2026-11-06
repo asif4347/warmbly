@@ -6,6 +6,13 @@ warmup.dtm.global {
 		reverse_proxy 127.0.0.1:8099
 	}
 	# The landing page owns the bare root and /landing/*; everything else is the app.
+	# /pricing is a static page beside the landing page.
+	@pricing path /pricing /pricing/
+	handle @pricing {
+		rewrite * /pricing.html
+		root * /srv/landing
+		file_server
+	}
 	@landing path / /index.html /landing/*
 	handle @landing {
 		uri strip_prefix /landing

@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pricing: Datamart Warmup is free</title>
+<meta name="description" content="Datamart Warmup is free. Datamart covers the servers, the warmup network and the running costs. Every workspace gets free daily AI credits; you only ever pay for extra AI.">
+<meta property="og:title" content="Datamart Warmup pricing: $0">
+<meta property="og:description" content="Free email warmup, covered by Datamart. Only extra AI credits are ever paid.">
+<meta property="og:image" content="https://warmup.dtm.global/landing/img/mailboxes.webp">
+<link rel="icon" href="/favicon-32x32.png" sizes="32x32">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --red: #d61700;
+    --red-hover: #b01400;
+    --ink: #141414;
+    --ink-2: #333333;
+    --muted: #5f5f5f;
+    --border: #e6e6e6;
+    --surface: #f5f5f5;
+    --bg: #ffffff;
+    --card: #ffffff;
+    --paper: #fffdf8;
+    --ring: rgba(214, 23, 0, 0.35);
+    --shadow-md: 0 4px 6px -1px rgba(0,0,0,.08), 0 2px 4px -2px rgba(0,0,0,.06);
+    --shadow-xl: 0 24px 48px -12px rgba(20,20,20,.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --red: #e63333;
+      --red-hover: #f05a4f;
+      --ink: #f2f2f2;
+      --ink-2: #e0e0e0;
+      --muted: #a3a3a3;
+      --border: #2e2e2e;
+      --surface: #141414;
+      --bg: #0d0d0d;
+      --card: #141414;
+      --paper: #1a1a1a;
+      --shadow-md: 0 4px 6px -1px rgba(0,0,0,.5);
+      --shadow-xl: 0 24px 48px -12px rgba(0,0,0,.7);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    font-size: 17px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  a { color: inherit; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+  .skip { position: absolute; left: -9999px; }
+  .skip:focus { left: 16px; top: 16px; background: var(--card); padding: 8px 12px; border-radius: 8px; z-index: 100; }
+  :focus-visible { outline: 3px solid var(--ring); outline-offset: 2px; border-radius: 8px; }
+
+  header.nav { position: sticky; top: 0; z-index: 50; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--border); }
+  header.nav .wrap { display: flex; align-items: center; gap: 24px; height: 68px; }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+  .brand svg { width: 34px; height: 34px; flex: none; }
+  .brand b { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; }
+  .brand span { color: var(--red); }
+  nav.links { display: flex; gap: 28px; margin-left: 24px; }
+  nav.links a { text-decoration: none; color: var(--muted); font-size: 15px; font-weight: 500; transition: color .2s; }
+  nav.links a:hover, nav.links a[aria-current] { color: var(--ink); }
+  .nav-cta { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 20px; border-radius: 8px; font: inherit; font-size: 15px; font-weight: 600; text-decoration: none; cursor: pointer; transition: background-color .2s, border-color .2s, transform .15s, box-shadow .2s; border: 1px solid transparent; }
+  .btn:active { transform: scale(.98); }
+  .btn-red { background: var(--red); color: #fff; box-shadow: 0 6px 16px -6px rgba(214,23,0,.55); }
+  .btn-red:hover { background: var(--red-hover); }
+  .btn-ghost { border-color: var(--border); background: var(--card); color: var(--ink); }
+  .btn-ghost:hover { border-color: var(--muted); }
+  .btn-lg { min-height: 52px; padding: 0 26px; font-size: 16px; }
+  .btn svg { width: 18px; height: 18px; }
+
+  /* Hero */
+  .hero { padding: 72px 0 24px; text-align: center; position: relative; }
+  .hero::before { content: ""; position: absolute; inset: -30% -10% auto; height: 640px; background: radial-gradient(closest-side, rgba(214,23,0,.12), transparent 70%); pointer-events: none; }
+  .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--red); position: relative; }
+  h1 { font-size: clamp(36px, 5.6vw, 60px); line-height: 1.06; letter-spacing: -0.035em; font-weight: 800; margin: 14px auto 0; max-width: 860px; position: relative; }
+  h1 em { font-style: normal; color: var(--red); }
+  .lede { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 640px; margin: 18px auto 0; position: relative; }
+
+  /* The receipt */
+  .stage { position: relative; max-width: 480px; margin: 48px auto 0; }
+  .receipt {
+    position: relative; background: var(--paper); color: var(--ink);
+    border: 1px solid var(--border); border-bottom: 0;
+    border-radius: 14px 14px 0 0; padding: 28px 28px 32px; text-align: left;
+    box-shadow: var(--shadow-xl);
+    font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 14px;
+  }
+  /* Torn bottom edge */
+  .receipt::after {
+    content: ""; position: absolute; left: -1px; right: -1px; bottom: -12px; height: 12px;
+    background: radial-gradient(circle at 10px -2px, transparent 9px, var(--paper) 10px) repeat-x;
+    background-size: 20px 12px;
+  }
+  .r-head { text-align: center; padding-bottom: 16px; border-bottom: 2px dashed var(--border); }
+  .r-head svg { width: 30px; height: 30px; display: block; margin: 0 auto 8px; }
+  .r-head b { display: block; font-family: "Plus Jakarta Sans", sans-serif; font-size: 17px; letter-spacing: -0.01em; }
+  .r-head span { color: var(--muted); font-size: 12px; }
+  .r-lines { list-style: none; margin: 0; padding: 14px 0; border-bottom: 2px dashed var(--border); }
+  .r-lines li {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 7px 0;
+    opacity: 0; transform: translateY(-6px); transition: opacity .3s ease-out, transform .3s ease-out;
+  }
+  .r-lines li.in { opacity: 1; transform: none; }
+  .r-lines .item { color: var(--ink-2); }
+  .r-lines .tag {
+    flex: none; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent);
+    padding: 3px 8px; border-radius: 999px; font-family: "Plus Jakarta Sans", sans-serif;
+  }
+  .r-total { display: flex; flex-direction: column; align-items: flex-end; padding-top: 16px; position: relative; }
+  .r-total span { font-weight: 700; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .r-total output { font-size: 40px; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .r-note { color: var(--muted); font-size: 12px; margin-top: 6px; text-align: right; }
+
+  .stamp {
+    position: absolute; left: 26px; bottom: 42px; pointer-events: none;
+    font-family: "Plus Jakarta Sans", sans-serif; font-weight: 800; font-size: 46px; letter-spacing: .06em;
+    color: var(--red); border: 5px double var(--red); border-radius: 12px; padding: 0 16px; line-height: 1.25;
+    transform: rotate(-12deg) scale(2.6); opacity: 0; mix-blend-mode: multiply;
+  }
+  @media (prefers-color-scheme: dark) { .stamp { mix-blend-mode: normal; } }
+  .stamp.in { animation: thud .42s cubic-bezier(.2,.9,.3,1.3) forwards; }
+  @keyframes thud {
+    0% { transform: rotate(-12deg) scale(2.6); opacity: 0; }
+    70% { transform: rotate(-12deg) scale(.94); opacity: .95; }
+    100% { transform: rotate(-12deg) scale(1); opacity: .92; }
+  }
+  .stage.shake { animation: shake .3s ease-out; }
+  @keyframes shake { 0%,100% { transform: none; } 30% { transform: translateY(3px); } 60% { transform: translateY(-2px); } }
+
+  .replay { margin-top: 26px; background: none; border: 0; font: inherit; font-size: 14px; color: var(--muted); cursor: pointer; display: inline-flex; gap: 6px; align-items: center; min-height: 44px; padding: 0 10px; border-radius: 8px; }
+  .replay:hover { color: var(--ink); }
+  .replay svg { width: 16px; height: 16px; }
+  .hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 18px; position: relative; }
+
+  canvas#confetti { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 60; }
+
+  /* Plans */
+  section { padding: 96px 0; scroll-margin-top: 68px; }
+  h2 { font-size: clamp(30px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.025em; font-weight: 800; margin: 12px 0 0; }
+  .sub { color: var(--muted); font-size: 18px; max-width: 640px; margin: 16px auto 0; }
+  .center { text-align: center; }
+  .band { background: var(--surface); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+
+  .plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-top: 56px; align-items: stretch; }
+  .plan { border: 1px solid var(--border); border-radius: 18px; padding: 30px 28px; background: var(--card); display: flex; flex-direction: column; transition: transform .2s, box-shadow .2s; }
+  .plan:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
+  .plan.hot { border-color: var(--red); box-shadow: 0 0 0 1px var(--red), var(--shadow-md); position: relative; }
+  .plan.hot .flag { position: absolute; top: -13px; left: 28px; background: var(--red); color: #fff; font-size: 12px; font-weight: 700; padding: 3px 12px; border-radius: 999px; letter-spacing: .02em; }
+  .plan h3 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
+  .plan .price { font-size: 46px; font-weight: 800; letter-spacing: -0.03em; margin: 14px 0 0; line-height: 1; font-variant-numeric: tabular-nums; }
+  .plan .price small { font-size: 16px; font-weight: 600; color: var(--muted); letter-spacing: 0; margin-left: 4px; }
+  .plan .price.word { font-size: 30px; line-height: 1.15; }
+  .plan .who { color: var(--muted); font-size: 15px; margin: 10px 0 0; }
+  .plan ul { list-style: none; padding: 0; margin: 22px 0 0; display: grid; gap: 12px; font-size: 15.5px; }
+  .plan li { display: flex; gap: 10px; align-items: flex-start; }
+  .plan li svg { width: 20px; height: 20px; color: var(--red); flex: none; margin-top: 2px; }
+  .plan .foot { margin-top: auto; padding-top: 26px; }
+  .plan .foot .btn { width: 100%; }
+  .plan .soon { display: block; text-align: center; font-size: 13px; color: var(--muted); margin-top: 10px; }
+
+  .covered { display: flex; gap: 18px; align-items: center; margin: 48px auto 0; max-width: 760px; padding: 22px 26px; border: 1px solid var(--border); border-radius: 16px; background: var(--card); }
+  .covered svg { width: 40px; height: 40px; flex: none; }
+  .covered p { margin: 0; font-size: 16px; color: var(--ink-2); }
+  .covered b { color: var(--ink); }
+
+  .faq { max-width: 780px; margin: 48px auto 0; }
+  details { border-bottom: 1px solid var(--border); }
+  summary { list-style: none; cursor: pointer; padding: 22px 4px; font-weight: 700; font-size: 18px; display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+  summary::-webkit-details-marker { display: none; }
+  summary svg { width: 20px; height: 20px; color: var(--muted); transition: transform .2s; flex: none; }
+  details[open] summary svg { transform: rotate(45deg); }
+  details p { margin: 0 4px 22px; color: var(--muted); }
+
+  .final { text-align: center; padding: 104px 0; }
+  .final .box { border: 1px solid var(--border); border-radius: 24px; padding: 64px 24px; background: radial-gradient(600px 220px at 50% 0%, rgba(214,23,0,.08), transparent), var(--card); }
+
+  footer { border-top: 1px solid var(--border); padding: 36px 0 48px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+  footer .brand svg { width: 26px; height: 26px; }
+  footer .brand b { font-size: 15px; color: var(--ink); }
+  footer nav { margin-left: auto; display: flex; gap: 20px; flex-wrap: wrap; }
+  footer nav a { text-decoration: none; }
+  footer nav a:hover { color: var(--ink); }
+  footer .legal { flex-basis: 100%; margin: 0; }
+
+  .reveal { opacity: 0; transform: translateY(16px); transition: opacity .5s ease-out, transform .5s ease-out; }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .reveal, .r-lines li { opacity: 1; transform: none; transition: none; }
+    .stamp { opacity: .92; transform: rotate(-12deg); }
+    .stamp.in, .stage.shake { animation: none; }
+    .plan, .btn { transition: none; }
+  }
+
+  @media (max-width: 900px) {
+    nav.links { display: none; }
+    .plans { grid-template-columns: 1fr; max-width: 520px; margin-left: auto; margin-right: auto; }
+    section { padding: 72px 0; }
+    .hero { padding-top: 56px; }
+  }
+  @media (max-width: 480px) {
+    .wrap { padding: 0 16px; }
+    .nav-cta .btn-ghost { display: none; }
+    .hero-cta .btn { width: 100%; }
+    .receipt { padding: 22px 18px 28px; font-size: 13px; }
+    .r-total output { font-size: 34px; }
+    .stamp { font-size: 32px; left: 16px; bottom: 44px; padding: 0 12px; }
+    .covered { flex-direction: column; text-align: center; }
+    footer nav { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="dm-logo" viewBox="0 0 82 82">
+      <path fill="#d61700" fill-rule="evenodd" d="M41.008,0.938c9.558,0,18.338,3.321,25.255,8.87L29.338,2.652C33.032,1.539,36.949,0.938,41.008,0.938L41.008,0.938z"/>
+      <path fill="#d61700" d="M78.159,25.45c0.784,1.833,1.438,3.736,1.947,5.696L36.787,80.062l-21-66.474L78.159,25.45L78.159,25.45z"/>
+      <path fill="#b01400" d="M80.388,50.366C77.372,63.57,67.886,74.306,55.443,79.069L80.388,50.366L80.388,50.366z"/>
+      <path fill="#d61700" d="M21.163,76.523C8.896,69.589,0.612,56.431,0.612,41.333c0-6.387,1.484-12.427,4.124-17.796L21.163,76.523L21.163,76.523z"/>
+    </symbol>
+    <symbol id="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="Datamart Warmup home">
+      <svg aria-hidden="true"><use href="#dm-logo"/></svg>
+      <b>Datamart <span>Warmup</span></b>
+    </a>
+    <nav class="links" aria-label="Sections">
+      <a href="/#how">How it works</a>
+      <a href="/#see">What you see</a>
+      <a href="/pricing" aria-current="page">Pricing</a>
+      <a href="/#faq">FAQ</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="/auth/login">Sign in</a>
+      <a class="btn btn-red" href="/auth/register">Join free</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <div class="hero">
+    <div class="wrap">
+      <div class="eyebrow">Pricing</div>
+      <h1>So, what does it <em>cost</em>?</h1>
+      <p class="lede">Here is your bill for warming up every mailbox you connect, the whole network and the dashboard.</p>
+
+      <div class="stage" id="stage">
+        <div class="receipt" role="img" aria-label="A receipt. Warmup network, every mailbox, the dashboard, campaigns, servers and daily AI credits are all covered by Datamart. Total: zero dollars. Stamped FREE.">
+          <div class="r-head" aria-hidden="true">
+            <svg><use href="#dm-logo"/></svg>
+            <b>Datamart Warmup</b>
+            <span>Your monthly bill</span>
+          </div>
+          <ul class="r-lines" aria-hidden="true">
+            <li><span class="item">Warmup network</span><span class="tag">Covered</span></li>
+            <li><span class="item">Every mailbox you connect</span><span class="tag">Covered</span></li>
+            <li><span class="item">Health and deliverability</span><span class="tag">Covered</span></li>
+            <li><span class="item">Campaigns and inbox</span><span class="tag">Covered</span></li>
+            <li><span class="item">Servers and running costs</span><span class="tag">Covered</span></li>
+            <li><span class="item">Daily Molty AI credits</span><span class="tag">Covered</span></li>
+          </ul>
+          <div class="r-total" aria-hidden="true">
+            <span>You pay</span>
+            <output id="total">$0.00</output>
+          </div>
+          <div class="r-note" aria-hidden="true">Paid by Datamart</div>
+          <div class="stamp" id="stamp" aria-hidden="true">FREE</div>
+        </div>
+      </div>
+
+      <button class="replay" id="replay" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+        Print it again
+      </button>
+      <div class="hero-cta">
+        <a class="btn btn-red btn-lg" href="/auth/register">
+          Claim your free workspace
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <section id="plans">
+    <div class="wrap">
+      <div class="center">
+        <div class="eyebrow">What's included</div>
+        <h2>Everything is free. Only extra AI is ever paid.</h2>
+        <p class="sub">There is one plan, and it costs nothing. If you lean on Molty or AI-written campaigns more than the free daily credits cover, you pay for those extra credits and nothing else.</p>
+      </div>
+
+      <div class="plans">
+        <article class="plan hot reveal">
+          <span class="flag">Everyone gets this</span>
+          <h3>Warmup and outreach</h3>
+          <p class="price">$0<small>forever</small></p>
+          <p class="who">The full product, for every company in the community.</p>
+          <ul>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>Every mailbox you connect, warmed by the network</li>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>Health score and inbox placement per mailbox</li>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>SPF, DKIM and DMARC checks</li>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>Campaigns, contacts and a shared inbox</li>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>Your whole team in one workspace</li>
+          </ul>
+          <div class="foot"><a class="btn btn-red" href="/auth/register">Join free</a></div>
+        </article>
+
+        <article class="plan reveal">
+          <h3>Daily AI credits</h3>
+          <p class="price">$0<small>every day</small></p>
+          <p class="who">Free AI for every workspace, topped up each day.</p>
+          <ul>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>15 AI credits per workspace, every day</li>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>Ask Molty about your mailboxes and campaigns</li>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>AI-written lines in your campaigns</li>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>Resets at midnight UTC</li>
+          </ul>
+          <div class="foot"><a class="btn btn-ghost" href="/auth/register">Start with free credits</a></div>
+        </article>
+
+        <article class="plan reveal">
+          <h3>More AI</h3>
+          <p class="price word">Only if you need it</p>
+          <p class="who">For teams that use Molty and AI campaigns every day.</p>
+          <ul>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>Extra AI credits for your workspace</li>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>Pay for AI only, warmup stays free</li>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>Unlock it from Molty when you run out</li>
+            <li><svg aria-hidden="true"><use href="#check"/></svg>Cancel any time, back to free credits</li>
+          </ul>
+          <div class="foot">
+            <a class="btn btn-ghost" href="/auth/login">Unlock from your workspace</a>
+            <span class="soon">Paid credits are opening soon.</span>
+          </div>
+        </article>
+      </div>
+
+      <div class="covered reveal">
+        <svg aria-hidden="true"><use href="#dm-logo"/></svg>
+        <p><b>Datamart covers the bill.</b> The servers, the warmup network and the running costs are paid by Datamart, because better deliverability helps every agency in the community, ours included.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" class="band">
+    <div class="wrap">
+      <div class="center">
+        <div class="eyebrow">Pricing FAQ</div>
+        <h2>The small print, in plain words.</h2>
+      </div>
+      <div class="faq">
+        <details>
+          <summary>Do I need a card to sign up?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>No. You sign up, create your workspace and connect your mailboxes. There is nothing to pay and no card on file.</p>
+        </details>
+        <details>
+          <summary>What are AI credits used for?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>Anything the AI does for you: answering and acting in Molty, and writing AI lines in your campaigns. Warmup, sending, the inbox and the dashboards use no credits at all.</p>
+        </details>
+        <details>
+          <summary>What happens when I run out of free credits?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>Only the AI pauses until the credits reset at midnight UTC. Warmup and everything else keeps running. If you need more on the same day, you can unlock extra credits for your workspace.</p>
+        </details>
+        <details>
+          <summary>Will warmup ever become a paid plan?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>Warmup gets better with every member who joins, so it is free for the community. Datamart pays for it. The only thing that costs money is extra AI, because every AI answer has a real cost.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <div class="final">
+    <div class="wrap">
+      <div class="box reveal">
+        <h2>$0 to warm up your inboxes.</h2>
+        <p class="sub">It takes a few minutes to set up a workspace and connect your first mailbox.</p>
+        <div class="hero-cta">
+          <a class="btn btn-red btn-lg" href="/auth/register">Create your free workspace</a>
+          <a class="btn btn-ghost btn-lg" href="/auth/login">Sign in</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a class="brand" href="https://dtm.global" aria-label="Datamart">
+      <svg aria-hidden="true"><use href="#dm-logo"/></svg>
+      <b>Datamart</b>
+    </a>
+    <span>Datamart Warmup is a product of Datamart Inc.</span>
+    <nav aria-label="Footer">
+      <a href="https://dtm.global">dtm.global</a>
+      <a href="/pricing">Pricing</a>
+      <a href="/auth/login">Sign in</a>
+      <a href="/auth/register">Join free</a>
+    </nav>
+    <p class="legal">&copy; 2026 Datamart Inc.</p>
+  </div>
+</footer>
+
+<canvas id="confetti" aria-hidden="true"></canvas>
+
+<script>
+  (function () {
+    var still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var lines = document.querySelectorAll(".r-lines li");
+    var stamp = document.getElementById("stamp");
+    var stage = document.getElementById("stage");
+    var timers = [];
+
+    // Confetti in Datamart red and charcoal, a short burst from the stamp.
+    var canvas = document.getElementById("confetti");
+    var ctx = canvas.getContext("2d");
+    var bits = [], raf = 0;
+    var colors = ["#d61700", "#b01400", "#ff5a45", "#262626", "#8c8c8c", "#f5f5f5"];
+    function size() {
+      var r = window.devicePixelRatio || 1;
+      canvas.width = innerWidth * r; canvas.height = innerHeight * r;
+      ctx.setTransform(r, 0, 0, r, 0, 0);
+    }
+    function burst() {
+      size();
+      var box = stamp.getBoundingClientRect();
+      var x = box.left + box.width / 2, y = box.top + box.height / 2;
+      for (var i = 0; i < 140; i++) {
+        var a = Math.random() * Math.PI * 2, s = 4 + Math.random() * 9;
+        bits.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 6, w: 6 + Math.random() * 6, h: 3 + Math.random() * 5,
+          r: Math.random() * 6, vr: (Math.random() - .5) * .4, c: colors[i % colors.length], life: 0 });
+      }
+      if (!raf) raf = requestAnimationFrame(tick);
+    }
+    function tick() {
+      ctx.clearRect(0, 0, innerWidth, innerHeight);
+      bits = bits.filter(function (b) { return b.life < 150 && b.y < innerHeight + 40; });
+      bits.forEach(function (b) {
+        b.life++; b.vy += .28; b.vx *= .985; b.x += b.vx; b.y += b.vy; b.r += b.vr;
+        ctx.save(); ctx.globalAlpha = Math.max(0, 1 - b.life / 150);
+        ctx.translate(b.x, b.y); ctx.rotate(b.r); ctx.fillStyle = b.c;
+        ctx.fillRect(-b.w / 2, -b.h / 2, b.w, b.h); ctx.restore();
+      });
+      raf = bits.length ? requestAnimationFrame(tick) : 0;
+      if (!raf) ctx.clearRect(0, 0, innerWidth, innerHeight);
+    }
+
+    function play() {
+      timers.forEach(clearTimeout); timers = [];
+      if (still) { lines.forEach(function (l) { l.classList.add("in"); }); stamp.classList.add("in"); return; }
+      lines.forEach(function (l) { l.classList.remove("in"); });
+      stamp.classList.remove("in"); stage.classList.remove("shake");
+      void stamp.offsetWidth;
+      lines.forEach(function (l, i) { timers.push(setTimeout(function () { l.classList.add("in"); }, 350 + i * 260)); });
+      timers.push(setTimeout(function () {
+        stamp.classList.add("in");
+        timers.push(setTimeout(function () { stage.classList.add("shake"); burst(); }, 300));
+      }, 350 + lines.length * 260 + 350));
+    }
+    document.getElementById("replay").addEventListener("click", play);
+    play();
+
+    var els = document.querySelectorAll(".reveal");
+    if (!("IntersectionObserver" in window)) { els.forEach(function (e) { e.classList.add("in"); }); return; }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+    }, { rootMargin: "0px 0px -10% 0px" });
+    els.forEach(function (e) { io.observe(e); });
+  })();
+</script>
+</body>
+</html>
