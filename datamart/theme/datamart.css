@@ -47,3 +47,9 @@
   color: #d61700;
 }
 .tiptap-body a { color: #b01400; }
+
+/* No links out to Warmbly's sites (docs, hosted app, community): Datamart has
+   no docs of its own yet. Catches links the backend sends too (docs_url). */
+a[href*="warmbly.com"] {
+  display: none !important;
+}

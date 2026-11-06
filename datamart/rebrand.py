@@ -205,6 +205,8 @@ LOWER_SWAPS = [
 # are protocol and stay.
 GO_DIRS = ["internal", "cmd"]
 GO_WORD = re.compile(r"(?<![-\w.])Warmbly(?![-\w])(?! Cloud)")
+# "See https://docs.warmbly.com/..." pointers at the end of error messages.
+GO_DOCS = re.compile(r" ?See https://docs\.warmbly\.com/[^\s\"`]*")
 
 
 def go_text(src: str) -> tuple[str, int]:
@@ -215,7 +217,8 @@ def go_text(src: str) -> tuple[str, int]:
         nonlocal n
         s, a = GO_WORD.subn(NAME, s)
         s, b = ASSISTANT.subn(ASSISTANT_NAME, s)
-        n += a + b
+        s, d = GO_DOCS.subn("", s) if s[:1] in "\"`" else (s, 0)
+        n += a + b + d
         return s
 
     while i < L:
