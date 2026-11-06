@@ -1,0 +1,96 @@
+name: Datamart sync
+
+# Daily: mirror Warmbly's main onto this fork's main, merge Warmbly's newest
+# stable release into the datamart branch, check the rebrand still applies, and
+# build the rebranded web and admin images for it. Deploying stays manual.
+#
+# Needs the SYNC_TOKEN secret: a fine-grained token on this repository with
+# Contents, Workflows, Actions and Issues set to read and write. The built-in
+# GITHUB_TOKEN cannot push commits that touch .github/workflows, and Warmbly's
+# commits often do.
+
+on:
+  schedule:
+    - cron: "30 3 * * *" # 08:30 in Lahore
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: datamart-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'asif4347/Warmbly'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: datamart
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      # Before anything is pushed: Warmbly's own workflows deploy to their AWS,
+      # publish their releases and build on every push to main. None of that
+      # should run here, and a sync can add new ones, so this runs every day.
+      - name: Keep Warmbly's workflows switched off
+        run: |
+          gh workflow list --all --json id,path,state \
+            --jq '.[] | select(.state == "active") | select(.path | startswith(".github/workflows/datamart-") | not) | "\(.id) \(.path)"' |
+          while read -r id path; do
+            echo "disabling $path"
+            gh workflow disable "$id"
+          done
+
+      - name: Fetch Warmbly
+        id: upstream
+        run: |
+          git remote add upstream https://github.com/warmbly/warmbly.git
+          git fetch --no-tags upstream main
+          git fetch upstream 'refs/tags/v*:refs/tags/v*'
+          # Newest stable release: vX.Y.Z with no suffix.
+          tag=$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$tag" HEAD; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "datamart already has $tag"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+            echo "new release: $tag"
+          fi
+
+      # Fast-forward only: main is a plain copy of Warmbly and nobody commits to it.
+      - name: Mirror main
+        run: git push origin refs/remotes/upstream/main:refs/heads/main
+
+      - name: Merge the release into datamart
+        if: steps.upstream.outputs.new == 'true'
+        run: |
+          git config user.name "datamart-sync"
+          git config user.email "datamart-sync@users.noreply.github.com"
+          git merge --no-edit -m "Merge Warmbly ${{ steps.upstream.outputs.tag }}" "${{ steps.upstream.outputs.tag }}"
+
+      - name: Check the rebrand still applies
+        run: python3 datamart/rebrand.py --check
+
+      - name: Push datamart and build the images
+        if: steps.upstream.outputs.new == 'true'
+        run: |
+          git push origin HEAD:refs/heads/datamart
+          gh workflow run datamart-images.yml --ref datamart -f tag="${{ steps.upstream.outputs.tag }}"
+
+      - name: Open an issue when the sync fails
+        if: failure()
+        run: |
+          title="Datamart sync failed"
+          url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          open=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "Failed again: $url"
+          else
+            gh issue create --title "$title" --body "The daily sync with Warmbly stopped. Usually a merge conflict or a rebrand patch whose anchor moved. Run: $url"
+          fi

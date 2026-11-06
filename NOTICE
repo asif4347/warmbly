@@ -1,0 +1,15 @@
+Datamart Warmup
+Copyright 2026 Datamart Inc.
+
+This product is a modified version of Warmbly (https://github.com/warmbly/warmbly),
+Copyright 2026 Mindroot Ltd, licensed under the Apache License, Version 2.0.
+The original license is in the LICENSE file.
+
+Changes made by Datamart Inc.:
+  - The web and admin apps are rebranded at build time by datamart/rebrand.py:
+    the product name, logo, icons and app manifests, and the Warmbly Cloud
+    banner is hidden. The script lists every file it changes.
+  - Files added under datamart/ and .github/workflows/datamart-*.
+
+Datamart Warmup is not affiliated with or endorsed by Warmbly or Mindroot Ltd.
+"Warmbly" is a name of Mindroot Ltd and is used here only to credit the source.

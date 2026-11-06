@@ -1,0 +1,12 @@
+# Layered over docker-compose.yml on the server:
+#
+#   docker compose -f docker-compose.yml -f datamart/deploy/compose.datamart.yml up -d
+#
+# Every service runs Warmbly's published image for WARMBLY_TAG, except web and
+# admin, which run our rebranded builds of the same release.
+
+services:
+  web:
+    image: ghcr.io/asif4347/datamart-warmup/web:${WARMBLY_TAG}
+  admin:
+    image: ghcr.io/asif4347/datamart-warmup/admin:${WARMBLY_TAG}

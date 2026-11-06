@@ -1,0 +1,11 @@
+{
+  "name": "Datamart Warmup",
+  "short_name": "DM Warmup",
+  "description": "Free mailbox warmup for the Datamart community. Members' inboxes warm each other.",
+  "theme_color": "#0f766e",
+  "background_color": "#134e4a",
+  "keep_paths": [
+    "web/src/app/app/settings/security/two-factor/",
+    "web/src/lib/displayName"
+  ]
+}
