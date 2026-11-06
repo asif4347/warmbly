@@ -12,7 +12,10 @@
 //     month instead (default 1500). A workspace is unlocked when the Molty
 //     billing service (datamart/billing) has it in the Redis set
 //     datamart:ai:unlocked after a paid Stripe checkout, or when it is listed
-//     by hand in DATAMART_AI_UNLOCKED_ORGS (comma-separated organization IDs).
+//     by hand in DATAMART_AI_UNLOCKED_ORGS (comma-separated organization IDs);
+//   - DATAMART_AI_ORG_MONTHLY sets a workspace's own monthly allowance and
+//     overrides both ("<organization id>=2500,<organization id>=500"), for
+//     Datamart's own workspaces and special cases.
 //
 // A limit of 0 means no limit. Counting lives in Redis and fails open: a Redis
 // outage never blocks AI, the same as upstream's own caps.
@@ -33,6 +36,7 @@ var (
 	datamartFreeDaily       = datamartEnvInt("DATAMART_AI_FREE_DAILY", 15)
 	datamartUnlockedMonthly = datamartEnvInt("DATAMART_AI_UNLOCKED_MONTHLY", 1500)
 	datamartUnlocked        = datamartEnvSet("DATAMART_AI_UNLOCKED_ORGS")
+	datamartOrgMonthly      = datamartEnvLimits("DATAMART_AI_ORG_MONTHLY")
 )
 
 // datamartUnlockedKey is the Redis set the billing service keeps.
@@ -55,6 +59,18 @@ func datamartEnvSet(name string) map[string]bool {
 	return set
 }
 
+func datamartEnvLimits(name string) map[string]int {
+	limits := map[string]int{}
+	for _, pair := range strings.Split(os.Getenv(name), ",") {
+		id, n, ok := strings.Cut(pair, "=")
+		v, err := strconv.Atoi(strings.TrimSpace(n))
+		if ok && err == nil && v >= 0 {
+			limits[strings.ToLower(strings.TrimSpace(id))] = v
+		}
+	}
+	return limits
+}
+
 // datamartAllowance charges amount against the org's allowance and returns
 // ErrCapExceeded, leaving the count unchanged, when it would go over.
 func (s *creditService) datamartAllowance(ctx context.Context, orgID uuid.UUID, amount int) error {
@@ -71,6 +87,10 @@ func (s *creditService) datamartAllowance(ctx context.Context, orgID uuid.UUID, 
 	if unlocked {
 		key = "datamart:ai:month:" + orgID.String() + ":" + now.Format("2006-01")
 		limit, window = datamartUnlockedMonthly, 32*24*time.Hour
+	}
+	if own, ok := datamartOrgMonthly[orgID.String()]; ok {
+		key = "datamart:ai:month:" + orgID.String() + ":" + now.Format("2006-01")
+		limit, window = own, 32*24*time.Hour
 	}
 	if limit == 0 {
 		return nil
