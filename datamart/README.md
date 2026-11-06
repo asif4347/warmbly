@@ -62,12 +62,21 @@ set `WARMBLY_TAG` and run compose again.
   containers can use the role.
 - Security group: only 80 and 443 open. The compose file also publishes
   Postgres, Redis and NATS ports, which must stay closed to the internet.
-- Hostnames, all DNS-only or proxied in Cloudflare under `dtm.global`:
+- Live server: `i-0b51455314f5d7029` (t4g.medium, us-east-1), Elastic IP
+  `100.25.233.20`, reached over SSM only. Code in `/opt/datamart-warmup`,
+  settings in its `.env` (a copy, keys included, is the SecureString SSM
+  parameter `/datamart-warmup/env`). Caddy in front issues the certificates
+  (`/opt/caddy/Caddyfile`).
+- Hostnames, A records to the Elastic IP, DNS only (grey cloud) in Cloudflare:
   `warmup` (app), `warmup-admin`, `warmup-api`, `warmup-ws`, `warmup-t`
-  (tracking), `warmup-forms`.
-- SES: verify `mail.dtm.global` (DKIM, SPF and DMARC records in Cloudflare)
-  and request production access.
+  (tracking).
+- SES: identity `mail.dtm.global` with DKIM and the bounce domain
+  `bounce.mail.dtm.global`; DNS records in Cloudflare; production access
+  requested separately.
 - Settings: `.env.example`, then `datamart/deploy/env.datamart` on top, then
   generated secrets.
-- Start: `docker compose -f docker-compose.yml -f datamart/deploy/compose.datamart.yml up -d`
-- Nightly Postgres dump to S3.
+- Start: `docker compose -p warmbly -f docker-compose.yml -f datamart/deploy/compose.datamart.yml up -d`
+- Nightly Postgres dump to `s3://datamart-warmup-backups-066523632153/postgres/`
+  (`/etc/cron.daily/datamart-warmup-backup`).
+- While SES is in its sandbox, `REQUIRE_EMAIL_VERIFICATION` is false on the
+  server. Turn it back on once production access is granted.
