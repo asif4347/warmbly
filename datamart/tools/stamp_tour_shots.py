@@ -58,6 +58,9 @@ def stamp(src: Path, dest: Path):
     if dim:
         patch = patch.filter(ImageFilter.GaussianBlur(1.6))
     im.paste(patch, BOX[:2])
+    # The sample workspace's plan badge ("GROW") in the top bar. Nothing here
+    # has plans, so it goes. Every full-page shot has it in the same place.
+    ImageDraw.Draw(im).rectangle([1048, 12, 1138, 50], fill=im.getpixel((1044, 31)))
     dest.parent.mkdir(parents=True, exist_ok=True)
     im.save(dest, "WEBP", quality=90)
 
