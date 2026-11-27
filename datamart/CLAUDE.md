@@ -88,6 +88,6 @@ tracked files outside `datamart/`, and remove the copied
 
 Playwright captures run from `qa/` against the local sandbox
 (`chromium.launch({ channel: "chrome" })`; the bundled browser is not
-installed). The capture helpers `qa/scripts/brag-probe.ts`,
-`brag-actions.ts` and `landing-check.ts` are local and untracked. Hide the "SELF-HOSTED" and "dev" header badges in any image meant
+installed). The capture helpers live in `tools/capture/`; copy them into
+`qa/scripts/` to run them (see its README) and delete the copies after. Hide the "SELF-HOSTED" and "dev" header badges in any image meant
 for the public, and label every product screen "sample workspace".
