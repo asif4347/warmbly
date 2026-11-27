@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Datamart Warmup: free email warmup for agencies</title>
-<meta name="description" content="A free warmup network for agencies. Your mailboxes trade warmup mail with other members' mailboxes, so your sender reputation builds before your campaigns go out.">
+<title>Datamart Warmup: free email warmup, campaigns and inbox for agencies</title>
+<meta name="description" content="A free warmup network for agencies, with campaigns, one inbox for every reply, deliverability, analytics, a CRM and Molty, the AI assistant, in one workspace.">
 <meta property="og:title" content="Datamart Warmup">
 <meta property="og:description" content="Free email warmup, powered by a community of agency mailboxes.">
 <meta property="og:image" content="https://warmup.dtm.global/landing/img/mailboxes.webp">
@@ -159,17 +159,68 @@
   footer nav a:hover { color: var(--ink); }
   footer .legal { flex-basis: 100%; }
 
+  /* Product showcase */
+  .tabs { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin: 44px auto 0; max-width: 1080px; }
+  .tab { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--border); background: var(--card);
+    color: var(--ink-2); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background-color .2s, color .2s, border-color .2s; }
+  .tab:hover { border-color: var(--muted); }
+  .tab svg { width: 17px; height: 17px; flex: none; }
+  .tab[aria-selected="true"] { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .panel { max-width: 1080px; margin: 40px auto 0; }
+  .panel[hidden] { display: none; }
+  .panel:not([hidden]) { animation: rise .35s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  .panel-head { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: start; margin-bottom: 28px; }
+  .panel-head h3 { font-size: clamp(24px, 3vw, 32px); line-height: 1.15; letter-spacing: -0.02em; font-weight: 800; margin: 0; }
+  .panel-head p { color: var(--muted); margin: 12px 0 0; font-size: 17px; }
+  .mini { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+  .mini li { display: flex; gap: 10px; align-items: flex-start; font-size: 16px; color: var(--ink-2); }
+  .mini svg { width: 20px; height: 20px; color: var(--red); flex: none; margin-top: 3px; }
+  .shots-note { font-size: 13px; color: var(--muted); text-align: center; margin-top: 14px; }
+
+  /* Product tour */
+  .tour { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 28px; align-items: start; margin-top: 48px; }
+  .chapters { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+  .chapters-title { font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 4px 0 10px 14px; }
+  .chapters button { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 44px; padding: 8px 14px; border-radius: 10px;
+    border: 1px solid transparent; background: transparent; font: inherit; font-size: 15px; font-weight: 600; color: var(--ink-2); cursor: pointer; text-align: left; transition: background-color .2s, border-color .2s; }
+  .chapters button:hover { background: var(--card); border-color: var(--border); }
+  .chapters button[aria-current="true"] { background: var(--card); border-color: var(--border); color: var(--red); }
+  .chapters time { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 500; font-size: 14px; }
+
+  /* Everything else */
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-top: 52px; }
+  .tile { border: 1px solid var(--border); border-radius: 16px; overflow: hidden; background: var(--card); transition: transform .2s, box-shadow .2s; }
+  .tile:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
+  .tile img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: left top; border-bottom: 1px solid var(--border); background: #fff; }
+  .tile div { padding: 16px 18px 20px; }
+  .tile h3 { font-size: 17px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .tile p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.5; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 32px; }
+  .chips span { padding: 8px 14px; border: 1px solid var(--border); border-radius: 999px; font-size: 14px; font-weight: 600; color: var(--ink-2); background: var(--card); }
+
   .reveal { opacity: 0; transform: translateY(16px); transition: opacity .5s ease-out, transform .5s ease-out; }
   .reveal.in { opacity: 1; transform: none; }
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }
     .reveal { opacity: 1; transform: none; transition: none; }
-    .card, .btn { transition: none; }
+    .card, .btn, .tile, .tab { transition: none; }
+    .panel:not([hidden]) { animation: none; }
   }
 
+  @media (max-width: 1080px) {
+    nav.links { gap: 20px; margin-left: 8px; }
+  }
   @media (max-width: 900px) {
     nav.links { display: none; }
     .steps { grid-template-columns: 1fr; }
+    .panel-head { grid-template-columns: 1fr; gap: 20px; }
+    .tour { grid-template-columns: 1fr; }
+    .chapters { grid-template-columns: 1fr 1fr; }
+    .chapters-title { grid-column: 1 / -1; }
+    .tiles { grid-template-columns: 1fr 1fr; }
+    .tabs { flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; scrollbar-width: none; margin-left: -24px; margin-right: -24px; padding: 2px 24px 6px; }
+    .tabs::-webkit-scrollbar { display: none; }
     .split, .why { grid-template-columns: 1fr; gap: 40px; }
     section { padding: 72px 0; }
     .hero { padding-top: 64px; }
@@ -178,6 +229,8 @@
     .wrap { padding: 0 16px; }
     .nav-cta .btn-ghost { display: none; }
     .hero-cta .btn { width: 100%; }
+    .tiles { grid-template-columns: 1fr; }
+    .tabs { margin-left: -16px; margin-right: -16px; padding-left: 16px; padding-right: 16px; }
     footer nav { margin-left: 0; }
   }
 </style>
@@ -204,7 +257,8 @@
     </a>
     <nav class="links" aria-label="Sections">
       <a href="#how">How it works</a>
-      <a href="#see">What you see</a>
+      <a href="#product">Product</a>
+      <a href="#tour">Tour</a>
       <a href="#free">Why it's free</a>
       <a href="/pricing">Pricing</a>
       <a href="#faq">FAQ</a>
@@ -221,7 +275,7 @@
     <div class="wrap">
       <span class="pill"><i aria-hidden="true"></i>Free for the Datamart community</span>
       <h1>Warm up your inboxes with <em>real agency mailboxes</em></h1>
-      <p class="lede">Connect your sending mailboxes and they trade warmup mail with mailboxes run by other agencies in the network. Your sender reputation builds up before your campaigns go out.</p>
+      <p class="lede">Connect your sending mailboxes and they trade warmup mail with mailboxes run by other agencies in the network. Then send campaigns, answer every reply in one inbox and track your deals, with Molty, the AI assistant, on every page.</p>
       <div class="hero-cta">
         <a class="btn btn-red btn-lg" href="/auth/register">
           Create your free workspace
@@ -229,7 +283,7 @@
         </a>
         <a class="btn btn-ghost btn-lg" href="#film" id="watch">Watch how it works</a>
       </div>
-      <p class="fine">No card. No plan. Datamart covers the running costs. <a href="/pricing">See pricing</a></p>
+      <p class="fine">No card. No plan. Datamart covers the running costs. <a href="/pricing">See pricing</a> or <a href="#tour">take the full product tour</a></p>
 
       <figure class="shot reveal" id="film">
         <div class="frame">
@@ -282,26 +336,155 @@
     </div>
   </section>
 
-  <section id="see" class="band">
-    <div class="wrap split">
-      <div class="reveal">
-        <div class="eyebrow">What you see</div>
-        <h2>Know where your mail lands.</h2>
-        <p class="sub">Every mailbox gets its own health view, so you can tell when it is ready for real sending.</p>
-        <ul class="checks">
-          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>A health score per mailbox</b><span>Bounces, spam placement and warmup progress in one number.</span></div></li>
-          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>Inbox placement by provider</b><span>See how much warmup mail reached the inbox at Google and Microsoft.</span></div></li>
-          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>Domain checks built in</b><span>SPF, DKIM and DMARC are checked before a mailbox starts warming.</span></div></li>
-          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>You stay in control</b><span>Pause, slow down or stop warmup on any mailbox at any time.</span></div></li>
-        </ul>
+  <section id="product" class="band">
+    <div class="wrap">
+      <div class="center reveal">
+        <div class="eyebrow">The product</div>
+        <h2>Warmup is where it starts. The rest of your outbound lives here too.</h2>
+        <p class="sub">Most agencies run outbound across five tools: one warms the mailboxes, one sends, one holds the replies, one holds the pipeline, and a spreadsheet tries to keep it together. This is one workspace.</p>
       </div>
-      <figure class="reveal" style="margin:0">
+      <div class="tabs" role="tablist" aria-label="Product areas">
+        <button class="tab" role="tab" id="tab-mailboxes" aria-controls="panel-mailboxes" aria-selected="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>Mailboxes</button><button class="tab" role="tab" id="tab-campaigns" aria-controls="panel-campaigns" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>Campaigns</button><button class="tab" role="tab" id="tab-inbox" aria-controls="panel-inbox" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>Inbox</button><button class="tab" role="tab" id="tab-deliverability" aria-controls="panel-deliverability" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>Deliverability</button><button class="tab" role="tab" id="tab-analytics" aria-controls="panel-analytics" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>Analytics</button><button class="tab" role="tab" id="tab-crm" aria-controls="panel-crm" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7"/><path d="M12 7v4"/><path d="M16 7v9"/></svg>CRM</button><button class="tab" role="tab" id="tab-integrations" aria-controls="panel-integrations" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>Integrations</button><button class="tab" role="tab" id="tab-molty" aria-controls="panel-molty" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>Molty AI</button>
+      </div>
+      <div class="panel" role="tabpanel" id="panel-mailboxes" aria-labelledby="tab-mailboxes">
+        <div class="panel-head">
+          <div><h3>Every mailbox you send from, on one screen.</h3><p>See what each mailbox sent today, how far its warmup has come and how healthy it is, then open one for the full picture.</p></div>
+          <ul class="mini"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Connect Google or Microsoft in one click, any other host over SMTP and IMAP, or import a list from a spreadsheet</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>A health score, a reply target and the days warmed, per mailbox</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>SPF, DKIM and DMARC checked for every sending domain</span></li></ul>
+        </div>
         <div class="frame">
           <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
-          <img src="/landing/img/deliverability.webp" width="1600" height="760" loading="lazy" alt="The deliverability dashboard: a deliverability score, bounce and complaint rates, and warmup inbox placement over time.">
+          <img src="/landing/img/tour/emails.webp" width="1920" height="1080" loading="eager" alt="The mailboxes screen: every connected mailbox with its status, what it sent today, warmup progress and health.">
         </div>
-        <figcaption class="caption">Deliverability, shown with a sample workspace.</figcaption>
-      </figure>
+      </div>
+      <div class="panel" role="tabpanel" id="panel-campaigns" aria-labelledby="tab-campaigns" hidden>
+        <div class="panel-head">
+          <div><h3>Sequences that read like real conversations.</h3><p>A campaign is a list of contacts, a sequence and a schedule. Running, paused, drafted or finished, they all live in one list.</p></div>
+          <ul class="mini"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Follow ups wait the days you choose and reply in the same thread</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Watch opens, clicks, replies and bounces as they happen</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Every lead shows exactly where it is in the sequence</span></li></ul>
+        </div>
+        <div class="frame">
+          <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
+          <img src="/landing/img/tour/camp.webp" width="1920" height="1080" loading="lazy" alt="A running campaign with its live sending stats: sent, opened, replied and bounced over time.">
+        </div>
+      </div>
+      <div class="panel" role="tabpanel" id="panel-inbox" aria-labelledby="tab-inbox" hidden>
+        <div class="panel-head">
+          <div><h3>Every reply, from every mailbox, in one inbox.</h3><p>Replies land threaded, with the mailbox they came to, so nobody has to log in to twenty accounts to find the interested ones.</p></div>
+          <ul class="mini"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Tag a reply as a lead and answer it right there</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Saved templates keep your best replies one click away</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Contacts keep a timeline of every email and reply</span></li></ul>
+        </div>
+        <div class="frame">
+          <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
+          <img src="/landing/img/tour/thread.webp" width="1920" height="1080" loading="lazy" alt="The unified inbox: a list of replies from many mailboxes beside an open thread with a reply box.">
+        </div>
+      </div>
+      <div class="panel" role="tabpanel" id="panel-deliverability" aria-labelledby="tab-deliverability" hidden>
+        <div class="panel-head">
+          <div><h3>Know where your mail lands.</h3><p>Bounces, complaints and spam placement roll into one score, and the mailbox that is slipping gets flagged before it hurts the rest.</p></div>
+          <ul class="mini"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Placement tests send a real copy to seed inboxes at Google, Microsoft and Yahoo</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>See inbox or junk per provider, and a content check on the copy</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Pause, slow down or stop warmup on any mailbox at any time</span></li></ul>
+        </div>
+        <div class="frame">
+          <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
+          <img src="/landing/img/tour/placement-test.webp" width="1920" height="1080" loading="lazy" alt="A placement test result: the share of copies that reached the inbox or spam, broken down by Google Workspace, Microsoft 365, Outlook.com and Yahoo Mail.">
+        </div>
+      </div>
+      <div class="panel" role="tabpanel" id="panel-analytics" aria-labelledby="tab-analytics" hidden>
+        <div class="panel-head">
+          <div><h3>See what actually works.</h3><p>Sends, opens, replies and bounces over time across the whole workspace, and which campaigns perform best.</p></div>
+          <ul class="mini"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Filter by date range and by campaign</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Spot the campaign that gets replies and the one that is struggling</span></li></ul>
+        </div>
+        <div class="frame">
+          <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
+          <img src="/landing/img/tour/analytics.webp" width="1920" height="1080" loading="lazy" alt="The analytics dashboard: sends, open rate and reply rate, with an email performance chart and top campaigns.">
+        </div>
+      </div>
+      <div class="panel" role="tabpanel" id="panel-crm" aria-labelledby="tab-crm" hidden>
+        <div class="panel-head">
+          <div><h3>Interested replies become deals.</h3><p>A pipeline from new to won, with what each stage is worth, right next to the conversations that created it.</p></div>
+          <ul class="mini"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Deals on a board, moved stage by stage</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Tasks keep the follow ups from slipping</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Meetings shows every call that is booked</span></li></ul>
+        </div>
+        <div class="frame">
+          <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
+          <img src="/landing/img/tour/deals-board.webp" width="1920" height="1080" loading="lazy" alt="The deals board: pipeline stages with deal cards and the value of each stage.">
+        </div>
+      </div>
+      <div class="panel" role="tabpanel" id="panel-integrations" aria-labelledby="tab-integrations" hidden>
+        <div class="panel-head">
+          <div><h3>Works with the tools you already use.</h3><p>Connect Zapier, Calendly, Apollo, Clay and more, with others on the way. API keys and webhooks let your own tools and agents work with the same data.</p></div>
+          <ul class="mini"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>API keys for your own scripts and agents</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Webhooks for events in your workspace</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>An audit log of who changed what, and when</span></li></ul>
+        </div>
+        <div class="frame">
+          <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
+          <img src="/landing/img/tour/integrations.webp" width="1920" height="1080" loading="lazy" alt="The integrations directory with apps such as Close, Apollo, Calendly, Clay and Zapier.">
+        </div>
+      </div>
+      <div class="panel" role="tabpanel" id="panel-molty" aria-labelledby="tab-molty" hidden>
+        <div class="panel-head">
+          <div><h3>Molty, the AI assistant on every page.</h3><p>Ask in plain words and Molty reads across your campaigns, mailboxes, contacts, inbox and CRM to answer, showing each step as it works.</p></div>
+          <ul class="mini"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>It already knows which mailboxes need your attention</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>It reads on its own, and always asks before it changes anything</span></li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>15 free AI credits per workspace, every day</span></li></ul>
+        </div>
+        <div class="frame">
+          <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
+          <img src="/landing/img/tour/molty.webp" width="1920" height="857" loading="lazy" alt="Molty answering which campaign gets the most replies, after reading seven days of analytics and comparing four campaigns.">
+        </div>
+      </div>
+      <p class="shots-note">Screens from a sample workspace.</p>
+    </div>
+  </section>
+
+  <section id="tour">
+    <div class="wrap">
+      <div class="center reveal">
+        <div class="eyebrow">Product tour</div>
+        <h2>The whole workspace in three and a half minutes.</h2>
+        <p class="sub">A narrated walk through every part of Datamart Warmup, from connecting a mailbox to asking Molty what needs you. Jump to any chapter.</p>
+      </div>
+      <div class="tour">
+        <figure class="reveal" style="margin:0">
+          <div class="frame">
+            <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
+            <div class="vid">
+              <video id="tour-video" preload="none" playsinline poster="/landing/video/product-tour.jpg" width="1920" height="1080">
+                <source src="/landing/video/product-tour.mp4" type="video/mp4">
+                <track kind="captions" src="/landing/video/product-tour.vtt" srclang="en" label="English">
+                <track kind="chapters" src="/landing/video/product-tour-chapters.vtt" srclang="en" label="Chapters">
+              </video>
+              <button class="play" id="tour-play" type="button" aria-label="Play the three and a half minute product tour">
+                <span class="play-row">
+                  <span class="play-dot"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg></span>
+                  <span class="play-label">Watch the product tour <small>3 min 30 sec, sound on</small></span>
+                </span>
+              </button>
+            </div>
+          </div>
+          <figcaption class="caption">Narrated, with captions. App screens are from a sample workspace.</figcaption>
+        </figure>
+        <nav aria-label="Tour chapters">
+          <p class="chapters-title">Chapters</p>
+          <ol class="chapters" id="tour-chapters"><li><button type="button" data-t="0"><span>Intro</span><time>0:00</time></button></li><li><button type="button" data-t="19.6"><span>Mailboxes</span><time>0:19</time></button></li><li><button type="button" data-t="57.4"><span>Campaigns</span><time>0:57</time></button></li><li><button type="button" data-t="86.9"><span>Inbox</span><time>1:26</time></button></li><li><button type="button" data-t="103.9"><span>Contacts</span><time>1:43</time></button></li><li><button type="button" data-t="109.6"><span>Deliverability</span><time>1:49</time></button></li><li><button type="button" data-t="128.0"><span>Analytics</span><time>2:08</time></button></li><li><button type="button" data-t="136.0"><span>CRM</span><time>2:16</time></button></li><li><button type="button" data-t="149.2"><span>Platform</span><time>2:29</time></button></li><li><button type="button" data-t="170.0"><span>Molty AI</span><time>2:50</time></button></li><li><button type="button" data-t="195.5"><span>Wrap up</span><time>3:15</time></button></li></ol>
+        </nav>
+      </div>
+    </div>
+  </section>
+
+  <section id="more" class="band">
+    <div class="wrap">
+      <div class="center reveal">
+        <div class="eyebrow">And the rest</div>
+        <h2>The parts you would otherwise stitch together.</h2>
+        <p class="sub">The everyday pieces of running outbound for clients, already in the same workspace.</p>
+      </div>
+      <div class="tiles">
+        <article class="tile reveal"><img src="/landing/img/tour/card-templates.webp" width="1000" height="625" loading="lazy" alt="The templates screen in a sample workspace."><div><h3>Templates</h3><p>Your best replies and follow ups, saved and one click away.</p></div></article>
+        <article class="tile reveal"><img src="/landing/img/tour/card-contacts.webp" width="1000" height="625" loading="lazy" alt="The contacts screen in a sample workspace."><div><h3>Contacts</h3><p>Everyone you reach, with segments, labels and a suppression list.</p></div></article>
+        <article class="tile reveal"><img src="/landing/img/tour/card-tasks.webp" width="1000" height="625" loading="lazy" alt="The tasks screen in a sample workspace."><div><h3>Tasks</h3><p>Follow ups and reminders across the team, sorted by priority.</p></div></article>
+        <article class="tile reveal"><img src="/landing/img/tour/card-meetings.webp" width="1000" height="625" loading="lazy" alt="The meetings screen in a sample workspace."><div><h3>Meetings</h3><p>Every call you booked and every call prospects booked with you.</p></div></article>
+        <article class="tile reveal"><img src="/landing/img/tour/card-domains.webp" width="1000" height="625" loading="lazy" alt="The sending domains screen in a sample workspace."><div><h3>Sending domains</h3><p>Authentication, tracking and redirects for every domain you send from.</p></div></article>
+        <article class="tile reveal"><img src="/landing/img/tour/card-sending.webp" width="1000" height="625" loading="lazy" alt="The sending rules screen in a sample workspace."><div><h3>Sending rules</h3><p>Address checks, send times, A/B tests and unsubscribe, set once.</p></div></article>
+        <article class="tile reveal"><img src="/landing/img/tour/card-members.webp" width="1000" height="625" loading="lazy" alt="The team and roles screen in a sample workspace."><div><h3>Team and roles</h3><p>Invite your team and decide who can see and change what.</p></div></article>
+        <article class="tile reveal"><img src="/landing/img/tour/card-audit.webp" width="1000" height="625" loading="lazy" alt="The audit log screen in a sample workspace."><div><h3>Audit log</h3><p>Every change in the workspace, with who made it and when.</p></div></article>
+      </div>
+      <div class="chips" aria-label="Also included">
+        <span>API keys</span><span>Webhooks</span><span>OAuth apps</span><span>Forms</span><span>Automations</span><span>Website tracking</span><span>Inbox tagging</span>
+      </div>
     </div>
   </section>
 
@@ -335,6 +518,14 @@
         <details>
           <summary>Is it really free?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
           <p>Yes. No card, no plan and no cap on mailboxes. Datamart covers the servers and running costs.</p>
+        </details>
+        <details>
+          <summary>Is it only warmup?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>No. The same workspace has campaigns with follow ups, one inbox for every reply, contacts, deliverability and placement tests, analytics, deals, tasks and meetings, integrations and API keys, and Molty, the AI assistant. All of it is included for free.</p>
+        </details>
+        <details>
+          <summary>What is Molty?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
+          <p>Molty is the AI assistant on every page. Ask it about your mailboxes, campaigns, inbox or deals in plain words and it reads your data to answer. It asks before it changes anything. Every workspace gets 15 free AI credits a day, and we can add more if your team needs them.</p>
         </details>
         <details>
           <summary>What do I need to connect a mailbox?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></summary>
@@ -400,6 +591,46 @@
     document.getElementById("film-play").addEventListener("click", play);
     document.getElementById("watch").addEventListener("click", function () { setTimeout(play, 350); });
     v.addEventListener("ended", function () { v.controls = false; box.classList.remove("playing"); v.load(); });
+  })();
+  (function () {
+    var v = document.getElementById("tour-video"), box = v.parentNode;
+    var btns = [].slice.call(document.querySelectorAll("#tour-chapters button"));
+    var starts = btns.map(function (b) { return parseFloat(b.dataset.t); });
+    function start() { box.classList.add("playing"); v.controls = true; }
+    function seek(t) {
+      start();
+      if (v.readyState >= 1) v.currentTime = t;
+      else v.addEventListener("loadedmetadata", function () { v.currentTime = t; }, { once: true });
+      v.play();
+    }
+    document.getElementById("tour-play").addEventListener("click", function () { start(); v.play(); });
+    btns.forEach(function (b) { b.addEventListener("click", function () { seek(parseFloat(b.dataset.t)); }); });
+    v.addEventListener("timeupdate", function () {
+      var i = 0; starts.forEach(function (s, j) { if (v.currentTime >= s) i = j; });
+      btns.forEach(function (b, j) { b.setAttribute("aria-current", j === i ? "true" : "false"); });
+    });
+    v.addEventListener("ended", function () { v.controls = false; box.classList.remove("playing"); });
+  })();
+  (function () {
+    var tabs = [].slice.call(document.querySelectorAll('[role="tab"]'));
+    function select(t, focus) {
+      tabs.forEach(function (x) {
+        var on = x === t;
+        x.setAttribute("aria-selected", on ? "true" : "false");
+        x.tabIndex = on ? 0 : -1;
+        document.getElementById(x.getAttribute("aria-controls")).hidden = !on;
+      });
+      if (focus) t.focus();
+      t.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+    tabs.forEach(function (t, i) {
+      t.addEventListener("click", function () { select(t); });
+      t.addEventListener("keydown", function (e) {
+        var n = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : null;
+        if (n === null) return;
+        e.preventDefault(); select(tabs[(n + tabs.length) % tabs.length], true);
+      });
+    });
   })();
   (function () {
     var els = document.querySelectorAll(".reveal");
