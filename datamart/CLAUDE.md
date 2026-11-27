@@ -38,7 +38,7 @@ touching branches, images or the server.
 | `billing/` | Molty billing service (`/molty/*` on the app domain) |
 | `deploy/` | Caddyfile, compose overlay, env overlay, LiteLLM config, DNS records |
 | `landing/` | Static landing, pricing, terms and privacy pages, served by Caddy |
-| `landing/video/` | Hero film (45 s) and the product tour (3 min 30 s) with captions and chapters |
+| `landing/video/` | Hero film (45 s) and the product tour (3 min 26 s) with captions and chapters |
 | `landing/img/tour/` | Product screenshots used on the landing page |
 | `tools/` | Icon maker, tour screenshot stamping, demo data multiplier |
 
