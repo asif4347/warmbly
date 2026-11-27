@@ -37,8 +37,8 @@ services:
     volumes:
       - ./datamart/deploy/litellm.yaml:/app/config.yaml:ro
 
-  # Molty unlock: Stripe checkout and webhook (datamart/billing). Caddy sends
-  # /molty/* on the app's domain here.
+  # Molty billing: credit packs, the older unlock subscription and the Stripe
+  # webhook (datamart/billing). Caddy sends /molty/* on the app's domain here.
   molty-billing:
     build: ./datamart/billing
     image: datamart-warmup/molty-billing:local
@@ -50,5 +50,6 @@ services:
       STRIPE_MOLTY_SECRET_KEY: ${STRIPE_MOLTY_SECRET_KEY:-}
       STRIPE_MOLTY_WEBHOOK_SECRET: ${STRIPE_MOLTY_WEBHOOK_SECRET:-}
       STRIPE_MOLTY_PRICE_ID: ${STRIPE_MOLTY_PRICE_ID:-}
+      STRIPE_MOLTY_PACK_PRICES: ${STRIPE_MOLTY_PACK_PRICES:-}
     depends_on:
       redis: { condition: service_healthy }

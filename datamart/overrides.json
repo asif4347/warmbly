@@ -13,5 +13,6 @@
   "web/src/components/app/tour/shots/mailbox-warmup.webp": "5f88fa51b7711ea2d66aac71cef569b4f88f43bca8421b41335af24b1771046c",
   "web/src/components/app/tour/shots/sending-domains.webp": "22559d235deac53832d2843f21d5f027d16728cdb4176aebce89ad84515d685b",
   "web/src/components/app/tour/shots/unibox.webp": "e9f4bf2b22d35af798a588b6103943fb3c56bca0f08a2f1d7954155b6ba6ef06",
-  "web/src/components/app/tour/shots/warmbly-avatar.webp": "a9b18e572859e0396955258d39d368fe42121c87b5ef68e6ac7eb98f184c2fe0"
+  "web/src/components/app/tour/shots/warmbly-avatar.webp": "a9b18e572859e0396955258d39d368fe42121c87b5ef68e6ac7eb98f184c2fe0",
+  "web/src/components/layout/CreditsMeter.tsx": "e32b1d45ad0013a17663cd92ddc48f21c8c47b09b62770e5ad264a91025cc3fd"
 }

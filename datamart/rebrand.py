@@ -100,28 +100,37 @@ PATCHES = [
     ),
     (
         # Billing is off, so upstream meters no AI at all. Charge the Datamart
-        # allowance (datamart/go/datamart_allowance.go) instead.
+        # free allowance, then paid credits (datamart/go/datamart_allowance.go).
         "internal/app/credits/service.go",
         "\t\t// No metering: report a large remaining balance without debiting.\n\t\treturn selfHostBalance, nil",
-        "\t\t// No metering: report a large remaining balance without debiting.\n"
-        "\t\tif err := s.datamartAllowance(ctx, orgID, amount); err != nil { // datamart\n"
-        "\t\t\treturn 0, err\n"
-        "\t\t}\n"
-        "\t\treturn selfHostBalance, nil",
+        "\t\t// No metering upstream: Datamart charges its free allowance, then paid credits.\n"
+        "\t\treturn s.datamartConsume(ctx, orgID, amount, reason, model, tokens, idempotencyKey) // datamart",
     ),
     (
-        # When a workspace runs out of its free AI allowance, Molty's error
-        # links to the page for asking Datamart for more (datamart/billing).
+        # The top bar's credits meter reads this: free credits as the plan pool,
+        # paid credits as the purchased pool, instead of "unlimited".
+        "internal/api/handler/credits.go",
+        "\tif h.CreditService.Unmetered() {\n\t\tc.JSON(http.StatusOK, gin.H{",
+        "\tif h.CreditService.Unmetered() {\n"
+        "\t\tif b, ok := credits.DatamartBalance(c.Request.Context(), h.CreditService, *orgID); ok { // datamart\n"
+        "\t\t\tc.JSON(http.StatusOK, b)\n"
+        "\t\t\treturn\n"
+        "\t\t}\n"
+        "\t\tc.JSON(http.StatusOK, gin.H{",
+    ),
+    (
+        # When a workspace runs out of free and paid credits, Molty's error
+        # links to the credit packs page (datamart/billing).
         "web/src/components/app/agent/AgentPanel.tsx",
         "                        <span>{b.message}</span>",
         "                        <span>\n"
         "                            {b.message}\n"
         '                            {b.code === "usage_cap_exceeded" && (\n'
         "                                <a\n"
-        "                                    href={`/molty/unlock?org=${useAppStore.getState().currentOrganization?.id ?? \"\"}`}\n"
+        "                                    href={`/molty/credits?org=${useAppStore.getState().currentOrganization?.id ?? \"\"}`}\n"
         '                                    className="ml-1 font-semibold underline underline-offset-2 hover:text-red-900"\n'
         "                                >\n"
-        "                                    Ask for more credits\n"
+        "                                    Buy more credits\n"
         "                                </a>\n"
         "                            )}\n"
         "                        </span>",
@@ -169,7 +178,7 @@ PATCHES = [
     (
         "internal/app/aiagent/service.go",
         'Message: "AI usage limit reached, please try again later."',
-        'Message: "You have used today\'s free Molty allowance. It resets at midnight UTC. Ask Datamart if your team needs more."',
+        'Message: "You are out of Molty credits for now. The free ones come back at midnight UTC, or you can buy a credit pack."',
     ),
     (
         # The sign-in showcase draws its chart and ring in a hard-coded sky
