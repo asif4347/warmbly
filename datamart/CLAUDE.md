@@ -22,8 +22,10 @@ touching branches, images or the server.
    engineering team". No client names.
 4. **Never claim what the live product does not do.** On the current build,
    HubSpot, Pipedrive, Salesforce and Slack show "Coming soon". Pricing facts
-   come from `landing/pricing.html` only (free, 15 AI credits per workspace a
-   day, more on request).
+   come from `landing/pricing.html` only: free, 15 AI credits per workspace a
+   day, and one time credit packs ($10 for 750, $19 for 1,500, $49 for 4,000)
+   sold through Datamart Inc's Stripe. Pack credits are used after the free
+   ones and never expire.
 5. **No `Co-Authored-By` trailer or "Generated with" footer** on commits.
 6. **Asif ships small changes straight to production after verification.**
    Verify first, then deploy, then tell him what went live.
@@ -59,6 +61,31 @@ so a landing change goes live with a pull, no restart:
 3. Check `https://warmup.dtm.global/` and the changed assets return 200.
 
 App code (web, admin, backend) ships as images instead; see README "Updates".
+
+## Deploying app code (web, admin, backend, consumer, billing)
+
+The `datamart-images` workflow has never run (the fork's default branch is
+`main`, so GitHub does not see it), and the images are private. What works:
+
+1. Build the four images on a Mac from a clean `git archive` of the pushed
+   `datamart` commit with `rebrand.py` applied, `docker buildx build
+   --platform linux/arm64 --load` (the server is a t4g, arm64).
+2. `docker save | gzip` them, upload to
+   `s3://datamart-warmup-backups-066523632153/images/<name>/` with the proxy
+   variables unset (through the proxy the upload times out), and on the
+   server `aws s3 cp ... - | docker load` (the snap `aws` cannot write files
+   in `/tmp`, so stream or pipe through `cat`).
+3. Tag what is running as `<tag>-pre-<change>` first, as the rollback.
+4. `docker compose -p warmbly -f docker-compose.yml -f
+   datamart/deploy/compose.datamart.yml build molty-billing`, then `up -d
+   --no-deps --no-build molty-billing backend consumer web admin`.
+   **Never pass `--build` to `up`:** the base compose file has build
+   sections for backend, consumer, web and admin, so the server would
+   rebuild them from its own checkout without the Datamart patches.
+
+Server secrets for credit packs (Stripe key, webhook secret, pack prices) live
+in the SecureString SSM parameter `/datamart-warmup/stripe-molty`; the server
+can read it and writes it into `.env`. Never print them.
 
 ## Running it locally
 
