@@ -1,6 +1,6 @@
 ---
 name: warmbly-cli
-description: Use the `warmbly` CLI to drive Warmbly as a signed-in user - sign in with `warmbly auth login`, then work with campaigns, contacts, mailboxes, the unified inbox, analytics, webhooks and the live event stream on the hosted service or any self-hosted instance. Use whenever the task is to operate Warmbly the product from a terminal or a script and a `warmbly` binary is available. For instance recovery and accounts (database-level), use warmbly-ops instead.
+description: Use the `warmbly` CLI to drive Warmbly as a signed-in user - sign in with `warmbly auth login`, then work with campaigns, contacts, mailboxes, the unified inbox, analytics, webhooks, the domain and mailbox store, and the live event stream on the hosted service or any self-hosted instance. Use whenever the task is to operate Warmbly the product from a terminal or a script and a `warmbly` binary is available. For instance recovery and accounts (database-level), use warmbly-ops instead.
 ---
 
 # Driving Warmbly through the `warmbly` CLI
@@ -76,6 +76,7 @@ gives the arguments and flags. Ids are positional, not flags.
 | `contact` | list, view, create, edit, delete, lookup, timeline, emails, notes, import, imports, import-status, import-start, import-cancel, export, verify |
 | `mailbox` | list, view, edit, check, sync, skip-folders, identity, refresh-identity, behavior, warmup, hold, release, send |
 | `inbox` | list, view, thread, read, reply, compose, drafts, scheduled, snooze |
+| `store` | status, search, quote, buy, orders, `order view` / `order watch`, `domains` (list, view, renew, auto-renew, forwarding, transfer-out, connect, check-connection, remove, `dns` list/add/edit/delete/check), `mailboxes` (list, rename, cancel, resume, sign-in), `registrant` view/set |
 | `suppression` | the list of addresses and domains that get no campaign mail |
 | `segment`, `template`, `automation`, `form` | audiences, reply templates, automations, lead capture |
 | `deal`, `pipeline`, `task` | the CRM |
@@ -83,6 +84,8 @@ gives the arguments and flags. Ids are positional, not flags.
 | `placement` | inbox placement tests: overview, test, list, view, cancel, seed inboxes, a campaign's scheduled test, batches across many mailboxes, fleet coverage |
 | `webhook`, `key`, `oauth-app`, `integration` | the developer surface |
 | `org`, `team`, `settings`, `warmup-routing` | the workspace surface a key can reach |
+| `migration` | migrate in from another outreach tool: providers, list, view, create, start, cancel, link-senders, delete |
+| `agency` | an agency's clients, overview, usage, mailboxes, and `agency migration` into client workspaces |
 | `tool` | the AI tool registry, listed and called |
 | `events tail` | the live event stream |
 | `api` | any endpoint at all |
@@ -105,7 +108,8 @@ warmbly api /contacts/search -X POST --input filter.json
 These put real mail on the wire and prompt before doing so:
 `campaign start`, `campaign test`, `placement test`, `placement batch-start`,
 `mailbox send`, `inbox reply`, `inbox compose`, `inbox approve-draft`.
-Everything else is safe to run freely.
+Everything else is safe to run freely, apart from the store commands that
+charge or reveal a password (see "Buying domains and mailboxes" below).
 
 - With no terminal they refuse rather than send. `--yes` is what proceeds, so
   **only pass `--yes` when the user asked for that specific send.** Never add
@@ -117,6 +121,13 @@ Everything else is safe to run freely.
   is the answer: today's projected sends and every limit that lowered them
   (easing out of warmup, the campaign limit, other campaigns on the same
   mailboxes, the plan's allowance, leads due). Read it before touching a cap.
+- To send each lead inside their own working day, set the campaign's
+  `timezone_mode` to `recipient`, then run `warmbly campaign timezones
+  CAMPAIGN_ID`: its leads by timezone and how many have no location (those are
+  sent on the campaign's own timezone). Location comes from the contacts'
+  country, state, city, location or timezone fields, then phone and email
+  domain; segment conditions `world_region`, `country` and `timezone` split an
+  audience by it.
 - Never raise a mailbox's daily cap casually. The default is 50 campaign
   emails per mailbox per day with 600 seconds between sends; a fresh mailbox
   starts around 10-20. Do not go above 50 unless the user asked and the
@@ -155,6 +166,83 @@ Everything else is safe to run freely.
   and `batch-senders BATCH_ID` lists mailboxes worst first: a whole domain low
   is that domain, one mailbox low on a healthy domain is that mailbox.
 
+## Buying domains and mailboxes: it spends money
+
+`warmbly store` buys sending domains and mailboxes and manages them. Buying
+charges the workspace balance (then the card on file), so treat it like a send.
+
+```bash
+warmbly store status --json                     # enabled, plan_active, balance, prices, registrant
+warmbly store search getacme --tlds com,io --json
+warmbly store quote --domain getacme.com --mailbox ada@getacme.com:Ada:Lovelace \
+  --provider google --json                      # prices only, buys nothing
+warmbly store buy  --domain getacme.com --mailbox ada@getacme.com:Ada:Lovelace \
+  --provider google --yes --json                # only once the user agreed to that total
+warmbly store order watch ORDER_ID --json --interval 30s --timeout 6h
+```
+
+- **Quote first and show the user the result**: every line, `due_now_micros`
+  and `recurring_monthly_micros` (amounts are micro-dollars, 1000000 = $1.00).
+  Pass `--yes` to `store buy` only after they agreed to that cart. Without a
+  terminal, `buy` refuses unless `--yes` is given.
+- `buy` re-quotes and sends the quoted total as `expected_due_now_micros`. If
+  the price moved, nothing is charged; under `--yes` it exits naming the new
+  total. Show it to the user and ask again, do not just rerun.
+- `payment_method_required` means the balance is short and there is no card:
+  hand the printed setup link to the user. `registrant_required` means
+  `store registrant set` first (a new domain needs an owner's contact).
+- Cart flags: `--domain NAME[:YEARS]`, `--mailbox ADDRESS[:FIRST:LAST]`,
+  `--provider google|microsoft` (or `DOMAIN=PROVIDER`), `--first-name` /
+  `--last-name` for mailboxes without their own, `--admin ADDRESS`. Or
+  `--input @cart.json` with the `POST /store/quotes` body `{"items": [...]}`.
+- Mailbox setup takes hours. Give `order watch` a `--timeout`; it exits 0 on
+  `completed` and 1 on `failed`, `partially_failed` or timeout, and the order
+  carries on regardless.
+- `domains renew`, `domains transfer-out`, `mailboxes cancel`,
+  `mailboxes resume` and `mailboxes sign-in` also ask first: they charge or
+  change billing, and `sign-in` prints a mailbox password. Ask the user before
+  each one and never write a password or transfer code to a file or log.
+- Scopes: `READ_STORE` to read, `MANAGE_STORE` to change anything. Buying,
+  renewing, auto-renew, cancel, resume, transfer-out and the registrant also
+  need the key's member to hold `manage_billing`; a 403 there is that role,
+  not a missing scope.
+
+## Migrating in from another tool
+
+```bash
+warmbly migration providers --json            # field keys each tool needs
+printf '{"provider":"smartlead","credentials":[{"api_key":"%s"}]}' "$SMARTLEAD_API_KEY" \
+  | warmbly migration create --input - --json
+warmbly migration view MIGRATION_ID --json     # wait for status "ready", read the inventory
+warmbly migration start MIGRATION_ID --kinds blocklist,campaigns,leads --in-flight continue
+```
+
+- Never put the source key on the command line or in a file you leave behind;
+  pipe it in. The server seals it, never returns it, and wipes it when the
+  migration ends.
+- Show the user the scanned inventory before `start`, and ask before
+  `--warmup`: it starts warmup mail on every mailbox that connects.
+- Imported campaigns are drafts. They never launch on their own; leave
+  launching to the user (`campaign preflight`, then `campaign start`).
+- Mailboxes the migration could not connect are listed under each target's
+  follow-up; after the user reconnects them, `migration link-senders` attaches
+  them to the drafts.
+
+## Agencies
+
+An agency key (`wmagency_...`) goes in `WARMBLY_TOKEN`; `auth login` takes
+workspace keys only.
+
+- `warmbly agency list` gives the agency id; `agency clients list AGENCY_ID`
+  the client workspace ids.
+- Any other command acts in one client with `--organization CLIENT_ID` (or
+  `WARMBLY_ORGANIZATION`). Without it, a workspace command answers
+  `agency_key_organization_required`.
+- `agency migration start AGENCY_ID MIGRATION_ID --input @targets.json` maps
+  every scanned source workspace to `organization_id`, `create_name` or
+  `skip`. Creating a client needs `AGENCY_MANAGE_CLIENTS`; confirm new client
+  names with the user first.
+
 ## Errors
 
 Failures print the API's `code` and `request_id` to stderr. Branch on `code`
@@ -163,6 +251,9 @@ when reporting. On `rate_limit_exceeded`, wait the `Retry-After` it names.
 
 For a write you retry, pass `--idempotency-key <same-key>` so a retry cannot
 double-apply. Any unique string works; reuse it only for the identical retry.
+A `409 idempotency_outcome_unknown` means the first attempt ended in a server
+error and may have applied: retry with a new key only once you have established
+that it did not.
 
 Exit codes: `0` worked, `1` failed, `2` bad command line or a prompt with no
 terminal, `4` credential.
@@ -181,7 +272,8 @@ Streams the live event stream as newline-delimited JSON. Needs a key with
 
 - Connect a mailbox. That needs OAuth consent or a credential form in a
   browser: `warmbly browse mailboxes --no-browser` prints the URL to hand over.
-- Manage members, roles, invitations, workspace exports or billing. Every
+- Manage members, roles, invitations, workspace exports or billing (adding
+  money or a card; the store spends the balance but cannot top it up). Every
   `/organization/*` and `/subscription/*` route is session-only and refuses an
   API key, so there is no command for them. `warmbly browse settings
   --no-browser` prints the URL to hand over.

@@ -47,9 +47,10 @@ On **Review**, check the finish date, then choose **Launch** or **Save as draft*
 
 - Each mailbox sends at most `50` cold emails a day by default, with at least `600` seconds between two sends. A newly connected free Gmail or Outlook.com account starts at `20` a day, `900` seconds apart.
 - A campaign sends only inside its weekly sending windows, in the campaign's timezone.
-- A lead's follow-ups normally go out from the mailbox that sent their first email, and move to another one only when that mailbox is held, cooling or gone.
+- A lead's follow-ups normally go out from the mailbox that sent their first email. They wait for that mailbox through a provider pause that ends within 45 minutes, and move to another one only when it is held, paused for longer, or gone.
 - Launch checks your list first and refuses one that is known to be largely undeliverable.
 - Nothing sends until the campaign launches. Closing the flow with anything filled in saves a draft.
+- Each email step has a **Review** tab that shows that email exactly as each lead gets it and lets you edit one lead's copy. Every lead's AI copy is written ahead once the campaign runs, and leads can be held until you approve their first email. See [Review before sending](#review-before-sending).
 
 <Fold>
 
@@ -93,7 +94,7 @@ Campaign names take priority over descriptions in the list. Descriptions use the
 
 1. **Leads**: name the campaign at the top (left blank, it is named after its first list, or "Campaign" and the date; rename it any time), then pick one or more lead lists. Lists are your [segments](/guides/segments/), shown with how many leads each holds; someone on several lists is emailed once, and the total below counts each lead once. **Import new leads** takes you to Contacts to bring in a CSV and keeps the draft for when you return. Picking no list is fine: **Continue without leads** creates the campaign so you can add leads afterwards.
 2. **Emails**: the same editor as the Steps tab, with templates, **Write with AI**, variables, a preview rendered through the send engine and the content score. Selecting a template applies both its saved subject and its body. A template without a subject keeps the email's existing subject. Add follow-ups here, each sent a number of days after the previous email (and stopping for anyone who replies or books a meeting, when **Stop on reply** or **Stop on meeting booked** is on). **Add the usual two follow-ups** adds two at 3 and 7 days. A follow-up with no subject replies in the same thread. The emails can also be left for the Steps tab, where you can branch them and add A/B variants.
-3. **Schedule**: start at launch or on a date, the timezone, sending days and hours, the mailbox tags to send from, and the daily limit per mailbox. Every mailbox in the pool is listed with what it can send: **Ramping up** while it is still graduating from warmup, **Reduced volume** in a watch or throttled health band, **On hold**, **DNS failing** or **Resting** when it will not send. Tracking, UTM parameters, the unsubscribe header, stop on reply and stop on meeting booked are under **Tracking and replies**.
+3. **Schedule**: start at launch or on a date, the timezone, sending days and hours, the mailbox tags to send from, the daily limit per mailbox, and the [ramp-up](#ramp-up). Every mailbox in the pool is listed with what it can send: **Ramping up** while it is still graduating from warmup, **Reduced volume** in a watch or throttled health band, **On hold**, **DNS failing** or **Resting** when it will not send. Tracking, UTM parameters, the unsubscribe header, stop on reply and stop on meeting booked are under **Tracking and replies**.
 4. **Review**: the finish date with the arithmetic behind it and what sets the pace, a chart of first emails, follow-ups and warmup against what the pool can send for the campaign, what would finish it sooner, what each mailbox sends with and without the campaign, and a summary with a link back to each step.
 
 While you work, a **Launch plan** beside the Leads and Schedule steps keeps the estimate current. See [How the estimate works](#how-the-estimate-works).
@@ -124,9 +125,68 @@ The chart draws one bar per day for campaigns up to about three months long and 
 
 Follow-ups that are due go out before new leads start, and the total assumes nobody replies or unsubscribes, so real sequences usually finish sooner. Replies, bounces, new contacts joining a linked segment and changes to a mailbox's health all move the real finish.
 
-An unresolved send from one mailbox does not stop other healthy mailboxes from sending. A follow-up normally uses the address its lead first heard from, but can move to another eligible mailbox when that address is held or cooling. The launch plan and day plan show the hold or cooldown separately from the normal daily limit.
+An unresolved send from one mailbox does not stop other healthy mailboxes from sending. A follow-up normally uses the address its lead first heard from: it waits out a short provider pause on that address (45 minutes or less) and moves to another eligible mailbox when the address is held or paused for longer. A provider's rate limit, daily limit or restriction on a mailbox never costs a lead one of its send attempts; see [when a provider pauses sending](/guides/mailboxes/#when-a-provider-pauses-sending). The launch plan and day plan show the hold or cooldown separately from the normal daily limit.
 
 After ten minutes Warmbly isolates an authorized campaign send whose outcome is still unknown. The mailbox can send to other contacts again. Only the affected contact waits for confirmation, independently of any manual pause. No customer action is needed, and the uncertain email is never retried. A late confirmed result updates the contact automatically. A timeout or missing Sent copy never counts as proof of failure. A send the worker never started is handed back after 30 minutes and the step is sent fresh, because it provably never left. Legacy sends without durable execution authorization still require [provider-confirmed resolution](/development/send-safety/#resolving-an-unknown-send).
+
+</Fold>
+
+<Fold>
+
+## Review before sending
+
+Every email step has a **Review** tab next to its **Email** tab: open the step on the campaign's **Steps** tab and switch to it. It shows that email exactly as each lead gets it and says whether the campaign is ready to send. It can also hold each lead until someone approves their first email. Only email steps have one, since other steps send nothing. A link to a campaign's old Review page opens the first email's Review tab. If no step sends an email while leads wait for approval, the Steps tab shows how many wait, and **Review** opens them in a panel of their own.
+
+### The layout
+
+The step's panel widens to fit it: a line of checks on top, the leads on the left and the open lead's copy of the email on the right. The open lead's position (`3 of 40`) shows above their email, the arrows next to it move to the previous and next lead, and `J` and `K` do the same from the keyboard.
+
+The first chip on the top line says whether the campaign is ready to send. Click it to see what to fix first:
+
+- **Blank merge fields.** A field an email prints with nothing to fall back on (`{{.FirstName}}` outside an `{{if}}` and without `default`), counted over the leads not yet emailed. **Show them** lists those leads, so you can fill the field in or edit their email.
+- **Steps that will not render** as written, with a link to fix them.
+- **Unsubscribed leads**, which sending skips, and **addresses that failed verification**, which the [launch check](#the-launch-check-on-your-list) counts against the list.
+
+When the first email has [AI blocks](/guides/ai-variables/), a second chip shows how many leads not yet emailed have theirs written. Click it for the details and, before launch, **Write all now** with about what it costs.
+
+The menu next to the search picks which leads the list shows, with a count for each:
+
+| State | Meaning |
+|-------|---------|
+| Waiting | Held until someone approves their first email. Listed when approval is on, or someone still waits |
+| Ready | Not emailed yet; their first email goes out on schedule |
+| Paused | Not emailed yet, and paused for another reason, such as an away message. Listed when someone is |
+| Started | Already emailed, or an email to them is on its way |
+
+### Each lead's emails
+
+Pick a lead to read every email step as it will be sent to them: their fields filled in, the A/B variant they get, spintax resolved, the AI copy written so far, the signature of the mailbox already writing to them and the opt-out footer. A follow-up that replies in the thread shows the first email's subject, which is what the lead sees. Spintax picks the same option for one lead and step every time, so what you read is what goes out, and a retried send carries the same wording. Different leads can still get different options.
+
+Once the campaign is running, Warmbly works through the first email's [AI blocks](/guides/ai-variables/) on its own for every lead not yet emailed, and for each lead added later, so you never have to start it. It aims to have each lead's copy ready before it goes out, but a lead whose email is due before it gets to them has theirs written when it sends. A lead with their own copy of the first email is left out: their AI blocks are written when you open them or when the email sends. The AI chip at the top of the tab shows how far it has got. Before launch, a lead's AI blocks are written the moment you open them: a shimmering line holds their place in the email while Remie writes, then the text fades in. AI-written text keeps a soft highlight in the preview, so you can see what AI wrote; the recipient gets plain text. While you read one lead, the next two in the list have their first email written in the background, so moving on shows theirs already written. **Rewrite** asks for another version.
+
+Writing ahead is charged to the balance exactly as writing at send time is, and the send reuses what was written, so nothing is charged twice. A rewrite is a new generation and is charged again. Before launch, **Write all now** under the AI chip writes every lead not yet emailed, or the leads you selected, a few at a time; it stops when the balance runs out or you press **Stop**, and keeps what it wrote. Writing on its own pauses while the balance is too low and resumes when it is topped up. A lead removed or unsubscribed before their first email keeps the charge for copy already written for them. Follow-ups' AI blocks are written when they send, or when you open the lead. A member without the **Use AI** permission sees a marked slot instead, written when the email sends, and so does everyone when the balance is too low or the instance has no AI provider.
+
+### Editing one lead's email
+
+**Edit for this lead** opens the step's editor with this lead's copy. Saving keeps a copy for this lead only. It replaces the step's copy, and any A/B variant, for them. Merge fields, spintax and AI blocks in it still fill in when it sends. A follow-up that replies in the thread keeps the conversation's subject. Later edits to the step do not change a personalized copy; the email says when the step changed since, and **Use the step's copy** goes back to it. Once the lead has received an email, that email can no longer change.
+
+Personalized emails are marked with a pencil in the list and on the step's tab.
+
+### Approving leads first
+
+By default leads start on schedule without anyone approving them. To approve each lead first, turn on **Approve before sending** at the top right of any email step's Review tab. From then on, every lead not yet emailed waits for approval. So does every lead added later, whichever way they arrive: a linked list, an import, the API, a form or an automation. Follow-ups after the first email go out on their own.
+
+- Approve the lead you are reading, several from the selection bar, or **Approve all**. On the Review tab, `A` approves the open lead and `J` and `K` move between leads.
+- An approved lead starts under the campaign's schedule, daily limits, spacing and every other sending rule, exactly as without review.
+- **Back to review** holds a lead who has not been emailed yet again.
+- A waiting lead shows **Waiting for review** in the Leads list and in the contact's Activity, where **Approve** releases them.
+- A lead that was also paused for another reason, such as an away message or a pause you set, waits for both: approving it leaves that pause in place until it lifts.
+- Approving needs the **Send campaigns** permission, like starting a campaign. Turning review off approves everyone waiting, so it needs the same permission and asks first.
+- Only an approval, or turning review off, releases a waiting lead. Resuming a pause, an away message ending, a CRM rule or removing a CC copy never does.
+- While leads wait, every other tab of the campaign shows how many, with a link here.
+- A campaign's estimate counts every lead, as if you approve them all.
+
+Changes on the tab reach teammates live, and approvals appear in the activity log.
 
 </Fold>
 
@@ -162,8 +222,8 @@ A campaign set through the API to `sender_strategy: "explicit"` is the exception
 
 Sending accounts always resolve inside the campaign's own workspace. If you belong to more than one workspace, a tag you reuse across them still only picks up mailboxes belonging to the workspace that owns the campaign, so one workspace's sending reputation, daily caps, and warmup are never spent on another's traffic.
 
-<Callout type="info" title="Follow-ups stay on the same mailbox">
-Rotation chooses a mailbox for a lead's **first** email, and that mailbox sends the rest of that lead's sequence. Three emails from three addresses is not a conversation, and a reply belongs in the mailbox the contact was written to from.
+<Callout type="info" title="Follow-ups stay on the same mailbox by default">
+Rotation chooses a mailbox for a lead's **first** email, and that mailbox sends the rest of that lead's sequence. Three emails from three addresses reads less like a conversation, and a reply belongs in the mailbox the contact was written to from. You can change this per campaign; see [follow-ups from other mailboxes](#follow-ups-from-other-mailboxes).
 </Callout>
 
 | Rotation | Behavior |
@@ -172,9 +232,25 @@ Rotation chooses a mailbox for a lead's **first** email, and that mailbox sends 
 | Round-robin | Cycles in order: `A`, `B`, `C`, back to `A` |
 | Weighted | Sends more from healthier, higher-limit mailboxes |
 
-Whichever mode you pick, it decides which mailbox **starts** a lead. Every mailbox still stays inside its own daily cap and minimum gap, so a campaign's volume is the sum of its mailboxes' budgets as always. Rotation only chooses among mailboxes whose minimum gap has passed, and warmup mail counts toward that gap. A mailbox that just sent warmup sits out that turn and another one starts the lead. The campaign only waits when every mailbox is inside its gap.
+Whichever mode you pick, it decides which mailbox **starts** a lead (and, when follow-ups rotate, which sends each later step). Every mailbox still stays inside its own daily cap and minimum gap, so a campaign's volume is the sum of its mailboxes' budgets as always. Rotation only chooses among mailboxes whose minimum gap has passed, and warmup mail counts toward that gap. A mailbox that just sent warmup sits out that turn and another one starts the lead. The campaign only waits when every mailbox is inside its gap.
 
 The Leads tab shows each lead's mailbox in its **Sender** column, and a contact's Activity tab shows it beside their progress. A lead has none until its first email goes out.
+
+### Follow-ups from other mailboxes
+
+**Preferences** > **Inbox rotation** > **Follow-ups** decides which mailbox sends a lead's second and later emails:
+
+| Follow-ups | Behavior |
+|------------|----------|
+| **Same mailbox as the first email** (default, recommended) | Every step comes from the address that sent the first. When that mailbox has nothing left for now, the follow-up waits for it; it only moves when the mailbox can no longer send for the campaign |
+| Rotate within the same domain | Each follow-up is drawn by the campaign's rotation from the mailboxes sending as the domain the lead last heard from, preferring one other than the previous sender. When every mailbox on that domain is busy, the follow-up waits; when none can send for the campaign any more, it uses the whole pool |
+| Rotate every step | Each follow-up is placed like a first email: rotation, ESP matching (below), daily caps and minimum gaps apply, and a mailbox other than the previous sender is preferred when one is free |
+
+A rotated follow-up never waits for the previous sender, and every mailbox still keeps its own daily cap and minimum gap, so rotating spreads a campaign's follow-ups across the pool rather than adding volume.
+
+The tradeoffs are real. A lead can see several sender addresses in one conversation. Threaded steps still carry the [reply headers](/guides/sequences/#follow-ups-and-threading) for the whole conversation, which most mail apps use to keep them together, but grouping is decided by the recipient's app. A reply goes to the mailbox that sent the email being answered, so one lead's replies can land in different inboxes; every one is still credited to the lead and stops the sequence when **Stop on reply** is on. To collect them in one place, give the mailboxes the same [reply-to address](/guides/mailboxes/#a-shared-reply-inbox). In the unibox each mailbox keeps its own copy of the conversation, so a rotated lead's emails sit under the mailboxes that sent them. Rotating follow-ups does not by itself change how a provider treats the mail.
+
+The contact's **Activity** tab names the mailbox that sent each step.
 
 ### Campaigns sharing mailboxes
 
@@ -184,7 +260,7 @@ Two campaigns never send from one mailbox inside its minimum gap. When both reac
 
 Because the daily cap belongs to the mailbox, the campaign whose window opens first can use most of a shared pool's day, which matters when the campaigns send in different timezones. To keep part of the pool for a later campaign, lower the earlier campaign's [daily limit per mailbox](#sending-limits), which caps what it takes from each mailbox. To split the pool outright, give each campaign its own tag.
 
-**ESP matching** optionally aligns sender and recipient providers (Google to Google, Microsoft to Microsoft). The recipient's provider is read from their domain's mail records, so a lead on a company domain hosted by Google Workspace or Microsoft 365 is matched too, not only `gmail.com` and `outlook.com` addresses; the contacts list shows it as a badge on each contact's avatar. A mailbox connected with an app password to Google Workspace or Microsoft 365 counts as that provider. Under **Settings** > **ESP matching**, the coverage panel shows how many of the campaign's leads are on Google, Microsoft and other providers, and which of your mailboxes serve each. **Prefer same** falls back to any mailbox when no same-provider one is free; **Strict same** makes the contact wait instead. A contact left waiting this way waits alone: the campaign moves on to the next lead in the queue rather than stopping, and comes back to them when a matching mailbox is free. An unknown recipient provider never blocks a send. Like rotation, it applies to a lead's first email: a follow-up goes out from the mailbox the contact already knows.
+**ESP matching** optionally aligns sender and recipient providers (Google to Google, Microsoft to Microsoft). The recipient's provider is read from their domain's mail records, so a lead on a company domain hosted by Google Workspace or Microsoft 365 is matched too, not only `gmail.com` and `outlook.com` addresses; the contacts list shows it as a badge on each contact's avatar. A mailbox connected with an app password to Google Workspace or Microsoft 365 counts as that provider. Under **Settings** > **ESP matching**, the coverage panel shows how many of the campaign's leads are on Google, Microsoft and other providers, and which of your mailboxes serve each. **Prefer same** falls back to any mailbox when no same-provider one is free; **Strict same** makes the contact wait instead. A contact left waiting this way waits alone: the campaign moves on to the next lead in the queue rather than stopping, and comes back to them when a matching mailbox is free. An unknown recipient provider never blocks a send. Like rotation, it applies to a lead's first email: a follow-up goes out from the mailbox the contact already knows, unless the campaign [rotates follow-ups](#follow-ups-from-other-mailboxes), which matches each step.
 
 ### When a lead's mailbox is busy, or gone
 
@@ -228,8 +304,8 @@ The number is the sends already out plus what is still expected, and the list un
 | Limit | What it means |
 | --- | --- |
 | Campaign daily limit | The campaign caps each mailbox below the mailbox's own cap |
-| Campaign ramp-up | Daily ramp-up is still climbing toward its ceiling |
-| Easing out of warmup | A mailbox whose warmup is running or paused starts cold at `5` a day and adds at most `5` per clean day, never more than its confirmed replies (see [easing out of warmup](#easing-out-of-warmup)) |
+| Campaign ramp-up | The campaign ramps **on a schedule** and has not reached its ceiling yet |
+| Easing out of warmup | The campaign ramps **as replies come in**, and a mailbox whose warmup is running or paused starts cold at `5` a day and adds at most `5` per clean day, never more than its confirmed replies (see [easing out of warmup](#easing-out-of-warmup)) |
 | Workspace sending posture | A restricted workspace sends a fraction of every cap (see [workspace sending posture](/guides/deliverability/#workspace-sending-posture)) |
 | Domain authentication failing, Resting or in reserve, Held by warmup health | A mailbox that sends nothing cold today, and why |
 | Waiting for Warmbly Cloud status | [Warmbly Cloud](/guides/warmbly-cloud/#safety-and-enforcement) has not reported a current status for a mailbox it warms. Cold sends from it wait until one arrives; it is not a Cloud quarantine or block |
@@ -244,13 +320,25 @@ The number is the sends already out plus what is still expected, and the list un
 
 Under the list, the card says how many leads are due now, due later today, waiting on a step's delay, inside an undecided branch window, waiting for their own mailbox (each contact keeps the address they first heard from, so a follow-up whose mailbox is spent waits rather than switching) or held, and when the campaign next works through its queue. Daily budgets reset at midnight UTC whatever the campaign's timezone, so a campaign far from UTC sees its "sent today" reset partway through its own day. Expand the mailbox rows to see each mailbox's cap for this campaign today and which limit set it, what it has sent (for this campaign, and for others), what it is still expected to send, and whether it is sending, closed for the day, out of budget, resting, held, waiting for a [Warmbly Cloud](/guides/warmbly-cloud/#safety-and-enforcement) status, failing authentication or reconnecting (no running sending worker holds it right now; it is placed on one again within minutes and the other mailboxes keep sending meanwhile). Each limit links to the page where it is changed.
 
-The sidebar's **sent today** meter reads its denominator the same way: what the workspace's mailboxes can send today under these limits, not their caps added up. The two agree by construction, because both are read through the scheduler.
+The sidebar's **sent today** meter reads its denominator the same way: what your running campaigns can send today, each mailbox under the limits of the campaign that sends from it (its ramp, its daily limit, whether it follows the warmup graduation ceiling), not the mailboxes' caps added up. A mailbox that no running campaign uses adds nothing, and when two campaigns share a mailbox it counts once, at the larger of their caps, because they share its day. With one campaign running, the meter's denominator matches the cap total behind the campaign's own card. With nothing running, the meter shows only what was sent.
 
 <Callout type="warn" title="Don't push past the defaults casually">
 Anything above `50`/day per cold mailbox needs positive reputation signals and a low complaint rate behind it. Adding mailboxes is safer than forcing a few to send more.
 </Callout>
 
-**Daily ramp-up** grows volume gradually instead of starting at full limit: **ramp start** (default `10`), **ramp increment** (default `5`), and **ramp ceiling** (default `50`). It applies as another minimum, so it only lowers today's volume while ramping. This is separate from mailbox warmup; the two work together.
+### Ramp-up
+
+**Ramp-up** decides how each mailbox's daily volume grows in this campaign. Pick it in the wizard's **Schedule** step or in the campaign's preferences under **Rotation & ramp-up**:
+
+| Option | What each mailbox sends |
+| --- | --- |
+| **As replies come in** (the default) | A mailbox whose warmup is running or paused starts at `5` a day and gains one a day for each lead who replied to it in the last seven days, at most `5` more per clean day (see [easing out of warmup](#easing-out-of-warmup)). A mailbox that never warmed, or whose warmup is stopped, sends at its own limit. With a typical cold reply rate this stays close to `5` a day |
+| **On a schedule** | Starts at the **start** volume (default `10`) on the first sending day and adds the **increase** (default `5`) every sending day until the **ceiling** (default `50`), whatever the replies |
+| **Full volume** | Up to its daily limit from the first day |
+
+Every option applies as another minimum against the mailbox's own daily cap, the campaign's daily limit and the minimum gap between sends, so none of them raises a mailbox above its cap. The schedule does not pause on a bounce or a spam placement, and full volume does not climb at all, so watch the campaign's health while volume rises. Warmup keeps running alongside in all three. The launch plan and the estimate in the wizard follow the option you pick.
+
+Changing the option on an active campaign takes effect from its next send. Setting the schedule's numbers again keeps the level it has reached; it never goes back below the start.
 
 **Lead flow** throttles new contacts with **Max new leads per day** (`0` for unlimited, up to `1000`). At the cap, follow-ups to in-flight contacts continue and new leads resume tomorrow. You can prioritize new leads over follow-ups, and choose whether to attempt addresses verification flagged risky.
 
@@ -349,7 +437,7 @@ When a step's branches are still undecided (`if they open within 3 days`), the p
 
 One lead that cannot be sent right now never holds up the campaign. Each pass walks the queue in order and sends the first lead it can place, so a contact waiting for a same-provider mailbox, for the mailbox their conversation belongs to, or for their own working hours is skipped for that pass while the leads behind them go out. A pass tries up to 200 due leads this way. The campaign only waits when every lead it looked at is waiting, says so once a day in the activity log, and comes back and looks again within fifteen minutes.
 
-A step counts as sent only once the sending worker has handed it to the mailbox provider. If a mailbox is still reconnecting after a worker restart or upgrade, the unsent step goes back to the queue automatically. This is an informational delay in the recent log, costs no failed-send attempt, and does not appear in **Needs attention**. Historical reconnect retries receive the same presentation only when stored task evidence confirms an internal preparation retry; unverified historical failures remain unchanged. Provider refusals and other send failures keep their reasons in **Needs attention**, and retryable failures return to the queue. A mailbox that no running sending worker holds is passed over rather than picked, and a pass that fails for any reason is followed by another about a minute later, so a failure never leaves a campaign's leads queued until it is restarted. After five counted send failures the lead is marked **Failed** and dropped from the campaign, so a mailbox that can never send does not loop forever. A recipient the mail server refuses outright is not retried: it is recorded as a **Bounced** lead straight away and goes through the same bounce handling (suppression, guardrails, webhooks) as a bounce notice. A campaign that finished while a send was still in flight reopens to retry it.
+A step counts as sent only once the sending worker has handed it to the mailbox provider. If a mailbox is still reconnecting after a worker restart or upgrade, the unsent step goes back to the queue automatically. This is an informational delay in the recent log, costs no failed-send attempt, and does not appear in **Needs attention**. Historical reconnect retries receive the same presentation only when stored task evidence confirms an internal preparation retry; unverified historical failures remain unchanged. A send the mail provider could not take just then (no answer, a dropped connection, or a request to slow down) is retried automatically and shows in the recent log as a delay, not in **Needs attention**; it still counts as a failed attempt. A send held back before it leaves Warmbly, because its mailbox is paused or held, at its sending limit, or the campaign reached today's limit, is postponed without spending an attempt and also shows as a delay in the recent log. Provider refusals, and a send that has used all its attempts, keep their reasons in **Needs attention**. A mailbox that no running sending worker holds is passed over rather than picked, and a pass that fails for any reason is followed by another about a minute later, so a failure never leaves a campaign's leads queued until it is restarted. After five counted send failures the lead is marked **Failed** and dropped from the campaign, so a mailbox that can never send does not loop forever. A recipient the mail server refuses outright is not retried: it is recorded as a **Bounced** lead straight away and goes through the same bounce handling (suppression, guardrails, webhooks) as a bounce notice. A campaign that finished while a send was still in flight reopens to retry it.
 
 Every sent count counts emails only: the contact's **Sent** total, a lead's sent steps, the campaign's progress and the rates its guardrails judge. Wait, condition and action steps move a lead through the flow but send nothing, so a lead is **Done** once every email step has gone out, however many other steps sit between them.
 
@@ -400,6 +488,14 @@ The spacing sits between sends, never in front of the first one. A campaign you 
 
 When nothing is due (every lead is inside a step's wait, for example), the campaign re-checks itself at least every `15` minutes rather than sleeping until the next step falls due; the activity log notes it once a day rather than on every check. Leads added to a waiting campaign are sent on the same terms, without waiting for that re-check or a restart, unless the campaign sets a delay before the first email. Leads added while a campaign is mid-send join the queue and go out at its current pace, so adding leads never shortens the gap between two sends.
 
+### Sending in each lead's local time
+
+Under **Whose time** on the Schedule tab, pick **Each lead's local time** to read the same weekly windows in every recipient's own timezone instead of the campaign's: a `Mon-Fri 9-5` window reaches a lead in Tokyo between 9 and 5 Tokyo time and a lead in Chicago between 9 and 5 Chicago time, from one campaign. The new-campaign wizard has the same switch under its sending window. A lead whose record says nothing about where they are is sent on the campaign's timezone.
+
+**Where your leads are**, below the choice, counts the campaign's leads by timezone before you launch, with the time it is there now and, for the campaign's own timezone, where today's window lands on their clock (a New York `9-5` reads `23:00-07:00` in Tokyo). It also says how many leads have no location, so you can fill the gaps before they are sent on the fallback.
+
+While one lead waits for their morning, the campaign keeps sending to the leads whose day is open, so a campaign with leads on several continents spreads its day across them. Daily limits still reset at midnight UTC. Each mailbox still keeps its own hours, its [working hours](/guides/sending-behavior/) or `8am` to `8pm` in its own timezone: a lead whose day never overlaps any of the campaign's mailboxes waits, so add mailboxes set to that region's timezone or run the region as its own campaign. See [Sending by region and timezone](/guides/regions-and-timezones/).
+
 ### Delay before the first email
 
 By default a contact's first email is due the moment they enter the campaign. The campaign's **Settings** > **First email** holds it back instead: choose **After a wait**, then pick a preset (`1 hour`, `4 hours`, `1 day`, `2 days`, `3 days`, `1 week`) or a custom amount in minutes, hours or days, up to `90` days. The same control is on the **Start** card at the top of the Steps canvas and on the line under it, and all of them write one setting.
@@ -418,7 +514,7 @@ Optional **campaign dates** bound when it may send. Leave both blank to run open
 
 The play and pause buttons work from the list row or the detail view. Starting moves the campaign to **active** and begins scheduling inside your windows and limits; pausing stops new scheduling immediately and resumes from where it left off.
 
-A campaign can pause itself: **paused, no accounts** when it loses every sender or no sender can send under its settings (a sending behaviour profile with no working days), **paused, trial expired** when a trial ends, **auto-paused** when a guardrail trips, **needs verification** when address verification has refused every remaining lead (the campaign offers to re-verify them or send anyway; see [address verification](/guides/deliverability/#address-verification)), and plain **paused** if it ever loses its workspace, because unsubscribes, bounces and complaints are checked per workspace and cannot be honoured without one. It moves to **finished** once every contact completes the sequence or its end date passes, unless **Keep running for new leads** is on: then it stays active and shows **waiting for leads** until the next lead arrives, and only its end date finishes it. Configured to do so, it also stops following up with a contact the moment they reply.
+A campaign can pause itself: **paused, no accounts** when it loses every sender or no sender can send under its settings (a sending behaviour profile with no working days), and it resumes on its own within about five minutes once a mailbox it can send from is back (reconnected, switched back on, or its domain passing authentication again), logging **Campaign resumed automatically** in its activity; a campaign you paused yourself stays paused. It also pauses as **paused, trial expired** when a trial ends, **auto-paused** when a guardrail trips, **needs verification** when address verification has refused every remaining lead (the campaign offers to re-verify them or send anyway; see [address verification](/guides/deliverability/#address-verification)), and plain **paused** if it ever loses its workspace, because unsubscribes, bounces and complaints are checked per workspace and cannot be honoured without one. It moves to **finished** once every contact completes the sequence or its end date passes, unless **Keep running for new leads** is on: then it stays active and shows **waiting for leads** until the next lead arrives, and only its end date finishes it. Configured to do so, it also stops following up with a contact the moment they reply.
 
 An auto-pause is never silent. It writes a red entry to the campaign's activity log saying which of the several possible causes it was, and every teammate's campaign list moves to the paused status live, so a campaign that stops sending overnight is visible the moment anyone looks at it rather than hours later.
 
@@ -430,9 +526,11 @@ A finished campaign starts again on its own when a lead is added to it, whether 
 
 ## Duplicate and delete
 
-Every campaign has a **⋯** menu, on its row in the list and in the header of its detail view, with **Edit**, **Duplicate**, **Start** or **Pause**, and **Delete**. Both actions need the **Manage campaigns** permission; a member without it is told which permission is missing instead of the action failing later.
+Every campaign has a **⋯** menu, on its row in the list and in the header of its detail view, with **Edit**, **Duplicate**, **Copy to workspace…** (when you belong to more than one workspace), **Start** or **Pause**, and **Delete**. Duplicate and Delete need the **Manage campaigns** permission; a member without it is told which permission is missing instead of the action failing later.
 
 **Duplicate** creates a new draft from the campaign's configuration and opens its settings so you can rename it (it starts as `name (copy)`), pick a different audience, change the copy, or adjust the schedule before starting it. The copy keeps every setting, the steps with their branching, the sending accounts, folders, tags, A/B variants and attachments. It does not keep leads, progress, statistics, activity, the ramp level, an auto-pause, or a start or end date that has already passed. The original is not touched, and the two campaigns are independent from then on. A duplicate counts as a new campaign for the daily creation limit.
+
+**Copy to workspace…** sends the campaign to your other workspaces as drafts, for example from an agency workspace to its clients. Each copy keeps the steps, branching, settings, schedule, A/B variants and attachments, and the images its emails show are copied into the destination too. It does not keep leads, progress, statistics, sending accounts, mailbox tags, folders or the tracking domain. Step settings that name something only the original workspace has (a tag, segment, pipeline, automation, teammate or form link) are cleared and listed so you can pick them again. You need to view campaigns here and manage campaigns, with access to the whole workspace, in each destination. See [Copy campaigns to a client](/guides/agencies/#copy-campaigns-to-a-client).
 
 **Delete** asks for confirmation that spells out what goes: the campaign, its steps, lead progress and activity. Contacts and emails already sent stay. A running campaign can be deleted directly; the confirmation says so, and sending stops immediately because every task waiting for the campaign is cancelled together with it. The same action is available at the bottom of the campaign's **Settings**. Deletion cannot be undone.
 
@@ -489,7 +587,7 @@ A paused campaign shows the reason and the numbers behind it on the **Auto-pause
 
 ## Live activity
 
-The detail view streams sends, opens, clicks, replies, bounces, and skips as they happen, for every teammate at once. The **Sending** card appears only while an email is actually being handed to a worker, and always names the contact; between sends the panel shows the campaign's progress and the log, not a send in flight. A **Needs attention** panel above it surfaces failures such as a step that could not be scheduled, a send the worker could not complete, or a mailbox whose sending worker is offline; retryable failures return to the queue automatically. Routine mailbox reconnect delays stay in the informational recent log while Warmbly retries, rather than asking the user to intervene.
+The detail view streams sends, opens, clicks, replies, bounces, and skips as they happen, for every teammate at once. The **Sending** card appears only while an email is actually being handed to a worker, and always names the contact; between sends the panel shows the campaign's progress and the log, not a send in flight. A **Needs attention** panel above it surfaces failures such as a step that could not be scheduled, a send the worker could not complete, or a mailbox whose sending worker is offline; retryable failures return to the queue automatically. Routine mailbox reconnect delays, sends postponed before they leave Warmbly, and temporary provider failures stay in the informational recent log while Warmbly retries, rather than asking the user to intervene.
 
 If scheduling stalls on a transient infrastructure hiccup, Warmbly re-seeds within a few minutes. Pausing and resuming forces a fresh start.
 
@@ -530,9 +628,9 @@ The rules above catch what rules can catch. **Analyze with AI**, under the score
 - copy-level advice that has no single fragment to point at
 - an overall deliverability score out of 100
 
-It runs on the AI provider configured for the deployment (see [AI credits](/guides/ai-credits/) for the cost, and [Configuration](/development/configuration/) for self-host setup). It needs the **Use AI** permission. A deployment with neither an AI provider nor TypeSafe configured says so in place of the button rather than offering something that cannot run.
+It runs on the AI provider configured for the deployment (see [Balance and usage](/guides/ai-credits/) for the cost, and [Configuration](/development/configuration/) for self-host setup). It needs the **Use AI** permission. A deployment with neither an AI provider nor TypeSafe configured says so in place of the button rather than offering something that cannot run.
 
-When the deployment has TypeSafe configured (`TYPESAFE_API_KEY`), the same click also returns a **Reads as** block: how the copy lands with the person receiving it, on a personal-note-to-bulk-mail scale; whether it is written for this reader or could be sent to anyone; whether it makes one clear ask, several, or none; and a warning when it makes a claim a spam filter would object to. These are calibrated numbers from a reader model, not prose, and the subject and body are sent to TypeSafe to get them. On a deployment with TypeSafe and no AI provider, the button still works: it returns the rules score, the Reads as block and a one-line reading in place of the quoted findings, and spends no credits.
+When the deployment has TypeSafe configured (`TYPESAFE_API_KEY`), the same click also returns a **Reads as** block: how the copy lands with the person receiving it, on a personal-note-to-bulk-mail scale; whether it is written for this reader or could be sent to anyone; whether it makes one clear ask, several, or none; and a warning when it makes a claim a spam filter would object to. These are calibrated numbers from a reader model, not prose, and the subject and body are sent to TypeSafe to get them. On a deployment with TypeSafe and no AI provider, the button still works: it returns the rules score, the Reads as block and a one-line reading in place of the quoted findings, and charges nothing to the balance.
 
 Every quote is checked against your draft before it is shown. A fragment the model could not have copied from your copy is dropped rather than displayed, so the panel never points at a sentence you did not write.
 
@@ -563,6 +661,8 @@ A **placement monitor** repeats that on a schedule while the campaign runs, ever
 A diagnostic-history mailbox starts cold sending at a conservative ceiling of five/day. Synthetic traffic and elapsed age do not show that real recipients welcome outreach.
 
 Confirmed human replies to actual campaign recipients in the last seven days permit bounded increases: at most five per clean day, and never more than the confirmed reply count. Complaints clear positive progression. Without reply evidence, the ceiling stays five/day.
+
+This applies to campaigns whose [ramp-up](#ramp-up) is **As replies come in**, the default. A campaign set to ramp **on a schedule** or send at **full volume** does not hold its mailboxes to this ceiling.
 
 Configured campaign/mailbox caps, shared daily/rolling recipient limits and negative-feedback holds still bind. This is product pacing, not a universal provider-approved safe volume or proven reputation benefit. Missing evidence leaves full-cap dates unknown rather than projecting synthetic age into readiness. If the feedback lookup fails or omits a known warmed mailbox, its execution, projection and displayed explanation retain the conservative ceiling. A missing lookup does not mean the mailbox never warmed.
 

@@ -91,6 +91,10 @@ var (
 	ErrPasswordChangeRequired = NewWithIdentifier(Forbidden, "password_change_required",
 		"This account still has the password it was issued, which has to be replaced first. Sign in with your email and password to choose your own.")
 
+	// ErrInitialPasswordWebOnly answers an issued initial password from an app build that cannot take the change step.
+	ErrInitialPasswordWebOnly = NewWithIdentifier(Forbidden, "initial_password_web_only",
+		"This account still has the temporary password it was given. Finish your first sign-in on the web, where you choose your own password, then sign in here with that password.")
+
 	// ErrPasswordChangeExpired ends a choose-your-password step that is unknown, expired, already used, or whose issued password ran out.
 	ErrPasswordChangeExpired = NewWithIdentifier(BadRequest, "password_change_expired",
 		"That sign-in request expired or was already used. Sign in again.")
@@ -169,6 +173,10 @@ var (
 	// hits this.
 	ErrEmailOnboardGoogleOAuthDisabled = NewWithIdentifier(Forbidden, "mailbox_gmail_oauth_disabled",
 		"New Gmail mailboxes connect with an app password over IMAP and SMTP on this deployment, not with Google sign-in. Mailboxes already connected with Google sign-in keep working and can still be re-authorized. See https://docs.warmbly.com/guides/mailboxes/#gmail-and-google-workspace")
+	// Raised when a Google sign-in start hints a personal gmail.com or
+	// googlemail.com address; those connect with an app password.
+	ErrEmailOnboardGooglePersonal = NewWithIdentifier(BadRequest, "google_personal_app_password",
+		"Personal Gmail addresses (gmail.com, googlemail.com) connect with an app password over IMAP and SMTP, not with Google sign-in. Turn on 2-Step Verification on the Google account, create an app password, and connect the mailbox with it. See https://docs.warmbly.com/guides/mailboxes/#personal-gmail")
 	ErrEmailOnboardState         = New(BadRequest, "Invalid or expired onboarding state.")
 	ErrEmailOnboardReturnOrigin  = NewWithIdentifier(BadRequest, "mailbox_oauth_return_origin", "This dashboard origin is not allowed for mailbox OAuth. Add its exact origin to CORS_ALLOW_ORIGINS.")
 	ErrEmailOnboardCode          = New(BadRequest, "Authorization code is missing or invalid.")
@@ -329,6 +337,16 @@ func MailboxAllowanceReached(used, allowance int, paid bool) *Error {
 	}
 	return NewWithIdentifier(Forbidden, "mailbox_allowance_reached",
 		fmt.Sprintf("This workspace holds %d of its %d mailboxes. Request an increase, or move to a plan with more daily sends.", used, allowance))
+}
+
+// ContactLimitReachedCode identifies ContactLimitReached.
+const ContactLimitReachedCode = "contact_limit_reached"
+
+// ContactLimitReached refuses new contacts that would take the workspace past its contact limit.
+func ContactLimitReached(have, limit, adding int) *Error {
+	return NewWithIdentifier(Forbidden, ContactLimitReachedCode,
+		fmt.Sprintf("Adding %d contacts would take this workspace past its limit of %d (it has %d). Remove contacts, request an increase, or upgrade your plan.",
+			adding, limit, have))
 }
 
 // StorageLimitReached is the refusal for an upload or copy (an attachment, or

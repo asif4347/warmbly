@@ -1,5 +1,5 @@
 import { NoAccess } from "@/components/layout/NoAccess";
-import { usePermission } from "@/hooks/usePermission";
+import { useAccessRestricted, usePermission } from "@/hooks/usePermission";
 import { useUserProfile } from "@/hooks/context/user";
 import useBrowseState from "@/hooks/useBrowseState";
 import { browseText, campaignStatusSchema, campaignSortSchema } from "@/lib/browse-contacts-campaigns";
@@ -255,7 +255,9 @@ export default function CampaignsPage() {
     // A draft clicked in the list reopens in the new-campaign flow, for a
     // member who may edit it; anyone else gets the campaign page.
     const [draftId, setDraftId] = useState<string | null>(null);
-    const canManage = usePermission("MANAGE_CAMPAIGNS");
+    // Creating, drafting and filing campaigns reach past a restricted member's grants.
+    const restricted = useAccessRestricted();
+    const canManage = usePermission("MANAGE_CAMPAIGNS") && !restricted;
     const [launchTarget, setLaunchTarget] = useState<Campaign | null>(null);
 
     async function toggleCampaign(id: string, currentStatus: string) {
@@ -332,19 +334,24 @@ export default function CampaignsPage() {
                             : `${campaigns.length} ${campaigns.length === 1 ? "campaign" : "campaigns"}`
                 }
             >
-                <TopbarAction
-                    variant="ghost"
-                    icon={<Settings2Icon className="w-3 h-3" />}
-                    onClick={() => p.setFoldersEdit(true)}
-                >
-                    Folders
-                </TopbarAction>
-                <TopbarAction
-                    icon={<PlusIcon className="w-3 h-3" />}
-                    onClick={() => setNewOpen(true)}
-                >
-                    New campaign
-                </TopbarAction>
+                {!restricted && (
+                    <>
+                        <TopbarAction
+                            variant="ghost"
+                            icon={<Settings2Icon className="w-3 h-3" />}
+                            onClick={() => p.setFoldersEdit(true)}
+                        >
+                            Folders
+                        </TopbarAction>
+                        <TopbarAction
+                            writes
+                            icon={<PlusIcon className="w-3 h-3" />}
+                            onClick={() => setNewOpen(true)}
+                        >
+                            New campaign
+                        </TopbarAction>
+                    </>
+                )}
             </PageTopbar>
 
             <StatStrip cols={5}>
@@ -352,6 +359,7 @@ export default function CampaignsPage() {
                     label="All"
                     value={counts.total}
                     sub="campaigns"
+                    active={status === "all"}
                     onClick={() => setStatus("all")}
                 />
                 <Stat
@@ -359,18 +367,21 @@ export default function CampaignsPage() {
                     value={counts.active}
                     sub="sending now"
                     accent={counts.active > 0}
+                    active={status === "active"}
                     onClick={() => setStatus("active")}
                 />
                 <Stat
                     label="Paused"
                     value={counts.paused}
                     sub="resumable"
+                    active={status === "paused"}
                     onClick={() => setStatus("paused")}
                 />
                 <Stat
                     label="Draft"
                     value={counts.draft}
                     sub="not started"
+                    active={status === "draft"}
                     onClick={() => setStatus("draft")}
                 />
                 <Stat
@@ -378,6 +389,7 @@ export default function CampaignsPage() {
                     value={counts.completed}
                     sub="finished"
                     last
+                    active={status === "completed"}
                     onClick={() => setStatus("completed")}
                 />
             </StatStrip>
@@ -489,12 +501,15 @@ export default function CampaignsPage() {
                             title="No campaigns yet"
                             body="Create your first sequence to start reaching prospects."
                             cta={
-                                <TopbarAction
-                                    icon={<PlusIcon className="w-3 h-3" />}
-                                    onClick={() => setNewOpen(true)}
-                                >
-                                    New campaign
-                                </TopbarAction>
+                                restricted ? undefined : (
+                                    <TopbarAction
+                                        writes
+                                        icon={<PlusIcon className="w-3 h-3" />}
+                                        onClick={() => setNewOpen(true)}
+                                    >
+                                        New campaign
+                                    </TopbarAction>
+                                )
                             }
                         />
                     ) : (
@@ -560,7 +575,7 @@ export default function CampaignsPage() {
                                             })
                                             : "—"}
                                     </span>
-                                    <CampaignFolderMenu campaign={c} folders={folders} />
+                                    {!restricted && <CampaignFolderMenu campaign={c} folders={folders} />}
                                     <button
                                         type="button"
                                         onClick={(e) => {

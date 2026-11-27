@@ -38,6 +38,14 @@ const (
 	IntegrationApollo       IntegrationProvider = "apollo"
 	IntegrationClay         IntegrationProvider = "clay"
 
+	// Lead finder place providers; a connection holds the workspace's own key.
+	IntegrationGooglePlaces IntegrationProvider = "google_places"
+	IntegrationFoursquare   IntegrationProvider = "foursquare"
+	IntegrationOutscraper   IntegrationProvider = "outscraper"
+	// IntegrationJina is a Jina AI key: the lead finder reads blocked sites and
+	// searches the web through it.
+	IntegrationJina IntegrationProvider = "jina"
+
 	// Verification
 	IntegrationMillionVerifier IntegrationProvider = "millionverifier"
 	IntegrationCleanMyList     IntegrationProvider = "cleanmylist"
@@ -64,6 +72,10 @@ var AllIntegrationProviders = []IntegrationProvider{
 	IntegrationGoogleSheets,
 	IntegrationApollo,
 	IntegrationClay,
+	IntegrationGooglePlaces,
+	IntegrationFoursquare,
+	IntegrationOutscraper,
+	IntegrationJina,
 	IntegrationMillionVerifier,
 	IntegrationCleanMyList,
 }

@@ -105,6 +105,8 @@ export default interface Form {
     redirect_url_active?: boolean;
     campaign_id?: string;
     category_ids: string[];
+    /** Segments each submitted contact is pinned into. */
+    segment_ids?: string[];
     allowed_domains: string[];
     captcha_enabled: boolean;
     /** Classify each submission through TypeSafe; junk creates no contact. */
@@ -134,6 +136,7 @@ export interface FormWrite {
     redirect_url?: string;
     campaign_id?: string | null;
     category_ids?: string[];
+    segment_ids?: string[];
     allowed_domains?: string[];
     captcha_enabled?: boolean;
     triage_enabled?: boolean;
@@ -153,7 +156,8 @@ export interface FormSubmission {
     source_url: string;
     triage?: FormTriage;
     triage_confidence?: number;
-    created_at: Date;
+    /** RFC 3339 with microseconds; the paging order, so never round it through Date. */
+    created_at: string;
     contact_email?: string;
     contact_name?: string;
     campaign_name?: string;

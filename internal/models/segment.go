@@ -141,7 +141,7 @@ var SegmentFieldCatalog = []SegmentFieldSpec{
 	{Field: "phone", Label: "Phone", Group: "Contact", Kind: SegmentFieldText},
 	{Field: "subscribed", Label: "Subscribed", Group: "Contact", Kind: SegmentFieldBool},
 	{Field: "suppressed", Label: "On the suppression list", Group: "Contact", Kind: SegmentFieldBool},
-	{Field: "source", Label: "Source", Group: "Contact", Kind: SegmentFieldEnum, Options: []string{"unknown", "manual", "campaign", "import", "sheet_sync", "api", "ai_assistant", "form", "apollo", "clay"}},
+	{Field: "source", Label: "Source", Group: "Contact", Kind: SegmentFieldEnum, Options: []string{"unknown", "manual", "campaign", "import", "sheet_sync", "api", "ai_assistant", "form", "apollo", "clay", "lead_finder"}},
 	{Field: "verification_status", Label: "Verification status", Group: "Contact", Kind: SegmentFieldEnum, Options: []string{"valid", "risky", "invalid", "unknown"}},
 	{Field: "is_catch_all", Label: "Catch-all domain", Group: "Contact", Kind: SegmentFieldBool},
 	{Field: "mail_host", Label: "Email provider", Group: "Contact", Kind: SegmentFieldEnum, Options: mailHostOptions(), OptionLabels: mailHostLabels()},
@@ -151,6 +151,11 @@ var SegmentFieldCatalog = []SegmentFieldSpec{
 	{Field: "category", Label: "Label", Group: "Contact", Kind: SegmentFieldCategory},
 
 	{Field: "company", Label: "Company name", Group: "Company", Kind: SegmentFieldText},
+
+	{Field: "world_region", Label: "World region", Group: "Location", Kind: SegmentFieldEnum, Options: worldRegionOptions(), OptionLabels: worldRegionLabels()},
+	{Field: "country", Label: "Country", Group: "Location", Kind: SegmentFieldEnum, Options: countryOptions(), OptionLabels: countryLabels()},
+	{Field: "timezone", Label: "Timezone", Group: "Location", Kind: SegmentFieldEnum, Options: timezoneOptions(), OptionLabels: timezoneLabels()},
+	{Field: "location_known", Label: "Location known", Group: "Location", Kind: SegmentFieldBool},
 
 	{Field: "campaign", Label: "In campaign", Group: "Campaign activity", Kind: SegmentFieldCampaign},
 	{Field: "campaign_count", Label: "Number of campaigns", Group: "Campaign activity", Kind: SegmentFieldNumber},
@@ -264,6 +269,10 @@ type SegmentAddToCampaignResult struct {
 
 // CampaignSegmentsMax bounds how many segments one campaign can link.
 const CampaignSegmentsMax = 20
+
+// ImportSourceSegmentsMax bounds how many segments a saved contact source
+// (an Apollo or Salesforce import, a form) pins what it brings in into.
+const ImportSourceSegmentsMax = 20
 
 // CampaignSegmentsWrite replaces a campaign's linked segments.
 type CampaignSegmentsWrite struct {

@@ -80,6 +80,7 @@ type AdminRepository interface {
 	// so the admin table can answer "whose mailbox is this and where
 	// does it live" without N+1 fetches.
 	SearchMailboxesForAdmin(ctx context.Context, search *models.AdminMailboxSearch) (*models.AdminMailboxesResult, error)
+	MailboxesOnDomains(ctx context.Context, domains []string, skip []uuid.UUID, limit int) ([]models.AdminMailboxTarget, int, error)
 }
 
 type adminRepository struct {
@@ -558,10 +559,10 @@ func (r *adminRepository) GetUserBans(ctx context.Context, userID uuid.UUID) ([]
 	query := `
 		SELECT ub.id, ub.user_id, ub.banned_by, ub.reason, ub.banned_at,
 			ub.unbanned_at, ub.unbanned_by, ub.unban_reason,
-			bu.id, bu.first_name, bu.last_name, bu.email,
+			COALESCE(bu.id, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(bu.first_name, ''), COALESCE(bu.last_name, ''), COALESCE(bu.email, ''),
 			uu.id, uu.first_name, uu.last_name, uu.email
 		FROM user_bans ub
-		JOIN users bu ON bu.id = ub.banned_by
+		LEFT JOIN users bu ON bu.id = ub.banned_by
 		LEFT JOIN users uu ON uu.id = ub.unbanned_by
 		WHERE ub.user_id = $1
 		ORDER BY ub.banned_at DESC
@@ -588,7 +589,10 @@ func (r *adminRepository) GetUserBans(ctx context.Context, userID uuid.UUID) ([]
 			return nil, err
 		}
 
-		ban.BannedByUser = &bannedByUser
+		// An admin whose account was deleted has no summary.
+		if bannedByUser.ID != uuid.Nil {
+			ban.BannedByUser = &bannedByUser
+		}
 		if unbannedByID != nil {
 			id, _ := uuid.Parse(*unbannedByID)
 			ban.UnbannedByUser = &models.AdminUserSummary{
@@ -1091,7 +1095,9 @@ func (r *adminRepository) ListBlockedAccounts(ctx context.Context, offset, limit
 		); err != nil {
 			return nil, err
 		}
-		a.User = &user
+		if user.ID != uuid.Nil {
+			a.User = &user
+		}
 		if appealStatus != nil {
 			status := models.WarmupAppealStatus(*appealStatus)
 			a.AppealStatus = &status
@@ -1201,9 +1207,9 @@ func (r *adminRepository) ListAppeals(ctx context.Context, status string, offset
 	query := `
 		SELECT wa.id, wa.email_account_id, wa.user_id, wa.reason, wa.status,
 			wa.reviewed_by, wa.reviewed_at, wa.review_notes, wa.created_at,
-			u.id, u.first_name, u.last_name, u.email
+			COALESCE(u.id, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(u.first_name, ''), COALESCE(u.last_name, ''), COALESCE(u.email, '')
 		FROM warmup_appeals wa
-		JOIN users u ON u.id = wa.user_id
+		LEFT JOIN users u ON u.id = wa.user_id
 		` + whereClause + `
 		ORDER BY wa.created_at DESC, wa.id DESC
 		` + adminLimitOffset("$1", offset)
@@ -1228,7 +1234,9 @@ func (r *adminRepository) ListAppeals(ctx context.Context, status string, offset
 			return nil, err
 		}
 
-		a.User = &user
+		if user.ID != uuid.Nil {
+			a.User = &user
+		}
 		appeals = append(appeals, a)
 	}
 
@@ -1252,9 +1260,9 @@ func (r *adminRepository) GetAppeal(ctx context.Context, appealID uuid.UUID) (*m
 	query := `
 		SELECT wa.id, wa.email_account_id, wa.user_id, wa.reason, wa.status,
 			wa.reviewed_by, wa.reviewed_at, wa.review_notes, wa.created_at,
-			u.id, u.first_name, u.last_name, u.email
+			COALESCE(u.id, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(u.first_name, ''), COALESCE(u.last_name, ''), COALESCE(u.email, '')
 		FROM warmup_appeals wa
-		JOIN users u ON u.id = wa.user_id
+		LEFT JOIN users u ON u.id = wa.user_id
 		WHERE wa.id = $1
 	`
 
@@ -1273,7 +1281,9 @@ func (r *adminRepository) GetAppeal(ctx context.Context, appealID uuid.UUID) (*m
 		return nil, err
 	}
 
-	a.User = &user
+	if user.ID != uuid.Nil {
+		a.User = &user
+	}
 	return &a, nil
 }
 
@@ -1660,9 +1670,9 @@ func (r *adminRepository) SearchAuditLogs(ctx context.Context, search *models.Ad
 	query := `
 		SELECT al.id, al.admin_user_id, al.action, al.target_type, al.target_id,
 			al.details, COALESCE(al.ip_address, ''), COALESCE(al.user_agent, ''), al.created_at,
-			u.id, u.first_name, u.last_name, u.email
+			COALESCE(u.id, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(u.first_name, ''), COALESCE(u.last_name, ''), COALESCE(u.email, '')
 		FROM admin_audit_logs al
-		JOIN users u ON u.id = al.admin_user_id
+		LEFT JOIN users u ON u.id = al.admin_user_id
 		` + whereClause + `
 		ORDER BY al.created_at DESC, al.id DESC
 		LIMIT $` + itoa(argNum)
@@ -1692,7 +1702,9 @@ func (r *adminRepository) SearchAuditLogs(ctx context.Context, search *models.Ad
 			json.Unmarshal(detailsJSON, &log.Details)
 		}
 
-		log.AdminUser = &user
+		if user.ID != uuid.Nil {
+			log.AdminUser = &user
+		}
 		logs = append(logs, log)
 	}
 
@@ -2154,4 +2166,29 @@ func (r *adminRepository) CountSuperAdmins(ctx context.Context) (int, error) {
 		`SELECT count(*) FROM users WHERE (admin_permissions & $1) = $1`,
 		uint32(models.LiveAdminPermissions)).Scan(&n)
 	return n, err
+}
+
+// MailboxesOnDomains returns up to limit workspace mailboxes whose address is on one of domains (lowercase), outside skip, and how many match in all.
+func (r *adminRepository) MailboxesOnDomains(ctx context.Context, domains []string, skip []uuid.UUID, limit int) ([]models.AdminMailboxTarget, int, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, email, organization_id, status::text, count(*) OVER ()
+		FROM email_accounts
+		WHERE lower(split_part(email, '@', 2)) = ANY($1) AND organization_id IS NOT NULL
+			AND NOT (id = ANY($2::uuid[]))
+		ORDER BY organization_id, email
+		LIMIT $3`, domains, skip, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []models.AdminMailboxTarget
+	total := 0
+	for rows.Next() {
+		var t models.AdminMailboxTarget
+		if err := rows.Scan(&t.ID, &t.Email, &t.OrganizationID, &t.Status, &total); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, t)
+	}
+	return out, total, rows.Err()
 }

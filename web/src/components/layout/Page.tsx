@@ -22,6 +22,8 @@ import React from "react";
 import { Link } from "@tanstack/react-router";
 import { hrefTarget } from "@/lib/routerSearch";
 import { cn } from "@/lib/utils";
+import AnimatedNumber from "@/components/ui/AnimatedNumber";
+import useWorkspaceWritable, { showWorkspaceReadOnly } from "@/hooks/useWorkspaceWritable";
 
 // Internal app paths navigate client-side (router Link, no full reload);
 // external URLs (http..., mailto:, //) stay as a plain anchor.
@@ -87,18 +89,7 @@ export function PageTopbar({
     );
 }
 
-/**
- * Primary topbar action — solid sky pill at 28px tall.
- */
-export function TopbarAction({
-    children,
-    onClick,
-    href,
-    icon,
-    variant = "primary",
-    disabled = false,
-    className,
-}: {
+interface TopbarActionProps {
     children: React.ReactNode;
     onClick?: () => void;
     href?: string;
@@ -106,7 +97,35 @@ export function TopbarAction({
     variant?: "primary" | "ghost";
     disabled?: boolean;
     className?: string;
-}) {
+    /** The action writes to the workspace: held, with the reason, while the workspace takes no writes. */
+    writes?: boolean;
+    /** Set by `writes`: why the action is held. A held action stays focusable and explains itself on click. */
+    heldReason?: string;
+}
+
+/**
+ * Primary topbar action — solid sky pill at 28px tall.
+ */
+export function TopbarAction({ writes, ...props }: TopbarActionProps) {
+    return writes ? <WritingTopbarAction {...props} /> : <TopbarActionView {...props} />;
+}
+
+function WritingTopbarAction(props: Omit<TopbarActionProps, "writes">) {
+    const workspace = useWorkspaceWritable();
+    if (workspace.writable) return <TopbarActionView {...props} />;
+    return <TopbarActionView {...props} href={undefined} heldReason={workspace.reason} onClick={() => showWorkspaceReadOnly(workspace.reason)} />;
+}
+
+function TopbarActionView({
+    children,
+    onClick,
+    href,
+    icon,
+    variant = "primary",
+    disabled = false,
+    className,
+    heldReason,
+}: Omit<TopbarActionProps, "writes">) {
     const cls =
         variant === "primary"
             ? "bg-sky-600 hover:bg-sky-700 text-white"
@@ -136,8 +155,11 @@ export function TopbarAction({
         <button
             onClick={onClick}
             disabled={disabled}
+            aria-disabled={heldReason ? true : undefined}
+            title={heldReason}
             className={cn(
                 "h-7 px-2.5 rounded-md inline-flex items-center gap-1.5 text-[12px] font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed",
+                heldReason && "opacity-60 cursor-not-allowed",
                 cls,
                 className,
             )}
@@ -177,54 +199,62 @@ export function StatStrip({ children, cols = 4 }: { children: React.ReactNode; c
 }
 
 /**
- * Stat — one cell of the StatStrip. `accent` shows a small pulsing sky
- * dot next to the label. Each cell has a right border that compounds into
- * the strip's vertical-rule pattern; the last one drops it via `last`.
+ * Stat — one cell of the StatStrip: a sentence-case label, the number, a
+ * quiet caption. `accent` marks something live with a sky dot, `tone="warn"`
+ * colours a number that needs attention, and a bare 0 fades. `active` marks
+ * the selected cell when the strip filters the list below it.
  */
 export function Stat({
     label,
     value,
     sub,
     accent = false,
+    tone,
+    active,
     href,
     last = false,
     onClick,
+    animated = false,
 }: {
     label: string;
     value: React.ReactNode;
-    sub?: string;
+    /** A live number counts to each new value instead of jumping. */
+    animated?: boolean;
+    sub?: React.ReactNode;
     accent?: boolean;
+    tone?: "warn";
+    active?: boolean;
     href?: string;
     onClick?: () => void;
     last?: boolean;
 }) {
+    const zero = value === 0 || value === "0";
     const inner = (
         <>
-            <div className="flex items-center gap-2">
-                <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400 font-medium">
-                    {label}
-                </span>
-                {accent && (
-                    <span className="size-1.5 rounded-full bg-sky-500 animate-pulse" />
-                )}
-                {(href || onClick) && (
-                    <span className="ml-auto text-[10px] text-slate-300 group-hover:text-slate-500 transition-colors">
-                        →
-                    </span>
+            <div className="flex items-center gap-1.5 min-w-0">
+                {accent && <span className="size-1.5 shrink-0 rounded-full bg-sky-500" />}
+                <span className={cn("text-[12px] font-medium truncate", active ? "text-slate-900" : "text-slate-500")}>{label}</span>
+                {(href || onClick) && active === undefined && (
+                    <span className="ml-auto text-[11px] text-slate-300 group-hover:text-slate-500 transition-colors">→</span>
                 )}
             </div>
-            <div className="text-[22px] md:text-[26px] text-slate-900 font-light leading-none mt-1.5 md:mt-2 tabular-nums">
-                {typeof value === "number" ? value.toLocaleString() : value}
+            <div
+                className={cn(
+                    "text-[20px] md:text-[22px] font-semibold tracking-[-0.02em] leading-none mt-1.5 tabular-nums truncate",
+                    tone === "warn" && !zero ? "text-amber-700" : zero ? "text-slate-300" : "text-slate-900",
+                )}
+            >
+                {typeof value === "number" ? animated ? <AnimatedNumber value={value} /> : value.toLocaleString() : value}
             </div>
-            {sub && (
-                <div className="text-[10px] text-slate-400 mt-1.5 font-mono truncate">{sub}</div>
-            )}
+            {sub && <div className="text-[11.5px] text-slate-400 mt-1.5 truncate">{sub}</div>}
+            {active && <span aria-hidden className="absolute inset-x-0 -bottom-px h-0.5 bg-sky-600" />}
         </>
     );
     const cls = cn(
-        "group px-5 py-2.5 md:py-4 transition-colors",
+        "group relative px-5 py-2.5 md:py-3.5 min-w-0 transition-colors",
         !last && "border-r border-slate-200",
         (href || onClick) && "hover:bg-slate-50 cursor-pointer",
+        active && "bg-sky-50/40",
     );
     if (href) {
         return isInternalHref(href) ? (
@@ -239,7 +269,7 @@ export function Stat({
     }
     if (onClick) {
         return (
-            <button onClick={onClick} className={cn(cls, "text-left")}>
+            <button type="button" onClick={onClick} aria-pressed={active} className={cn(cls, "text-left")}>
                 {inner}
             </button>
         );
@@ -265,11 +295,14 @@ export function PageBody({ children, className }: { children: React.ReactNode; c
 export function SectionBar({
     label,
     count,
+    meta,
     children,
     className,
 }: {
     label: string;
     count?: number | string;
+    /** Inline facts after the count, left of the toolbar. */
+    meta?: React.ReactNode;
     children?: React.ReactNode;
     className?: string;
 }) {
@@ -279,6 +312,8 @@ export function SectionBar({
                 // Single 36px row on >=md; on mobile a toolbar holding a search
                 // takes its own full-width row instead of crowding the label.
                 "min-h-9 md:h-9 px-5 py-1.5 md:py-0 border-b border-slate-200/60 flex flex-wrap md:flex-nowrap items-center gap-x-2.5 gap-y-1.5 shrink-0",
+                // Inline facts beside a toolbar can outgrow one row; let the bar grow instead of overflowing.
+                meta && "md:h-auto md:py-1.5 md:flex-wrap",
                 className,
             )}
         >
@@ -290,6 +325,7 @@ export function SectionBar({
                     {count}
                 </span>
             )}
+            {meta && <div className="flex items-center gap-x-3 gap-y-1 flex-wrap min-w-0 md:ml-2">{meta}</div>}
             {children && (
                 <div className="ml-auto flex items-center gap-1.5 flex-wrap justify-end min-w-0 max-md:has-[[data-search-input]]:basis-full">
                     {children}

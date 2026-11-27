@@ -1,11 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type Inbox from "@/lib/api/models/app/emails/Inbox";
 import type Tag from "@/lib/api/models/app/Tag";
 import type * as UserModule from "@/hooks/context/user";
 import type AccountStatus from "@/lib/api/models/app/analytics/AccountStatus";
+import type * as BulkMailboxesModule from "@/lib/api/client/app/emails/bulkMailboxes";
 import type { CloudLinkMailboxRow } from "@/lib/api/models/app/cloudlink/CloudLink";
 import { utcToday } from "@/lib/campaignPeriod";
 import AddressesPage from "./page";
@@ -33,7 +34,8 @@ vi.mock("@/hooks/context/user", async (original) => ({
     ...await original<typeof UserModule>(),
     useUserProfile: () => ({ user: { id: "tag-order-user", tags } }),
 }));
-vi.mock("@/hooks/context/confirm", () => ({ useConfirm: () => ({ show: confirm }) }));
+const confirmContext = vi.hoisted(() => ({ value: undefined as unknown }));
+vi.mock("@/hooks/context/confirm", () => ({ useConfirm: () => (confirmContext.value ??= { show: confirm }) }));
 vi.mock("@/hooks/usePermission", () => ({ usePermission: () => true }));
 vi.mock("@/lib/api/hooks/app/emails/useEmails", () => ({
     default: ({ tag }: { tag: string }) => ({ emails: statusState.emailsLoading || statusState.emailsError ? [] : tag ? rows.filter((row) => row.tags.includes(tag)) : rows, isLoading: statusState.emailsLoading, isPending: statusState.emailsLoading, isError: statusState.emailsError || statusState.emailsIncomplete, isIncomplete: statusState.emailsIncomplete, refetch: vi.fn() }),
@@ -42,28 +44,40 @@ vi.mock("@/lib/api/hooks/app/analytics/useAccountStatuses", () => ({ default: ()
 vi.mock("@/lib/api/hooks/app/subscription/useFeatureStatus", () => ({ default: () => ({ data: { can_use_warmup: true } }) }));
 vi.mock("@/lib/api/hooks/auth/useAuthConfig", () => ({ default: () => ({ data: {}, isLoading: false }) }));
 vi.mock("@/lib/api/hooks/app/emails/useMailboxGrants", () => ({ useSigninMigration: () => ({ data: { data: [] } }) }));
-vi.mock("@/lib/api/hooks/app/advisor/useAdvisor", () => ({ useAdvisorEntityIndex: () => ({ get: () => [] }) }));
-vi.mock("@/hooks/useCloudPool", () => ({ default: () => ({ selfHosted: false, connected: statusState.cloudConnected, loading: statusState.cloudLoading, refreshing: statusState.cloudRefreshing, unavailable: statusState.cloudUnavailable, observedAt: 0, rowFor: (id: string) => cloudRows.get(id), isEnrolled: (id: string) => cloudRows.get(id)?.enrolled === true }) }));
+// Stable like the real hooks, so memoized rows can skip a render.
+const stableHooks = vi.hoisted(() => {
+    const noFindings: never[] = [];
+    return { advisor: { get: () => noFindings }, rowFor: (id: string) => cloudRows.get(id), isEnrolled: (id: string) => cloudRows.get(id)?.enrolled === true };
+});
+vi.mock("@/lib/api/hooks/app/advisor/useAdvisor", () => ({ useAdvisorEntityIndex: () => stableHooks.advisor }));
+vi.mock("@/hooks/useCloudPool", () => ({ default: () => ({ selfHosted: false, connected: statusState.cloudConnected, loading: statusState.cloudLoading, refreshing: statusState.cloudRefreshing, unavailable: statusState.cloudUnavailable, observedAt: 0, rowFor: stableHooks.rowFor, isEnrolled: stableHooks.isEnrolled }) }));
 vi.mock("@/lib/api/hooks/app/cloudlink/useCloudLink", () => ({
     useEnrollCloudLinkMailbox: () => ({}), useUnenrollCloudLinkMailbox: () => ({}), useCloudLinkMailboxLifecycle: () => ({}),
 }));
-vi.mock("@/lib/api/hooks/app/emails/useWarmupLifecycle", () => ({ default: () => ({}) }));
-vi.mock("@/lib/api/hooks/app/emails/useRemoveEmail", () => ({ default: () => ({}) }));
+vi.mock("@/lib/api/hooks/app/emails/useWarmupLifecycle", () => ({ default: () => ({}), warmupLifecycleOptions: () => ({}) }));
+vi.mock("@/lib/api/hooks/app/emails/useRemoveEmail", () => ({ default: () => ({}), removeEmailOptions: () => ({}) }));
+const bulkWarmup = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/api/client/app/emails/bulkMailboxes", async (original) => ({ ...await original<typeof BulkMailboxesModule>(), bulkWarmupEmails: bulkWarmup }));
 vi.mock("@/components/app/emails/useMailboxSwitch", () => ({ default: () => ({}), switchOffPrompt: vi.fn() }));
 vi.mock("@/components/app/emails/InboxDetails", () => ({ default: () => null }));
 vi.mock("@/lib/api/client/app/emails/updateEmail", () => ({ default: warmupUpdate }));
 vi.mock("@/lib/api/client/app/emails/warmupLifecycle", () => ({ default: warmupStart }));
 vi.mock("@/components/app/emails/migration/SigninMigrationDialog", () => ({ default: () => null }));
-vi.mock("@/components/app/emails/import/grants/MailboxGrantDialog", () => ({ default: () => null }));
 vi.mock("@/components/app/emails/import/MailboxImportsMenu", () => ({ default: () => null }));
 vi.mock("@/components/app/emails/CloudPathsPanel", () => ({ default: () => null }));
 vi.mock("@/components/app/advisor/AdvisorRowFlag", () => ({ default: () => null }));
 vi.mock("@/components/app/advisor/AdvisorSummaryBar", () => ({ default: () => null }));
+// One logo per row, so its render count is the number of row renders.
+const providerLogoRenders = vi.hoisted(() => ({ count: 0 }));
+vi.mock("@/components/app/emails/ProviderLogo", () => ({ default: () => { providerLogoRenders.count++; return null; } }));
 
-async function renderPage(tag = "") {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+async function renderPage(tag = "", client = new QueryClient({ defaultOptions: { queries: { retry: false } } }), observe?: () => void) {
+    function PageWithReports() {
+        useQuery({ queryKey: ["cloud-link", "workspace", "mailboxes"], queryFn: async () => { observe?.(); return [...cloudRows.values()]; }, enabled: !!observe, staleTime: Infinity });
+        return <AddressesPage />;
+    }
     const router = createRouter({
-        routeTree: createRootRoute({ component: AddressesPage }),
+        routeTree: createRootRoute({ component: PageWithReports }),
         history: createMemoryHistory({ initialEntries: [`/${tag ? `?tag=${tag}` : ""}`] }),
     });
     await router.load();
@@ -74,6 +88,11 @@ async function renderPage(tag = "") {
     );
 }
 
+function setCloudRows(list: CloudLinkMailboxRow[]) {
+    cloudRows.clear();
+    for (const row of list) cloudRows.set(row.id, row);
+}
+
 function orderedEmails() {
     return screen.getAllByRole("row").slice(1).map((row) => within(row).getByText(/@/).textContent);
 }
@@ -81,6 +100,14 @@ function orderedEmails() {
 function measuredStatus(row: Inbox): AccountStatus {
     return { id: row.id, email: row.email, provider: "gmail", status: "active", last_synced_at: null, health: { status: "healthy", score: 100 }, errors: [], daily_usage: { date: utcToday(), campaign_sent: 0, campaign_limit: 50 }, in_campaign: false };
 }
+
+// jsdom lays nothing out; the virtualized rows need a viewport to fill.
+beforeAll(() => {
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 800 });
+});
+afterAll(() => {
+    delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
+});
 
 beforeEach(() => {
     statusState.cloudConnected = false;
@@ -111,6 +138,15 @@ describe("mailbox ordering with a tag filter", () => {
     it("keeps the existing All Accounts tag-set grouping and email order", async () => {
         await renderPage();
         expect(orderedEmails()).toEqual(["ananya@serveblink.example", "julie@serveblink.example", "kavya@serveblink.example", "sara@virevow.example"]);
+    });
+
+    it("re-renders only the row whose selection changed", async () => {
+        statusState.data = rows.map(measuredStatus);
+        await renderPage();
+        const before = providerLogoRenders.count;
+        fireEvent.click(within(screen.getByRole("row", { name: /julie@serveblink.example/ })).getByRole("checkbox"));
+        expect(within(screen.getByRole("row", { name: /julie@serveblink.example/ })).getByRole("checkbox")).toBeChecked();
+        expect(providerLogoRenders.count - before).toBe(1);
     });
 
     it.each(["cloudLoading", "cloudUnavailable"] as const)("defers disconnect, bulk removal and warmup start while ownership is %s", async (unknown) => {
@@ -251,6 +287,101 @@ describe("mailbox ordering with a tag filter", () => {
     });
 });
 
+describe("Cloud warmup values", () => {
+    beforeEach(() => { sessionStorage.clear(); statusState.isLoading = statusState.isFetching = statusState.isError = statusState.cloudLoading = statusState.cloudUnavailable = false; });
+    afterEach(() => { cleanup(); statusState.cloudConnected = false; cloudRows.clear(); });
+
+    it("sorts the Warmup column by the displayed Cloud counts without local warmup anchors", async () => {
+        statusState.data = rows.map(measuredStatus);
+        statusState.cloudConnected = true;
+        setCloudRows(rows.map((row, i) => ({ id: row.id, enrolled: true, cloud: { sent_today: [1, 9, 4, 2][i], health: { state: "healthy" }, warmup: { enabled: true, paused: false, target_volume: 10 } } } as CloudLinkMailboxRow)));
+        await renderPage();
+        fireEvent.click(screen.getByTitle("Sort by Warmup"));
+        expect(orderedEmails()).toEqual(["kavya@serveblink.example", "ananya@serveblink.example", "julie@serveblink.example", "sara@virevow.example"]);
+    });
+
+    it("keeps filtered health totals separate from the workspace Cloud inventory", async () => {
+        statusState.data = rows.map(measuredStatus);
+        statusState.cloudConnected = true;
+        setCloudRows(rows.map((row) => ({ id: row.id, enrolled: true, cloud: { sent_today: 5, health: { state: "healthy" }, warmup: { enabled: true, paused: false, target_volume: 10 } } } as CloudLinkMailboxRow)));
+        await renderPage("serveblink");
+        const warming = screen.getAllByText("Warming", { selector: "span" })[0].parentElement?.parentElement;
+        expect(warming).toHaveTextContent("3");
+        expect(orderedEmails()).toHaveLength(3);
+    });
+
+    it("isolates a missing Cloud health report to its mailbox while keeping summary counts unavailable", async () => {
+        statusState.data = rows.map(measuredStatus);
+        statusState.cloudConnected = true;
+        setCloudRows([
+            { id: rows[0].id, enrolled: true, cloud: { sent_today: 3, settings: { base: 10 }, warmup: { enabled: true, target_volume: 10 } } },
+            { id: rows[1].id, enrolled: true, cloud: { sent_today: 7, settings: { base: 10 }, health: { state: "healthy" }, warmup: { enabled: true, target_volume: 10 } } },
+        ] as CloudLinkMailboxRow[]);
+        await renderPage();
+
+        const rowFor = (email: string) => screen.getAllByRole("row").find((row) => row.textContent?.includes(email))!;
+        expect(within(rowFor(rows[0].email)).getAllByText("Unavailable").length).toBeGreaterThan(0);
+        expect(within(rowFor(rows[0].email)).queryByText("Healthy 100")).not.toBeInTheDocument();
+        expect(within(rowFor(rows[1].email)).getByText("Healthy 100")).toBeInTheDocument();
+        expect(within(rowFor(rows[1].email)).getAllByTitle(/7 of 10 warmup emails sent today/).length).toBeGreaterThan(0);
+        expect(within(rowFor(rows[2].email)).getByText("Healthy 100")).toBeInTheDocument();
+        const healthy = screen.getAllByText("Healthy", { selector: "span" })[0].parentElement?.parentElement;
+        expect(healthy).toHaveTextContent("Unavailable");
+    });
+
+    it.each([false, true])("uses Resume for a Cloud warmup that is off, and disables lifecycle actions without a report (%s)", async (missing) => {
+        statusState.data = rows.map(measuredStatus);
+        statusState.cloudConnected = true;
+        setCloudRows(rows.map((row) => ({ id: row.id, enrolled: true, cloud: missing ? null : { sent_today: 0, health: { state: "healthy" }, settings: { base: 10 }, warmup: null } } as CloudLinkMailboxRow)));
+        await renderPage();
+        fireEvent.click(within(screen.getAllByRole("row")[1]).getByRole("button", { name: "Warmup actions" }));
+        if (missing) expect(screen.getByRole("menuitem", { name: "Cloud warmup status unavailable" })).toBeDisabled();
+        else expect(screen.getByRole("menuitem", { name: "Resume in Warmbly Cloud" })).toBeEnabled();
+    });
+
+    it("holds a mailbox whose credential stayed on this server out of the Cloud lifecycle action", async () => {
+        statusState.data = rows.map(measuredStatus);
+        statusState.cloudConnected = true;
+        setCloudRows([{ id: rows[0].id, enrolled: true, executor: "instance", cloud: {
+            sent_today: 5, health: { state: "healthy" }, settings: { base: 10 }, warmup: { enabled: true, paused: false },
+        } } as CloudLinkMailboxRow]);
+        await renderPage();
+        const row = screen.getAllByRole("row").find((element) => element.textContent?.includes(rows[0].email))!;
+        fireEvent.click(within(row).getByRole("button", { name: "Warmup actions" }));
+        expect(screen.getByRole("menuitem", { name: "Paused until Cloud holds its credential" })).toBeDisabled();
+        expect(screen.getByRole("menuitem", { name: "Remove from Warmbly Cloud" })).toBeEnabled();
+    });
+
+    it.each(["cloudLoading", "cloudUnavailable"] as const)("offers no local warmup action while Cloud ownership is %s", async (unknown) => {
+        statusState.data = rows.map(measuredStatus);
+        statusState[unknown] = true;
+        await renderPage();
+        fireEvent.click(within(screen.getAllByRole("row")[1]).getByRole("button", { name: "Warmup actions" }));
+        expect(screen.queryByRole("menuitem", { name: "Start warmup" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("menuitem", { name: "Warm in Warmbly Cloud" })).not.toBeInTheDocument();
+        expect(screen.getByRole("menuitem", { name: "Warmup settings" })).toBeInTheDocument();
+    });
+
+    it("refreshes Cloud reports after a partially successful bulk pause without a socket", async () => {
+        statusState.data = rows.map(measuredStatus);
+        statusState.cloudConnected = true;
+        setCloudRows(rows.map((row) => ({ id: row.id, enrolled: true, cloud: { sent_today: 0, health: { state: "healthy" }, settings: { base: 10 }, warmup: { enabled: true, paused: false } } } as CloudLinkMailboxRow)));
+        bulkWarmup.mockImplementation(async (ids: string[]) => {
+            const results = ids.map((id) => ({ id, ok: id !== "sara", code: id === "sara" ? "cloud_unavailable" : undefined }));
+            return { succeeded: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results };
+        });
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        client.setQueryData(["organizations", "current"], { id: "workspace" });
+        const observed = vi.fn();
+        await renderPage("", client, observed);
+        await waitFor(() => expect(observed).toHaveBeenCalledOnce());
+        fireEvent.click(within(screen.getAllByRole("row")[0]).getByRole("checkbox"));
+        fireEvent.click(screen.getByRole("button", { name: "Pause warmup" }));
+        await waitFor(() => expect(bulkWarmup).toHaveBeenCalledWith(rows.map((row) => row.id), "pause"));
+        await waitFor(() => expect(observed).toHaveBeenCalledTimes(2));
+    });
+});
+
 describe("mailbox status while account and Cloud checks settle", () => {
     beforeEach(() => {
         sessionStorage.clear();
@@ -288,7 +419,7 @@ describe("mailbox status while account and Cloud checks settle", () => {
         expect(within(mailboxRow(rows[0].email)).getAllByText("Unavailable").length).toBeGreaterThan(0);
         expect(within(mailboxRow(rows[0].email)).queryByText("Healthy 100")).not.toBeInTheDocument();
         expect(within(mailboxRow(rows[1].email)).getByText("Healthy 100")).toBeInTheDocument();
-        expect(within(mailboxRow(rows[1].email)).getAllByTitle("7 of 20 warmup emails sent today by Warmbly Cloud").length).toBeGreaterThan(0);
+        expect(within(mailboxRow(rows[1].email)).getAllByTitle(/7 of 20 warmup emails sent today, reported by Warmbly Cloud/).length).toBeGreaterThan(0);
         expect(within(mailboxRow(rows[2].email)).getByText("Healthy 100")).toBeInTheDocument();
         expect(screen.getAllByText("Unavailable").length).toBeGreaterThan(1);
     });
@@ -414,6 +545,21 @@ describe("mailbox status while account and Cloud checks settle", () => {
         }
     });
 
+    it("says why Warmbly switched off a mailbox whose server stayed unreachable", async () => {
+        const original = rows[0].status;
+        rows[0].status = "inactive";
+        try {
+            const notice = { id: "notice", error_code: "MAILBOX_UNREACHABLE", severity: "CRITICAL", title: "Switched off: server unreachable", message: "Warmbly could not connect to this mailbox's mail server for 3 days.", action_required: "Switch the mailbox back on once its server accepts connections", created_at: new Date() };
+            statusState.data = [{ ...measuredStatus(rows[0]), errors: [notice] }];
+            await renderPage();
+            const mailbox = within(screen.getByText(rows[0].email).closest("tr")!);
+            expect(mailbox.getAllByText("Off").length).toBeGreaterThan(0);
+            expect(mailbox.getAllByTitle(`${notice.message} ${notice.action_required}`).length).toBeGreaterThan(0);
+        } finally {
+            rows[0].status = original;
+        }
+    });
+
     it("keeps a retained issue ahead of cached healthy data until a fresh recovery arrives", async () => {
         const failed = { ...measuredStatus(rows[0]), health: { status: "error", score: 40 } } satisfies AccountStatus;
         statusState.data = [failed];
@@ -524,8 +670,8 @@ describe("mailbox status while account and Cloud checks settle", () => {
             statusState.data[0] = { ...measuredStatus(rows[0]), health: { status: "warning", score: 87, issues: ["Warmup reputation needs watching"] }, warmup_health: band };
             statusState.observations = statusState.data.map((status) => ({ status, observedAt: Date.now(), current: true }));
             await renderPage();
-            expect(screen.getByText("ramping up, 1 slowed")).toBeInTheDocument();
-            expect(screen.getByText("Needs attention").closest("div")?.parentElement).toHaveTextContent(/^Needs attention0/);
+            expect(screen.getByText("1 slowed")).toBeInTheDocument();
+            expect(screen.getByText("Needs attention").parentElement).toHaveTextContent(/^Needs attention0$/);
         } finally {
             Object.keys(rows[0]).forEach((key) => delete (rows[0] as unknown as Record<string, unknown>)[key]);
             Object.assign(rows[0], original);

@@ -196,6 +196,13 @@ func TestHandleErrorProviderConditions(t *testing.T) {
 		{"gmail app password", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeAlert, Text: "Application-specific password required: https://support.google.com/accounts/answer/185833 (Failure)"}, errx.MailErrorCodeInvalidCredentials},
 		{"gmail web login", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeAlert, Text: "Please log in via your web browser: https://support.google.com/mail/accounts/answer/78754 (Failure)"}, errx.MailErrorCodeInvalidCredentials},
 		{"web login on oauth", models.AuthOAuth2, &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeAlert, Text: "Web login required"}, errx.MailErrorCodeAuthenticationFailed},
+		{"zoho wrong region", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeAlert, Text: zohoWrongServerAlert}, errx.MailErrorCodeInvalidCredentials},
+		{"gmail invalid app password", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeAlert, Text: "Invalid credentials (Failure)"}, errx.MailErrorCodeInvalidCredentials},
+		{"gmail invalid credentials on oauth", models.AuthOAuth2, &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeAlert, Text: "Invalid credentials (Failure)"}, errx.MailErrorCodeAuthenticationFailed},
+		{"TRYCREATE on a missing folder", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeTryCreate, Text: "No such mailbox."}, errx.MailErrorCodeNotFound},
+		{"older dovecot codeless missing folder", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeNo, Text: "Mailbox doesn't exist: Warmbly (0.001 + 0.000 secs)."}, errx.MailErrorCodeNotFound},
+		{"codeless does not exist", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeNo, Text: "Mailbox does not exist"}, errx.MailErrorCodeNotFound},
+		{"BAD missing folder stays unknown", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeBad, Text: "Mailbox doesn't exist: Warmbly"}, errx.MailErrorCodeImapUnknown},
 		{"unknown alert", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeAlert, Text: "Maintenance tonight"}, errx.MailErrorCodeImapUnknown},
 		{"expired passphrase", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeExpired, Text: "Password expired"}, errx.MailErrorCodeInvalidCredentials},
 		{"ovh LIST failed", models.AuthPlain, &goimap.Error{Type: goimap.StatusResponseTypeNo, Text: "LIST failed"}, errx.MailErrorCodeServerUnreachable},
@@ -215,5 +222,73 @@ func TestHandleErrorProviderConditions(t *testing.T) {
 				t.Errorf("Code = %q, want %q", got.Code, tc.want)
 			}
 		})
+	}
+}
+
+const zohoWrongServerAlert = "The server details you are using seems incorrect. For more details, check this announcement: https://help.zoho.com/portal/en/community/topic/zoho-mail-server-details"
+
+// Zoho's wrong-region alert is the owner's to fix, so it must reach them in the server's words with the fix named.
+func TestHandleErrorZohoWrongServerKeepsAlert(t *testing.T) {
+	got := (&Client{AuthType: models.AuthPlain}).handleError(&goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeAlert, Text: zohoWrongServerAlert})
+	if got == nil || got.Code != errx.MailErrorCodeInvalidCredentials {
+		t.Fatalf("handleError = %+v, want %s", got, errx.MailErrorCodeInvalidCredentials)
+	}
+	if !strings.Contains(got.Message, "[ALERT] "+zohoWrongServerAlert) {
+		t.Errorf("Message = %q, want the server's alert verbatim", got.Message)
+	}
+	if info := got.GetUserErrorInfo(); info.Title != "Wrong mail server" || !strings.Contains(info.ActionRequired, "Update credentials") {
+		t.Errorf("GetUserErrorInfo = %+v, want the wrong-server title and the Update credentials fix", info)
+	}
+}
+
+// A sign-in refusal worded like a missing mailbox is the account gone, not a missing folder: none is selected at login.
+func TestLoginErrorKeepsMissingMailboxTextOutOfFolderClasses(t *testing.T) {
+	c := &Client{AuthType: models.AuthPlain}
+	reply := &goimap.Error{Type: goimap.StatusResponseTypeNo, Text: "Mailbox doesn't exist: user@example.test"}
+	if got := c.loginError(reply); got.Code != errx.MailErrorCodeInvalidCredentials {
+		t.Errorf("login reply = %q, want %q", got.Code, errx.MailErrorCodeInvalidCredentials)
+	}
+	if got := c.handleError(reply); got.Code != errx.MailErrorCodeNotFound {
+		t.Errorf("folder reply = %q, want %q", got.Code, errx.MailErrorCodeNotFound)
+	}
+	throttled := &goimap.Error{Type: goimap.StatusResponseTypeNo, Text: "Mailbox doesn't exist or too many login attempts"}
+	if got := c.loginError(throttled); got.Code == errx.MailErrorCodeImapUnknown || got.Code == errx.MailErrorCodeNotFound {
+		t.Errorf("throttled login = %q, want the login cooldown", got.Code)
+	}
+	refused := &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeAuthenticationFailed, Text: "Authentication failed."}
+	if got := c.loginError(refused); got.Code != errx.MailErrorCodeInvalidCredentials {
+		t.Errorf("credential refusal = %q, want %q", got.Code, errx.MailErrorCodeInvalidCredentials)
+	}
+}
+
+// A mailbox deleted at its host answers LOGIN with a codeless NO; only a refusal worded as temporary is retried.
+func TestLoginErrorCodelessRefusalDialects(t *testing.T) {
+	c := &Client{AuthType: models.AuthPlain}
+	for text, want := range map[string]errx.MailErrorCode{
+		"authentication failed":                       errx.MailErrorCodeInvalidCredentials,
+		"Authentication failed.":                      errx.MailErrorCodeInvalidCredentials,
+		"LOGIN failed.":                               errx.MailErrorCodeInvalidCredentials,
+		"Login failed.":                               errx.MailErrorCodeInvalidCredentials,
+		"Invalid user name or password.":              errx.MailErrorCodeInvalidCredentials,
+		"Logon failure: unknown user name":            errx.MailErrorCodeInvalidCredentials,
+		"Temporary authentication failure.":           errx.MailErrorCodeImapUnknown,
+		"Authentication failed, try again later.":     errx.MailErrorCodeImapUnknown,
+		"internal server error":                       errx.MailErrorCodeImapUnknown,
+		"Authentication failed: connection timed out": errx.MailErrorCodeImapUnknown,
+	} {
+		got := c.loginError(&goimap.Error{Type: goimap.StatusResponseTypeNo, Text: text})
+		if got.Code != want {
+			t.Errorf("LOGIN NO %q = %q, want %q", text, got.Code, want)
+		}
+		if want == errx.MailErrorCodeInvalidCredentials && !strings.Contains(got.Message, text) {
+			t.Errorf("LOGIN NO %q message = %q, want the server's words", text, got.Message)
+		}
+	}
+	if got := c.loginError(&goimap.Error{Type: goimap.StatusResponseTypeBad, Text: "authentication failed"}); got.Code != errx.MailErrorCodeImapUnknown {
+		t.Errorf("LOGIN BAD = %q, want %q", got.Code, errx.MailErrorCodeImapUnknown)
+	}
+	oauth := &Client{AuthType: models.AuthOAuth2}
+	if got := oauth.loginError(&goimap.Error{Type: goimap.StatusResponseTypeNo, Text: "authentication failed"}); got.Code != errx.MailErrorCodeAuthenticationFailed {
+		t.Errorf("OAuth LOGIN NO = %q, want %q", got.Code, errx.MailErrorCodeAuthenticationFailed)
 	}
 }

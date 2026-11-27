@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/mail"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/warmbly/warmbly/internal/pkg/displayname"
 	"github.com/warmbly/warmbly/internal/utils/validate"
 	"golang.org/x/oauth2"
+	"google.golang.org/api/gmail/v1"
 )
 
 // WebStatePrefix marks a state the dashboard started, so a sign-in window that lost its opener returns
@@ -44,14 +46,18 @@ func newState(web bool) (string, error) {
 // OAuthStart issues a fresh state nonce and returns the provider-specific authorization URL.
 // The caller is expected to redirect the user to the URL and post back to OAuthFinish on return.
 func (s *emailService) OAuthStart(ctx context.Context, userID string, orgID *uuid.UUID, provider models.InboxProvider, loginHint string, web bool, returnOrigin string) (*models.EmailOnboardingStartResponse, *errx.Error) {
-	if returnOrigin != "" && (!web || config.DashboardOrigin(returnOrigin) == "") {
+	if returnOrigin != "" && (!web || config.TrustedOrigin(returnOrigin) == "") {
 		return nil, errx.ErrEmailOnboardReturnOrigin
 	}
-	// A new mailbox only; OAuthReauth renews an existing one and is not gated.
-	if provider == models.InboxProviderGoogle && !config.GoogleOAuthConnect() {
+	cfg, appID, xerr := s.signinConfig(ctx, orgID, provider)
+	// A new mailbox only; OAuthReauth renews an existing one and is not gated. A workspace's own client is its own call.
+	if provider == models.InboxProviderGoogle && appID == nil && !config.GoogleOAuthConnect() &&
+		(xerr == nil || xerr == errx.ErrEmailOnboardGoogleNotConfigured) {
 		return nil, errx.ErrEmailOnboardGoogleOAuthDisabled
 	}
-	cfg, xerr := s.oauthConfigFor(provider)
+	if provider == models.InboxProviderGoogle && personalGmail(loginHint) {
+		return nil, errx.ErrEmailOnboardGooglePersonal
+	}
 	if xerr != nil {
 		return nil, xerr
 	}
@@ -80,6 +86,7 @@ func (s *emailService) OAuthStart(ctx context.Context, userID string, orgID *uui
 		Nonce:          state,
 		CodeVerifier:   verifier,
 		ReturnOrigin:   returnOrigin,
+		OAuthAppID:     appID,
 	}); xerr != nil {
 		return nil, xerr
 	}
@@ -171,7 +178,7 @@ func (s *emailService) OAuthFinish(ctx context.Context, userID, code, state stri
 	}
 
 	provider := models.InboxProvider(sess.Provider)
-	cfg, xerr := s.oauthConfigFor(provider)
+	cfg, xerr := s.grantConfig(ctx, sess.OAuthAppID, provider)
 	if xerr != nil {
 		return nil, false, xerr
 	}
@@ -190,7 +197,7 @@ func (s *emailService) OAuthFinish(ctx context.Context, userID, code, state stri
 	// mailbox can be refused. Storing one instead means a mailbox that looks
 	// connected and fails on its first send, days later, with a provider 403
 	// nobody can trace back to a checkbox.
-	if xerr := checkGrantedScopes(ctx, provider, cfg.Scopes, tok); xerr != nil {
+	if xerr := checkGrantedScopes(ctx, provider, requiredScopes(cfg.Scopes, sess.EmailAccountID != nil), tok); xerr != nil {
 		return nil, false, xerr
 	}
 
@@ -217,7 +224,17 @@ func (s *emailService) OAuthFinish(ctx context.Context, userID, code, state stri
 	} else if existing != nil {
 		return nil, false, errx.ErrEmailOnboardAlreadyExists
 	}
+	// The login hint is optional, so the address Google returned decides.
+	if provider == models.InboxProviderGoogle && personalGmail(owner.Email) {
+		return nil, false, errx.ErrEmailOnboardGooglePersonal
+	}
 
+	acc, xerr := s.createOAuthMailbox(ctx, userID, sess.OrganizationID, allowance, provider, tok, owner, sess.OAuthAppID)
+	return acc, false, xerr
+}
+
+// createOAuthMailbox stores a first-connect OAuth mailbox and puts it to work.
+func (s *emailService) createOAuthMailbox(ctx context.Context, userID string, orgID *uuid.UUID, allowance *models.MailboxAllowance, provider models.InboxProvider, tok *oauth2.Token, owner *inboxOwner, appID *uuid.UUID) (*models.Email, *errx.Error) {
 	// A first connect with no refresh token is a mailbox with about an hour to
 	// live: the access token expires and nothing can renew it. reauth.go
 	// deliberately tolerates an absent one because it keeps the stored value,
@@ -229,7 +246,7 @@ func (s *emailService) OAuthFinish(ctx context.Context, userID, code, state stri
 			Msg("mailbox onboarding: first connect returned no refresh token")
 		errs.CaptureMessageContext(ctx, fmt.Sprintf("%s first connect returned no refresh token", provider),
 			errs.Tag("provider", string(provider)))
-		return nil, false, errx.New(errx.BadRequest,
+		return nil, errx.New(errx.BadRequest,
 			"The provider did not return a long-lived token for this mailbox, so it would stop working within the hour. "+
 				"Remove Warmbly's access in your account settings and connect it again.")
 	}
@@ -240,7 +257,7 @@ func (s *emailService) OAuthFinish(ctx context.Context, userID, code, state stri
 	}
 
 	acc, xerr := s.emailRepository.NewOauthAccount(ctx, userID, models.NewOauthAccount{
-		OrganizationID: sess.OrganizationID,
+		OrganizationID: orgID,
 		Allowance:      allowance,
 		Provider:       provider,
 		Name:           name,
@@ -249,21 +266,23 @@ func (s *emailService) OAuthFinish(ctx context.Context, userID, code, state stri
 		RefreshToken:   tok.RefreshToken,
 		ExpiresAt:      tok.Expiry,
 		MailHost:       oauthMailHost(provider, owner.Email),
+		GrantedScopes:  recordedScopes(tok),
+		OAuthAppID:     appID,
 	})
 	if xerr == nil && acc != nil {
 		s.captureSendIdentity(ctx, acc, tok)
 		s.captureAvatar(acc, provider, tok)
 		s.syncWarmupPoolMembership(ctx, acc)
 		s.publishAccountEvent(ctx, pubsub.EventAccountConnected, acc)
-		s.dispatchAccountConnected(ctx, sess.OrganizationID, acc)
-		if sess.OrganizationID != nil {
-			s.resolveImportSignin(ctx, *sess.OrganizationID, acc)
+		s.dispatchAccountConnected(ctx, orgID, acc)
+		if orgID != nil {
+			s.resolveImportSignin(ctx, *orgID, acc)
 		}
 		// Assign a worker and load the mailbox so it starts sending/syncing
 		// immediately; the reconciler is the fallback if this fails.
 		s.loadAccountBestEffort(ctx, acc.ID)
 	}
-	return acc, false, xerr
+	return acc, xerr
 }
 
 // OnboardSMTPIMAP validates the supplied SMTP/IMAP credentials against a live worker, then
@@ -275,9 +294,12 @@ func (s *emailService) OnboardSMTPIMAP(ctx context.Context, userID string, orgID
 		return nil, xerr
 	}
 
-	allowance, xerr := s.guardInboxLimit(ctx, orgID)
-	if xerr != nil {
-		return nil, xerr
+	var allowance *models.MailboxAllowance
+	if !data.Purchased {
+		var xerr *errx.Error
+		if allowance, xerr = s.guardInboxLimit(ctx, orgID); xerr != nil {
+			return nil, xerr
+		}
 	}
 
 	if existing, xerr := s.findExisting(ctx, userID, orgID, data.Email); xerr != nil {
@@ -545,6 +567,17 @@ func grantedScopes(tok *oauth2.Token) (map[string]bool, bool) {
 	return out, true
 }
 
+// recordedScopes is the token's granted scope list as stored on the mailbox; nil when the provider named none.
+func recordedScopes(tok *oauth2.Token) []string {
+	raw, _ := tok.Extra("scope").(string)
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return nil
+	}
+	slices.Sort(fields)
+	return slices.Compact(fields)
+}
+
 // scopeSatisfiedBy maps a scope we ask for to every scope that confers it.
 // Google's Gmail scopes nest: gmail.modify covers reading and sending, and
 // gmail.compose covers sending. Without this, someone who granted the broader
@@ -572,6 +605,10 @@ var scopeSatisfiedBy = map[string][]string{
 		"https://www.googleapis.com/auth/gmail.modify",
 		"https://mail.google.com/",
 	},
+	// Only itself: gmail.modify cannot sign in over IMAP.
+	"https://mail.google.com/": {
+		"https://mail.google.com/",
+	},
 	// settings.basic is not implied by anything: mail.google.com is full
 	// mailbox access and does not confer settings either.
 	"https://www.googleapis.com/auth/gmail.settings.basic": {
@@ -582,6 +619,7 @@ var scopeSatisfiedBy = map[string][]string{
 // scopeLabel names a permission the way the consent screen does, so the error
 // tells someone which checkbox to go back and tick.
 var scopeLabel = map[string]string{
+	"https://mail.google.com/":                             "read, compose, send and permanently delete all your email from Gmail",
 	"https://www.googleapis.com/auth/gmail.readonly":       "read your email",
 	"https://www.googleapis.com/auth/gmail.send":           "send email on your behalf",
 	"https://www.googleapis.com/auth/gmail.modify":         "manage your email",
@@ -591,6 +629,19 @@ var scopeLabel = map[string]string{
 	"https://graph.microsoft.com/Mail.Send":                "send mail",
 	"https://graph.microsoft.com/Mail.ReadWrite":           "read and write mail",
 	"https://graph.microsoft.com/User.Read":                "read your profile",
+}
+
+// requiredScopes holds a reconnect only to gmail.modify, so an existing mailbox is never refused for keeping the API path.
+func requiredScopes(requested []string, reauth bool) []string {
+	out := slices.Clone(requested)
+	if reauth {
+		for i, s := range out {
+			if s == gmail.MailGoogleComScope {
+				out[i] = gmail.GmailModifyScope
+			}
+		}
+	}
+	return out
 }
 
 // checkGrantedScopes refuses a connection the provider only partly authorised.

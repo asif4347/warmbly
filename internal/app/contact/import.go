@@ -17,6 +17,7 @@ import (
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/emailverify"
+	"github.com/warmbly/warmbly/internal/pkg/geo"
 	"github.com/warmbly/warmbly/internal/pkg/listquality"
 	"github.com/warmbly/warmbly/internal/pkg/spreadsheet"
 	"github.com/warmbly/warmbly/internal/pkg/typesafe"
@@ -168,6 +169,10 @@ func resolveMapping(mapping []models.ContactImportColumnMapping) ([]importColumn
 			}
 		}
 
+		if _, _, ok := models.SocialImportTarget(string(target)); ok {
+			out = append(out, importColumn{index: m.Index, target: target})
+			continue
+		}
 		switch target {
 		case models.ContactImportTargetIgnore, "":
 			continue
@@ -535,7 +540,7 @@ func (s *contactService) runImport(ctx context.Context, plan *importPlan, rows [
 	// Ask about the plan ceiling once for the whole batch. Per chunk it would
 	// report the same plan problem 500 times, which is what the row-level
 	// error list is explicitly not for.
-	if xerr := s.checkContactLimit(ctx, plan.userID, countNew(parsed, existing, elsewhere)); xerr != nil {
+	if xerr := s.checkContactLimit(ctx, plan.orgID, countNew(parsed, existing, elsewhere)); xerr != nil {
 		return nil, xerr
 	}
 
@@ -839,7 +844,10 @@ func (s *contactService) AnalyzeImport(ctx context.Context, userID string, orgID
 	// What would refuse the whole import is said now, not after the upload.
 	if xerr := repository.ValidateImportCategoryNames(titles); xerr != nil {
 		out.Problem = xerr.Message
-	} else if xerr := s.checkContactLimit(ctx, userID, out.New); xerr != nil {
+	} else if xerr := s.checkContactLimit(ctx, orgID, out.New); xerr != nil {
+		if xerr.Code == errx.Internal {
+			return nil, xerr
+		}
 		out.Problem = xerr.Message
 	}
 	return out, nil
@@ -958,6 +966,12 @@ func mergeAddContact(dst *models.AddContact, src models.AddContact) {
 		for k, v := range src.CustomFields {
 			dst.CustomFields[k] = v
 		}
+	}
+	for ch, id := range src.Social {
+		if dst.Social == nil {
+			dst.Social = models.ContactSocialPatch{}
+		}
+		dst.Social[ch] = id
 	}
 	dst.Campaigns = appendUnique(dst.Campaigns, src.Campaigns...)
 	dst.Categories = appendUnique(dst.Categories, src.Categories...)
@@ -1085,7 +1099,39 @@ func suggestMapping(headers []string, sample [][]string, shapes []importmap.Shap
 	// cannot go without.
 	matchEmailByValues(out, shapes)
 	matchExistingCustomFields(out, headers, existingKeys)
+	matchLocationColumns(out, headers, existingKeys)
 	return out
+}
+
+// matchLocationColumns keeps the columns that say where a contact is (country,
+// state, city, location, timezone) instead of dropping them, under the key the
+// location resolver reads, so recipient-local sending and the location segment
+// fields work from the import alone.
+func matchLocationColumns(out []models.ContactImportColumnMapping, headers, existingKeys []string) {
+	claimed := map[string]bool{}
+	for _, m := range out {
+		if m.Target == models.ContactImportTargetCustom {
+			claimed[FoldCustomFieldKey(m.CustomKey)] = true
+		}
+	}
+	spelling := make(map[string]string, len(existingKeys))
+	for _, k := range existingKeys {
+		spelling[FoldCustomFieldKey(k)] = k
+	}
+	for i, h := range headers {
+		if out[i].Target != models.ContactImportTargetIgnore {
+			continue
+		}
+		key, ok := geo.CanonicalFieldKey(h)
+		if !ok || claimed[FoldCustomFieldKey(key)] {
+			continue
+		}
+		claimed[FoldCustomFieldKey(key)] = true
+		if existing, ok := spelling[FoldCustomFieldKey(key)]; ok {
+			key = existing
+		}
+		out[i] = models.ContactImportColumnMapping{Index: i, Target: models.ContactImportTargetCustom, CustomKey: key}
+	}
 }
 
 // matchEmailByValues maps the first column of addresses to Email when no
@@ -1178,6 +1224,16 @@ func guessTarget(idx int, header string) models.ContactImportColumnMapping {
 		return models.ContactImportColumnMapping{Index: idx, Target: models.ContactImportTargetSubscribed}
 	case "categories", "category", "tags", "tag", "labels", "label":
 		return models.ContactImportColumnMapping{Index: idx, Target: models.ContactImportTargetCategories}
+	case "linkedin", "linkedinurl", "linkedinprofile", "linkedinprofileurl", "personlinkedinurl":
+		return models.ContactImportColumnMapping{Index: idx, Target: "social.linkedin"}
+	case "instagram", "instagramurl", "instagramhandle", "instagramusername":
+		return models.ContactImportColumnMapping{Index: idx, Target: "social.instagram"}
+	case "whatsapp", "whatsappnumber", "whatsappphone":
+		return models.ContactImportColumnMapping{Index: idx, Target: "social.whatsapp"}
+	case "telegram", "telegramusername", "telegramhandle":
+		return models.ContactImportColumnMapping{Index: idx, Target: "social.telegram"}
+	case "facebook", "facebookurl", "facebookprofile", "facebookprofileurl":
+		return models.ContactImportColumnMapping{Index: idx, Target: "social.facebook"}
 	}
 	return models.ContactImportColumnMapping{Index: idx, Target: models.ContactImportTargetIgnore}
 }
@@ -1197,6 +1253,7 @@ func buildAddContact(
 		Categories:   append([]string{}, defaultCategoryIDs...),
 	}
 	var categories []string
+	handles, consents := map[string]string{}, map[string]string{}
 	for _, col := range columns {
 		if col.index >= len(row) {
 			continue
@@ -1239,7 +1296,26 @@ func buildAddContact(
 			}
 		case models.ContactImportTargetCustom:
 			ac.CustomFields[col.customKey] = val
+		default:
+			if ch, consent, ok := models.SocialImportTarget(string(col.target)); ok {
+				if consent {
+					consents[ch] = models.ImportConsentBasis(ch, val)
+				} else if handle, _, ok := models.NormalizeSocialHandle(ch, val); ok {
+					handles[ch] = handle
+				}
+			}
 		}
+	}
+	// A handle that names nobody on its channel is dropped, not the row; a consent basis needs its handle.
+	for ch, handle := range handles {
+		if ac.Social == nil {
+			ac.Social = models.ContactSocialPatch{}
+		}
+		id := &models.ContactSocialIdentity{Handle: handle}
+		if b := consents[ch]; b != "" {
+			id.ConsentBasis = &b
+		}
+		ac.Social[ch] = id
 	}
 	return ac, categories, ""
 }

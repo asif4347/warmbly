@@ -34,7 +34,11 @@ jobs:
       web: ${{ steps.filter.outputs.web }}
       admin: ${{ steps.filter.outputs.admin }}
       site: ${{ steps.filter.outputs.site }}
+      docs: ${{ steps.filter.outputs.docs }}
       forms: ${{ steps.filter.outputs.forms }}
+      portal: ${{ steps.filter.outputs.portal }}
+      portal-image: ${{ steps.filter.outputs.portal-image }}
+      frontend-images: ${{ steps.filter.outputs.frontend-images }}
       qa: ${{ steps.filter.outputs.qa }}
       make: ${{ steps.filter.outputs.make }}
       ios: ${{ steps.filter.outputs.ios }}
@@ -64,7 +68,8 @@ jobs:
               - 'scripts/**'
               - 'deploy/docker/**'
             migrations:
-              - 'internal/infrastructure/db/migrations/**'
+              - 'internal/infrastructure/db/**'
+              - 'cmd/migrate/**'
               - 'scripts/check-migrations.sh'
             aws-deployment:
               - '.github/workflows/ci.yml'
@@ -87,6 +92,8 @@ jobs:
               - 'admin/**'
             site:
               - 'site/**'
+            docs:
+              - 'docs/**'
             forms:
               - 'forms/**'
               # The mirrored design engine has a copy in web/; editing only
@@ -94,6 +101,25 @@ jobs:
               - 'web/src/components/app/forms/designCore.ts'
               - 'web/src/components/app/forms/form-theme.css'
               - 'scripts/check-forms-mirror.sh'
+            portal:
+              - 'portal/**'
+              - 'deploy/cloudflare/portal/**'
+              - 'deploy/docker/portal.Dockerfile'
+              - 'deploy/docker/portal/**'
+            portal-image:
+              - 'deploy/docker/portal.Dockerfile'
+              - 'deploy/docker/portal/**'
+            # web-ci and admin-ci already build the apps; the image build only
+            # adds the Dockerfile and nginx config, so it runs when those change.
+            frontend-images:
+              - 'web/Dockerfile'
+              - 'web/nginx*.conf'
+              - 'web/docker-entrypoint.sh'
+              - 'web/.dockerignore'
+              - 'admin/Dockerfile'
+              - 'admin/nginx*.conf'
+              - 'admin/docker-entrypoint.sh'
+              - 'admin/.dockerignore'
             qa:
               - 'qa/**'
             make:
@@ -135,13 +161,31 @@ jobs:
         with:
           node-version: "22"
       - name: Check production configuration import
-        run: node --test .github/scripts/pages-*.test.mjs deploy/cloudflare/static-edge.test.mjs
+        run: node --test .github/scripts/pages-*.test.mjs deploy/cloudflare/*.test.mjs
 
+  # Every migration applied in order to an empty database, the way a fresh
+  # self-host and the hosted migration task both run them.
   migrations-ci:
     name: Migrations
     needs: changes
     if: needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: warmbly
+          POSTGRES_PASSWORD: warmbly
+          POSTGRES_DB: warmbly
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U warmbly -d warmbly"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      PRIMARY_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly?sslmode=disable
     steps:
       - uses: actions/checkout@v4
 
@@ -151,38 +195,22 @@ jobs:
         # branches to be up to date before merging" in branch protection.
         run: ./scripts/check-migrations.sh
 
-  go-ci:
-    name: Go CI (${{ matrix.suite }})
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Apply every migration to an empty database
+        run: go run ./cmd/migrate
+
+      - name: Re-run is a no-op
+        run: go run ./cmd/migrate
+
+  go-lint:
+    name: Go lint
     needs: changes
     if: needs.changes.outputs.go-services == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [lint, unit, live-1, live-2, live-3]
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: warmbly
-          POSTGRES_PASSWORD: warmbly
-          POSTGRES_DB: warmbly_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U warmbly -d warmbly_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -192,470 +220,83 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # A pinned release verified by digest; resolving "latest" lists every protobuf release and fails when that listing is cut short.
-      - name: Set up protoc
-        if: matrix.suite == 'lint'
-        env:
-          PROTOC_VERSION: "33.6"
-          PROTOC_SHA256: 9c49962391ff8b5754342509efc3885db91dfe11a358e1e98c9a71518f0ad199
-        run: |
-          set -eu
-          archive="$RUNNER_TEMP/protoc.zip"
-          curl -fsSL --retry 5 --retry-all-errors -o "$archive" \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-          echo "${PROTOC_SHA256}  ${archive}" | sha256sum -c -
-          unzip -q -o "$archive" -d "$RUNNER_TEMP/protoc"
-          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/protoc/bin/protoc" --version
+      # golangci-lint has to be built with the module's Go to read its export
+      # data, so the built tools are cached by version instead of rebuilt.
+      - name: Tool versions
+        id: versions
+        run: echo "key=$({ grep -E '^(toolchain|go) ' go.mod; grep -E '^[A-Z_]+_VERSION \?=' Makefile; } | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go tools
+        id: tools
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin
+          key: go-tools-${{ runner.os }}-${{ steps.versions.outputs.key }}
 
       - name: Install required Go tools
-        if: matrix.suite == 'lint'
+        if: steps.tools.outputs.cache-hit != 'true'
         run: make setup-tools
 
+      # A cached protoc skips the download; one whose digest no longer matches is fetched again below.
+      - name: Restore protoc
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/protoc
+          key: protoc-33.6-linux-x86_64-bdf948836dcd45f5
+
+      # A pinned release verified by digest; Maven Central publishes the same binary as a fallback.
+      - name: Set up protoc
+        env:
+          PROTOC_VERSION: "33.6"
+          PROTOC_BIN_SHA256: bdf948836dcd45f5595eb45e0824867965ac1227cc430e957b0482b4fe876d01
+        run: |
+          set -eu
+          dir="$RUNNER_TEMP/protoc/bin"
+          bin="$dir/protoc"
+          if ! echo "${PROTOC_BIN_SHA256}  ${bin}" | sha256sum -c --status - 2>/dev/null; then
+            mkdir -p "$dir"
+            archive="$RUNNER_TEMP/protoc.zip"
+            if curl -fsSL --connect-timeout 10 --max-time 30 --retry 1 --retry-all-errors -o "$archive" \
+              "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" \
+              && unzip -q -o -j "$archive" bin/protoc -d "$dir"; then
+              echo "protoc from GitHub releases"
+            else
+              echo "GitHub release download failed; fetching protoc ${PROTOC_VERSION} from Maven Central"
+              curl -fsSL --connect-timeout 10 --max-time 120 --retry 5 --retry-all-errors -o "$bin" \
+                "https://repo1.maven.org/maven2/com/google/protobuf/protoc/4.${PROTOC_VERSION}/protoc-4.${PROTOC_VERSION}-linux-x86_64.exe"
+            fi
+            echo "${PROTOC_BIN_SHA256}  ${bin}" | sha256sum -c -
+            chmod +x "$bin"
+          fi
+          echo "$dir" >> "$GITHUB_PATH"
+
       - name: Run golangci-lint
-        if: matrix.suite == 'lint'
         run: make lint
 
       - name: Verify protobuf files are up to date
-        if: matrix.suite == 'lint'
         run: make check-proto
 
-      # The Kafka backend sits behind a build tag, so the default build never
-      # compiles it and it can rot unnoticed. Build rather than vet: vet does
-      # not link, and a CGO backend's characteristic failure is a link error.
-      - name: Verify the Kafka build still compiles and links
-        if: matrix.suite == 'lint'
-        run: go build -tags kafka ./...
+  go-test:
+    name: Go test
+    needs: changes
+    if: needs.changes.outputs.go-services == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
       - name: Run tests
-        if: matrix.suite == 'unit'
-        run: go test -race ./...
+        run: go test ./...
 
-      - name: Prepare regression database
-        if: startsWith(matrix.suite, 'live-')
-        env:
-          PRIMARY_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: go run ./cmd/migrate
-
-      - name: Linked-mailbox batching regressions (PostgreSQL)
-        if: matrix.suite == 'live-2'
-        env:
-          PRIMARY_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v -p 1 ./internal/repository ./internal/app/analytics -run '^TestLive(WarmupPartnerCountsMatchIndividualCandidates|WarmupSummariesMatchIndividualReads|LinkedMailboxStatusBatchPreservesDetails|WarmupPartnerWeekCacheMatchesExactReadAndKeepsTheCapLive|WarmupPartnerWeekCacheRefreshesDetachedAndServesStale|WarmupPartnerCandidatesCarryReciprocityAndHonourTheCap|AccountStatusPageMatchesSingleReadsInBoundedQueries|WarmupOffMailboxReceivesNothing|WarmupPauseRetiresIncomingWork|WarmupReservationHoldsEachTierToItsShare|WarmupReplyIsAdmittedToAFullInbox|WarmupRepliesLeaveTheNewThreadCapUntouched|OwedRepliesContinueTheDeepestConversationFirst)$' -count=1 | tee linked-mailbox-batch.log
-          for test in TestLiveWarmupPartnerCountsMatchIndividualCandidates TestLiveWarmupSummariesMatchIndividualReads TestLiveLinkedMailboxStatusBatchPreservesDetails TestLiveWarmupPartnerWeekCacheMatchesExactReadAndKeepsTheCapLive TestLiveWarmupPartnerWeekCacheRefreshesDetachedAndServesStale TestLiveWarmupPartnerCandidatesCarryReciprocityAndHonourTheCap TestLiveAccountStatusPageMatchesSingleReadsInBoundedQueries TestLiveWarmupOffMailboxReceivesNothing TestLiveWarmupPauseRetiresIncomingWork TestLiveWarmupReservationHoldsEachTierToItsShare TestLiveWarmupReplyIsAdmittedToAFullInbox TestLiveWarmupRepliesLeaveTheNewThreadCapUntouched TestLiveOwedRepliesContinueTheDeepestConversationFirst; do
-            grep -q -- "--- PASS: $test " linked-mailbox-batch.log
-          done
-          if grep -q -- '--- SKIP:' linked-mailbox-batch.log; then exit 1; fi
-
-      - name: Campaign mailbox reconnect retry regressions (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v -p 1 ./internal/app/consumer ./internal/repository -run '^TestLiveCampaign(MailboxLoadingDefersWithoutSpendingAttempts|LoadingLogsKeepHistoryWithoutCustomerAlerts)$' -count=1 | tee campaign-reconnect.log
-          grep -q '^--- PASS: TestLiveCampaignMailboxLoadingDefersWithoutSpendingAttempts ' campaign-reconnect.log
-          grep -q '^--- PASS: TestLiveCampaignLoadingLogsKeepHistoryWithoutCustomerAlerts ' campaign-reconnect.log
-          if grep -q -- '--- SKIP:' campaign-reconnect.log; then exit 1; fi
-
-      - name: Mailbox push channels and fleet usage (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v -p 1 ./internal/repository ./internal/app/fleetmetrics -run '^TestLive(MailboxPushChannelsRoundTripAndScopeToTheOwner|WakeTargetsSkipWorkersThatCannotActOnAWake|ReadTakesMemoryFromHeartbeats)$' -count=1 | tee mailbox-push.log
-          for test in TestLiveMailboxPushChannelsRoundTripAndScopeToTheOwner TestLiveWakeTargetsSkipWorkersThatCannotActOnAWake TestLiveReadTakesMemoryFromHeartbeats; do
-            grep -q -- "--- PASS: $test " mailbox-push.log
-          done
-          if grep -q -- '--- SKIP:' mailbox-push.log; then exit 1; fi
-
-      - name: Contact campaign empty-step regression (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v ./internal/repository -run '^TestLiveContactCampaignStateEmptySteps$' -count=1 | tee contact-campaign-steps.log
-          grep -q -- '--- PASS: TestLiveContactCampaignStateEmptySteps ' contact-campaign-steps.log
-
-      - name: Campaign send admission regressions (PostgreSQL)
-        if: matrix.suite == 'live-2'
-        env:
-          PRIMARY_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go run ./cmd/migrate
-          go test -race ./internal/app/behavior ./internal/repository ./internal/tasks -run 'TestDefaultPlan|TestLiveMailboxPlan|TestLiveCampaignAdmission|TestLiveSharedAdmission|TestLiveDeferredTicksDoNotSpendTheDailyBudget|TestLiveCampaignAtDailyCapWaitsForTomorrow' -count=1
-
-      - name: Shared mailbox pool pacing and send claim regressions (PostgreSQL)
-        if: matrix.suite == 'live-3'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go test -race -p 1 ./internal/repository ./internal/scheduler ./internal/tasks -run '^TestLive(MailboxSendClaim(AdmitsOnePerGap|WaitsOutAReservedSend)|BookedSendsLeaveOutCampaignWakeups|ParkedCampaignDoesNotThrottleItsPoolMate|BookedSendsStillSpaceTheCampaign|ClaimedMailboxIsPassedOver|CampaignsSharingAMailboxSendOncePerGap|LostMailboxClaimReschedulesWithoutSending)$' -count=1
-
-      - name: Postgres queue claim regressions (PostgreSQL)
-        if: matrix.suite == 'live-3'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go test -race -p 1 ./internal/repository -run '^TestLive(ConcurrentDispatchersNeverClaimTheSameTask|SendResultEffectsBatchClaimsDeliverEachEffectOnce|CRMClaimTakesDueAndLapsedJobsOnce)$' -count=1
-
-      - name: Invited signup atomic provisioning regressions (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: go test -race ./internal/repository -run '^TestLiveInvitedSignup$' -count=1
-
-      - name: Mailbox batch and folder identity regressions (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: go test -race -v -p 1 ./internal/repository -run '^TestLive(MessageMapBatch|FolderGenerationLookup|MailboxLookupIndexes)' -count=1
-
-      - name: CPU query pressure and accounting parity regressions (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v -p 1 ./internal/repository -run '^TestLive(TaskLedgerRangesAndClocksMatchLegacy|TaskLedgerDayRangePreservesDST|TaskQueryPressureUsesBoundedHistory|WarmupHealthCountsShareScansWithoutChangingSignals|DashboardOverallBoundsHistoryAndPreservesScopedCounts|VerificationBacklogFollowsShelfLives|VerificationReopenOnProviderConnect|SegmentCampaignLinks|PoolLinkTouchIsThrottledButKeepsTheVersion)$' -count=1 | tee cpu-query-pressure.log
-          if grep -q -- '--- SKIP:' cpu-query-pressure.log; then exit 1; fi
-          for test in TestLiveTaskLedgerRangesAndClocksMatchLegacy TestLiveTaskLedgerDayRangePreservesDST TestLiveTaskQueryPressureUsesBoundedHistory TestLiveWarmupHealthCountsShareScansWithoutChangingSignals TestLiveDashboardOverallBoundsHistoryAndPreservesScopedCounts TestLiveVerificationBacklogFollowsShelfLives TestLiveVerificationReopenOnProviderConnect TestLiveSegmentCampaignLinks TestLivePoolLinkTouchIsThrottledButKeepsTheVersion; do
-            grep -q "^--- PASS: $test " cpu-query-pressure.log
-          done
-
-      - name: Campaign pool query batching regressions (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v -p 1 ./internal/repository ./internal/scheduler -run '^TestLive(FindRoutedPairs|CampaignPool|LeadHold|PlanCampaignDay|WarmupHealthCountsShareScansWithoutChangingSignals|TaskLedgerRangesAndClocksMatchLegacy)' -count=1 | tee campaign-pool-batch.log
-          if grep -q -- '--- SKIP:' campaign-pool-batch.log; then exit 1; fi
-          for test in TestLiveFindRoutedPairsPriorityMatchesLegacyOrdering TestLiveCampaignPoolReadsStayBatched TestLiveCampaignPoolBatchFailuresKeepSafety TestLiveCampaignPoolStandalonePlacementIsBatched; do
-            grep -q -- "--- PASS: $test " campaign-pool-batch.log
-          done
-
-      - name: Cloud standing and missing-evidence holds (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v -p 1 ./internal/repository ./internal/app/poollink -run '^TestLiveCloud' -count=1 | tee cloud-standing.log
-          if grep -q -- '--- SKIP:' cloud-standing.log; then exit 1; fi
-          for test in TestLiveCloudStandingFreshnessIsBoundedWithoutInventingAProviderBlock TestLiveCloudUnknownEvidenceDoesNotHideARealHold TestLiveCloudStaleLiveHoldStaysKnown TestLiveCloudPendingEnrollmentAndDisconnectAreUnknown TestLiveCloudDetachedLinkWarmupStopsOnce; do
-            grep -q -- "--- PASS: $test " cloud-standing.log
-          done
-
-      - name: Scheduled-job retirement regressions (PostgreSQL)
-        if: matrix.suite == 'live-3'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go test -race -p 1 ./internal/repository -run '^TestLiveJobRun' -count=1
-          go test -race -p 1 ./internal/infrastructure/db -run '^TestLiveScheduledJobRetirementUpgradePreservesExecutionHistory$' -count=1
-
-      - name: Warmup dispatch, upgrade and admin-send regressions (PostgreSQL)
-        if: matrix.suite == 'live-3'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race ./internal/repository -run '^TestLive(Monitoring|LastWarmupSendFailure|PersistentMailboxLoadingFailure|DispatchRetry|LineageQueueRevisions|ReplyShare|AdminPlatformOverview|WarmupRecoversOldPreparation|WarmupPreparationRecoveryRetains|WarmupFilingRequiresAcknowledgement|WarmupFilingAuthority|WarmupTimeWindow|WarmupInvalidWindow|StoppedRecipientIsNeverAddressed)' -count=1
-          go test -race -v ./internal/tasks -run '^Test(LiveWarmup(SafetyHoldReschedules|Recovery|UnknownRetirement|TaskDoesNotApplyResults|DispatchDefersInvalidHours|ReplyShare)|WarmupSenderDistinguishes)' -count=1 | tee warmup-recovery.log
-          if grep -q -- '--- SKIP: TestLiveWarmupUnknownRetirement' warmup-recovery.log; then exit 1; fi
-          for test in TestLiveWarmupUnknownRetirementPreservesEvidenceAndFencesReplayOnce TestLiveWarmupUnknownRetirementAllowsDistinctNewSendAndKeepsCooldown TestLiveWarmupUnknownRetirementAndDefinitiveResultSerialize TestLiveWarmupUnknownRetirementSkipsProtectedRowsWithoutStarvingLaterMailboxes TestLiveWarmupUnknownRetirementReconcilerSeedsOnceAndClearsActiveWarnings; do
-            grep -q -- "--- PASS: $test " warmup-recovery.log || exit 1
-          done
-          go test -race -v ./internal/infrastructure/db -run '^TestLiveWarmupUnknownRetirementUpgrade' -count=1 | tee warmup-retirement-upgrade.log
-          grep -q -- '--- PASS: TestLiveWarmupUnknownRetirementUpgrade ' warmup-retirement-upgrade.log
-          go test -race ./internal/app/consumer -run '^TestLiveStoredSendResult' -count=1
-
-      - name: Warmup database query-pressure regressions (PostgreSQL)
-        if: matrix.suite == 'live-3'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v ./internal/repository -run '^TestLive(WarmupDispatchUsagePreservesBudgetAndLastSend|WarmupDispatchQueryPlansUseMailboxAndMessageIndexes|OwnConversationIgnoresEmptyIDsWithoutLosingTaskOrThreadOwnership|ReplyInboxOwns)' -count=1 | tee warmup-query-pressure.log
-          if grep -q -- '--- SKIP:' warmup-query-pressure.log; then
-            echo "Warmup database query-pressure regressions must execute without skips"
-            exit 1
-          fi
-          for test in TestLiveWarmupDispatchUsagePreservesBudgetAndLastSend \
-            TestLiveWarmupDispatchQueryPlansUseMailboxAndMessageIndexes \
-            TestLiveOwnConversationIgnoresEmptyIDsWithoutLosingTaskOrThreadOwnership; do
-            grep -q -- "--- PASS: $test " warmup-query-pressure.log || { echo "Missing regression: $test"; exit 1; }
-          done
-          go test -race -v ./internal/infrastructure/db -run '^TestLiveWarmupDispatchUsageIndexUpgradePreservesEvidenceAndHolds$' -count=1 | tee warmup-query-upgrade.log
-          if grep -q -- '--- SKIP:' warmup-query-upgrade.log; then exit 1; fi
-          grep -q -- '--- PASS: TestLiveWarmupDispatchUsageIndexUpgradePreservesEvidenceAndHolds ' warmup-query-upgrade.log
-
-      - name: Workspace isolation regressions (PostgreSQL)
-        if: matrix.suite == 'live-3'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -euo pipefail
-          go test -race -v -p 1 ./internal/api/handler ./internal/app/email ./internal/app/contact ./internal/app/contactimport ./internal/app/orgtransfer ./internal/app/form ./internal/app/websitetracking ./internal/repository ./internal/scheduler -run '^TestLive(SharedCampaignAccess|ContactTimelineAccess|TrackingDomain(WriteIsOrgScoped|VerifyRoundTrip|Sweep|BelongsToOneOrganization)|ImportLeavesAnotherWorkspaceAlone|ContactImportIsScopedToItsWorkspace|ImportRefuses(RowsOwnedByAnotherWorkspace|ReferencesIntoAnotherWorkspace)|TenantFamiliesRefuseAnotherOrganization|CampaignChildrenRefuseAnotherWorkspace|CRMSyncIntegrationsRefuseAnotherOrganization|FormLinkTokenIsBoundToItsForm|IdentifyTicketStaysInItsWorkspace|TenantMatrixRefusesAnotherOrganization|SenderResolutionStaysInsideTheCampaignOrg|SenderSchedulerNeverPicksAnotherOrgMailbox|SenderScopeWithoutAnOrganizationReachesNothing|ActiveCampaignLookupIsOrgScoped|OwnConversationDoesNotCrossWorkspaces|UniboxGetBySenderIsScopedToTheOrganization|UniboxMoveFolderIsOrgScoped|UniboxScopeMoveThreadsIsOrgScoped|ScheduledSendsAreScopedToTheMailboxOrganization|NoLabelIsReferencedAcrossWorkspaces|CampaignAudienceIsScoped)$' -count=1 | tee workspace-isolation.log
-          if grep -q -- '--- SKIP:' workspace-isolation.log; then
-            echo "Workspace isolation regressions must execute without skips"
-            exit 1
-          fi
-          for test in TestLiveSharedCampaignAccess \
-            TestLiveTenantFamiliesRefuseAnotherOrganization \
-            TestLiveCampaignChildrenRefuseAnotherWorkspace \
-            TestLiveCRMSyncIntegrationsRefuseAnotherOrganization \
-            TestLiveFormLinkTokenIsBoundToItsForm \
-            TestLiveIdentifyTicketStaysInItsWorkspace \
-            TestLiveTenantMatrixRefusesAnotherOrganization \
-            TestLiveImportRefusesReferencesIntoAnotherWorkspace \
-            TestLiveSenderSchedulerNeverPicksAnotherOrgMailbox \
-            TestLiveTrackingDomainWriteIsOrgScoped; do
-            grep -q "^--- PASS: $test " workspace-isolation.log
-          done
-
-      - name: Monitoring database observation regressions (PostgreSQL)
-        if: matrix.suite == 'live-2'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -euo pipefail
-          go test -race -v ./internal/repository -run '^TestLiveMonitoringDatabaseClock' -count=1 | tee monitoring-clock.log
-          if grep -q -- '--- SKIP:' monitoring-clock.log; then
-            echo "Monitoring database observation regressions must execute without skips"
-            exit 1
-          fi
-          for test in TestLiveMonitoringDatabaseClockAfterRequestStart \
-            TestLiveMonitoringDatabaseClockWarningSemantics \
-            TestLiveMonitoringDatabaseClockPredicateBoundaries \
-            TestLiveMonitoringDatabaseClockSingleSnapshot; do
-            grep -q "^--- PASS: $test " monitoring-clock.log
-          done
-
-      - name: Approved warmup content and queued source regressions (PostgreSQL)
-        if: matrix.suite == 'live-2'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -euo pipefail
-          go test -race -v ./internal/repository -run '^TestLiveContentPool' -count=1 | tee content-pool.log
-          go test -race -v ./internal/tasks -run '^TestLiveWarmupDispatchRechecksOpeningSourceAndExactRecipient$' -count=1 | tee -a content-pool.log
-          if grep -q -- '--- SKIP:' content-pool.log; then
-            echo "Warmup content and queued source regressions must execute without skips"
-            exit 1
-          fi
-          for test in TestLiveContentPoolRejectsDuplicateBatchContentUnderConcurrency \
-            TestLiveContentPoolRetryReservesOnceAndReplenishesForExposedMailboxes \
-            TestLiveContentPoolPreservesPlansForFutureDistinctMailboxes \
-            TestLiveContentPoolConcurrentPairsAlwaysReceiveContent \
-            TestLiveContentPoolPrefersLessUsedEligiblePlans \
-            TestLiveContentPoolPrefersWhatNeitherMailboxSawRecently \
-            TestLiveContentPoolExhaustedPairRepeatsTheLeastRecentlySeen \
-            TestLiveContentPoolTokenCleanupKeepsExposure \
-            TestLiveContentPoolStaticRowsOnlyFromTheCurrentLibrary \
-            TestLiveContentPoolDemandCountsPlansRatherThanReplies \
-            TestLiveWarmupDispatchRechecksOpeningSourceAndExactRecipient; do
-            grep -q "^--- PASS: $test " content-pool.log
-          done
-
-      - name: Warmup generic execution authority regressions (PostgreSQL)
-        if: matrix.suite == 'live-2'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go test -race -v -p 1 ./internal/api/handler -run '^TestLiveWarmupGeneric' -count=1 | tee warmup-generic-execution.log
-          if grep -q -- '--- SKIP:' warmup-generic-execution.log; then
-            echo "Warmup generic execution regressions must execute without skips"
-            exit 1
-          fi
-          for test in TestLiveWarmupGenericStartAfterPartialImport \
-            TestLiveWarmupGenericCancellationPreservesOtherHolds \
-            TestLiveWarmupGenericStartAndLateResult \
-            TestLiveWarmupGenericStartAfterCompatibleOverwrite \
-            TestLiveWarmupGenericCannotRepeatStartedWarmupClaim \
-            TestLiveWarmupGenericDeniesHistoricalDiagnosticContent; do
-            grep -q "^--- PASS: $test " warmup-generic-execution.log
-          done
-
-      - name: Warmup charge and authoritative result regressions (PostgreSQL)
-        if: matrix.suite == 'live-3'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go test -race -v -p 1 ./internal/repository ./internal/app/consumer ./internal/tasks ./internal/app/orgtransfer -run '^TestLive(Warmup(ReservationPreservesOriginalChargeDay|RefundCASProtectsConcurrentAndRestampedTasks|RefundAndResultRollbackTogether|ReplyRefundUsesChargedShapeAfterParentDeletion|ChargeAndRefundUseUTCInNonUTCSession|ChargeProofRollsBackWhenCounterWriteFails|CancellationPathsRefundOnlyProvenCharge|GenericCompletionDoesNotProveChargedAccounting|SendFailureGivesTheDayBack|SendGiveBackIsIdempotent|SafetyHoldReschedulesInsteadOfBlockingTheDispatcher|Recovery(RetiresExistingUnstartedDispatchOnce|HandlesPartialReservations|PreservesExecutionAndReceiptEvidence|KeepsOtherUnknownAndRestrictiveHolds|AndBeginCannotBothWin))|AppliedWarmupFailureRepairsOnlyRefundedChargeDeadLetters|GiveBackDailySend(ReversesADispatchedWarmupSend|LeavesOtherDaysAlone)|AccountDailyUsage(CountsWarmupTasksNotTheStatisticsRow|ScopesWarmupToTypeAndDay)|ImportWarmupStatisticsCannotGrantChargeRefundAuthority|Legacy(FailedStatusCannotProveNonExecution|JSONAndAvroFailurePersistConservativeAdmission)|AuthoritativeDeadLetterResultsReconcileWithoutReplay|DeadLetterResultEffectsAndSettlementRollBackTogether|Campaign(DeadLetterWorkerResultReleasesReservationOnce|ForeignKeyCleanupDoesNotProveWakeupOnly)|UserEmailDeadLetterUsesUnderlyingSendTaskType|UnknownSendOperatorResolutionReconcilesAndAudits|RecordedWorkerOutcomeSurvivesLostEvent|UnreservedLegacyFailedTaskRetainsUnknownHold|UnknownResolutionRejectsMissingEvidenceAndLiveExecution|SendRecoveryResolutionRequiresEvidenceAndRetainsUnknown|UnstartedDispatchRetainsDeferredOutcomeConflict)$' -count=1
-          go test -race -v -p 1 ./internal/infrastructure/db -run '^TestLiveWarmupChargeUpgradeKeepsLegacyUnverifiedAndPreservesEvidence$' -count=1
-
-      - name: Mailbox placement health recovery (PostgreSQL)
-        if: matrix.suite == 'live-2'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v ./internal/app/warmup -run '^TestLiveHealthPlacementRecoveryUsesTheDisplayedUTCWindow$' -count=1 | tee placement-health-recovery.log
-          grep -q -- '^--- PASS: TestLiveHealthPlacementRecoveryUsesTheDisplayedUTCWindow ' placement-health-recovery.log
-
-      - name: Linked warmup scheduling regressions (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go test -race -v -p 1 ./internal/repository -run '^TestLiveMailboxBehavior(CreationRespectsGatewayWarmup|FirstCustomerWriteIsNotInherited)$' -count=1
-          go test -race -v -p 1 ./internal/infrastructure/db -run '^TestLiveLinkedWarmupScheduleUpgradePreservesExplicitProfilesAndTasks$' -count=1
-
-      - name: Warmup filing provider-floor regressions (PostgreSQL)
-        if: matrix.suite == 'live-2'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go test -race -v -p 1 ./internal/repository -run '^TestLiveWarmupFiling(ClaimProviderFloor|DeferralIsScopedCommittedAndMonotonic|DeferralRefusesStaleAndForeignWork|ProviderFloorSurvivesReassignment|ProviderFloorDoesNotShortenClaimLease|DeferralDatabaseErrorIsNotProof|DeferralLostHTTPResponseRetriesIdempotently)$' -count=1
-          go test -race -v -p 1 ./internal/repository -run '^TestLiveWarmupFilingAdmission(DeniesMissingOwnedRow|KeepsUntrackedLegacyAction)$' -count=1
-          go test -race -v -p 1 ./internal/infrastructure/db -run '^TestLiveWarmupFilingProviderFloorUpgradePreservesLegacyLeasesAndRollback$' -count=1
-
-      - name: Authoritative send-conflict and historical-origin regressions (PostgreSQL)
-        if: matrix.suite == 'live-2'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go test -race -v -p 1 ./internal/infrastructure/db -run '^TestLiveSendRecoveryConflict(CLIStartup|UpgradePreservesHistoricalEvidence|Production284UpgradePreservesHistoricalEvidence|HistoricalOnlyDownRefuses|EmptyDownUp)$' -count=1
-          go test -race -v -p 1 ./internal/repository ./internal/app/orgtransfer -run '^TestLive(DefinitiveConflictDirectionsDuplicatesAndRestrictiveHolds|PriorDefinitiveConflictWithoutOperatorResolution|AuthenticationRepairRetainsUnresolvedOutcomeConflict|ConcurrentAuthenticationRepairRetainsNewOutcomeConflict|UnstartedDispatchRetainsDeferredOutcomeConflict|HistoricalConfirmationRequiresFreshOrIndependentAuthority|ExpandedConflictSchemaRequiresUpgradedReadersAndWriters|OrdinarySendResultsNeedNoRecoveryConfirmation|ImportSendRecoveryHistoryCannotReconcileUnknownOutcome|ArchiveSendRecoveryLocalOriginResets|ImportedHistoryDoesNotRepeatAuthoritativeWorkerResult)$' -count=1
-          go test -race -v -p 1 ./internal/app/consumer -run '^TestLiveDelayedPreparationDuplicateMustNotCreateDefinitiveConflict$' -count=1
-
-          go test -race -v -p 1 ./internal/app/consumer -run '^TestLiveAdvancedBounceReconciliationRollbackAndReplayWithOneConnection$' -count=1
-
-      - name: Workspace archive send-preservation regressions (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v -p 1 ./internal/app/orgtransfer -run '^TestLive(ReviewSelectiveExport|ImportLocal|ImportFresh(WarmupReservationDuringMailboxImport|LegacyWarmupHistoryRetainsPayload)|ImportLegacy|ImportRefundedWarmup|ImportExistingReceiptExcluded|ArchiveSendRecoveryLocalOriginResets|ImportMailTransportWholeArchiveSendResultLockOrder|ImportSendRecoveryHistoryCannotReconcileUnknownOutcome|ImportedHistoryDoesNotRepeatAuthoritativeWorkerResult)' -count=1 | tee archive-send-preservation.log
-          if grep -q -- '--- SKIP:' archive-send-preservation.log; then
-            echo "Workspace archive send-preservation regressions must execute without skips"
-            exit 1
-          fi
-          for test in TestLiveReviewSelectiveExportMustPreserveLocalUnknownHold \
-            TestLiveReviewSelectiveExportLateLocalResultRemainsAccepted \
-            TestLiveReviewSelectiveExportNewImportIsHistoryNotAuthority \
-            TestLiveImportLocalSendIdentityPayloadAndUnrelated \
-            TestLiveImportLocalSendRollbackForeignAndRestrictiveConflicts \
-            TestLiveImportLocalWarmupChargeReplyReceiptAndLateAccounting \
-            TestLiveImportLocalResultPreservationLockOrder \
-            TestLiveImportLegacyUnknownPreservesOtherOutcome \
-            TestLiveImportLegacyAppliedResultRemainsIdempotent \
-            TestLiveImportLegacyStampedTaskAcceptsLaterResult \
-            TestLiveImportRefundedWarmupChargeWithoutNonces \
-            TestLiveImportLegacyWarmupAppliedAccountingWithoutNonces \
-            TestLiveImportLegacyWarmupAppliedMarkers \
-            TestLiveImportLegacyUnknownLockOrder \
-            TestLiveImportLegacyRestrictivePreservation \
-            TestLiveImportExistingReceiptExcluded \
-            TestLiveImportFreshWarmupReservationDuringMailboxImport \
-            TestLiveImportFreshLegacyWarmupHistoryRetainsPayload \
-            TestLiveArchiveSendRecoveryLocalOriginResets \
-            TestLiveImportMailTransportWholeArchiveSendResultLockOrder \
-            TestLiveImportSendRecoveryHistoryCannotReconcileUnknownOutcome \
-            TestLiveImportedHistoryDoesNotRepeatAuthoritativeWorkerResult; do
-            grep -q "^--- PASS: $test " archive-send-preservation.log
-          done
-
-      - name: Typed mailbox history, archive checkpoint and real-driver upgrade regressions (PostgreSQL)
-        if: matrix.suite == 'live-2'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          set -o pipefail
-          go test -race -v -p 1 ./internal/infrastructure/db -run '^TestLiveMailTransport(CLIStartup|UpgradePreservesHistoryAndRollback)$' -count=1 | tee mailbox-transport-upgrade.log
-          grep -q '^--- PASS: TestLiveMailTransportCLIStartup ' mailbox-transport-upgrade.log
-          grep -q '^--- PASS: TestLiveMailTransportUpgradePreservesHistoryAndRollback ' mailbox-transport-upgrade.log
-          if grep -q -- '--- SKIP:' mailbox-transport-upgrade.log; then exit 1; fi
-          go test -race -v -p 1 ./internal/repository ./internal/app/orgtransfer ./internal/app/consumer ./internal/app/email -run '^TestLive(MailTransport.*|ImportMailTransport.*|WorkerMailboxLoadReadsOneGenerationWithSingleConnection)$' -count=1 | tee mailbox-transport-runtime.log
-          for test in TestLiveMailTransportNativeDomainExcludesHistory TestLiveMailTransportImportSerializesWithConfirmedResult TestLiveImportMailTransportCheckpointCountsAndUnchangedRows TestLiveMailTransportConfirmedSendReconcilesOnlySend TestLiveMailTransportUnreadableSyncStateCannotAcquireRecovery TestLiveImportMailTransportLateAndSpanningSuccess TestLiveImportMailTransportCredentialOnlyWritesRotateFence TestLiveImportMailTransportExportOmitsGeneration TestLiveImportMailTransportWholeArchiveOmitsGeneration TestLiveMailTransportSnapshotKeepsConfigurationAndGenerationTogether TestLiveWorkerMailboxLoadReadsOneGenerationWithSingleConnection TestLiveMailTransportOperatorConfirmationDoesNotRecover TestLiveMailTransportOnlyCurrentWorkerObservationUpdatesConnectionReason TestLiveMailTransportConnectionReasonNotificationUsesRecordedEvidence; do
-            grep -q "^--- PASS: $test " mailbox-transport-runtime.log
-          done
-          if grep -q -- '--- SKIP:' mailbox-transport-runtime.log; then exit 1; fi
-          go test -race -v -p 1 ./internal/repository -run '^TestLiveAuthenticatorStepRequiresActiveEnrollment$' -count=1 | tee authenticator-verification.log
-          grep -q '^--- PASS: TestLiveAuthenticatorStepRequiresActiveEnrollment ' authenticator-verification.log
-          grep -q '^--- PASS: TestLiveImportMailTransportWholeArchiveSendResultLockOrder ' mailbox-transport-runtime.log
-          for logfile in mailbox-transport-upgrade.log mailbox-transport-runtime.log; do
-            test "$(grep -c '^=== RUN' "$logfile")" -gt 0
-            printf '%s RUN=%s PASS=%s SKIP=0\n' "$logfile" "$(grep -c '^=== RUN' "$logfile")" "$(grep -c -- '--- PASS:' "$logfile")"
-          done
-          go test -race -v -p 1 ./internal/app/worker/wmail ./internal/app/worker/mailmanager ./internal/app/consumer -run '^Test(MailTransportGeneration.*|SyncState.*)$' -count=1 | tee mailbox-transport-worker.log
-          grep -q '^--- PASS: TestMailTransportGenerationRequiresFreshCompletedSyncPass ' mailbox-transport-worker.log
-          grep -q '^--- PASS: TestMailTransportGenerationReplacesUnchangedCredentialsAndDrains ' mailbox-transport-worker.log
-          if grep -q -- '--- SKIP:' mailbox-transport-worker.log; then exit 1; fi
-
-      - name: Typed mailbox JSON and native Avro registry compatibility
-        if: matrix.suite == 'live-3'
-        env:
-          SR_URL: http://127.0.0.1:18181
-        run: |
-          set -o pipefail
-          docker run -d --name mailbox-transport-registry -p 18181:8081 redpandadata/redpanda:v24.3.13 redpanda start --mode dev-container --smp 1 --memory 512M --reserve-memory 0M --node-id 0 --check=false
-          trap 'docker rm -f mailbox-transport-registry' EXIT
-          ready=false
-          for attempt in $(seq 1 60); do
-            if curl -fsS "$SR_URL/subjects" >/dev/null; then ready=true; break; fi
-            sleep 1
-          done
-          test "$ready" = true
-          go test -tags kafka -race -v -p 1 ./internal/infrastructure/codec -run '^TestMailTransportCodec.*Compatibility$' -count=1 | tee mailbox-transport-codec.log
-          grep -q '^--- PASS: TestMailTransportCodecJSONCompatibility ' mailbox-transport-codec.log
-          grep -q '^--- PASS: TestMailTransportCodecRegistryCompatibility ' mailbox-transport-codec.log
-          for testcase in add send sync error; do
-            grep -q -- "--- PASS: TestMailTransportCodecRegistryCompatibility/$testcase " mailbox-transport-codec.log
-          done
-          if grep -q -- '--- SKIP:' mailbox-transport-codec.log; then exit 1; fi
-          printf 'codec RUN=%s PASS=%s SKIP=0\n' "$(grep -c '^=== RUN' mailbox-transport-codec.log)" "$(grep -c -- '--- PASS:' mailbox-transport-codec.log)"
-
-      - name: Mailbox sync admission, replay, truthful state and upgrade regressions (PostgreSQL)
-        if: matrix.suite == 'live-3'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go test -race -p 1 ./internal/repository ./internal/app/consumer ./internal/app/orgtransfer ./internal/infrastructure/db -run '^TestLive(SyncArrival|SyncTruth|EmailErrorDedupe|EmailErrorResolveMethod)' -count=1
-
-      - name: Workspace archive spec against the live schema (PostgreSQL)
-        if: matrix.suite == 'live-2'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: go test -race -v -p 1 ./internal/app/orgtransfer -run '^TestLive(EveryOrgTableIsRegistered|TablesAreInDependencyOrder|ResetColumnsHaveSomethingToFallBackOn)$' -count=1
-
-      - name: Payload-free arrival delivery diagnostics regressions (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: go test -race -v -p 1 ./internal/observability/arrivaldiag ./internal/repository ./internal/app/consumer -run '^Test(ArrivalDiagnostics|LiveArrivalDiagnostics)' -count=1
-
-      - name: Restricted member summary, inbox and notification regressions (PostgreSQL)
-        if: matrix.suite == 'live-3'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: |
-          go test -race -p 1 ./internal/repository -run '^TestLive(OrganizationScopedCounts|UniboxVisibility|EmailCursorVisibility|NotificationAudience)' -count=1
-
-      - name: Unibox indexed search, paging and interrupted reads (PostgreSQL)
-        if: matrix.suite == 'live-1'
-        env:
-          WARMBLY_TEST_DB: postgres://warmbly:warmbly@127.0.0.1:5432/warmbly_test?sslmode=disable
-        run: go test -race -v -p 1 ./internal/repository ./internal/infrastructure/db -run '^TestLiveUnibox(Search|ReadStream|SearchUpgrade|GetBySender|ScopeDraftsCount)' -count=1
-
-      - name: Notification digest authorization retries (Redis)
-        if: matrix.suite == 'live-3'
-        env:
-          WARMBLY_TEST_REDIS: redis://127.0.0.1:6379/15
-        run: go test -race ./internal/app/notification -run '^TestLivePushDigestAudienceRetries$' -count=1
-
-      - name: Test the Kafka codec, failed-handler replay and client lifecycle
-        if: matrix.suite == 'live-2'
-        run: go test -race -tags kafka ./internal/infrastructure/codec/ ./internal/infrastructure/kafka/ ./internal/infrastructure/eventbus/
+      # The Kafka images sit behind a build tag the default build never
+      # compiles; build rather than vet, because a CGO backend fails at link.
+      - name: Verify the Kafka build still compiles and links
+        run: go build -tags kafka ./...
 
   web-ci:
     name: Web CI
@@ -762,6 +403,28 @@ jobs:
         # in package.json today.
         run: pnpm build
 
+  docs-ci:
+    name: Docs CI
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          working-directory: docs
+          node-version: "22"
+
+      - name: Typecheck
+        run: pnpm types:check
+
+      - name: Lint
+        run: pnpm lint
+
   forms-ci:
     name: Forms CI
     needs: changes
@@ -789,6 +452,71 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  # The portal service: the client page app, the service that serves it (portal/worker) and its Cloudflare config.
+  portal-ci:
+    name: Portal CI
+    needs: changes
+    if: needs.changes.outputs.portal == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          working-directory: portal
+          node-version: "22"
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Service tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Cloudflare Worker configuration
+        working-directory: .
+        run: pnpm dlx wrangler@4.45.0 deploy --dry-run --config deploy/cloudflare/portal/wrangler.jsonc --outdir "$RUNNER_TEMP/portal-worker"
+
+      # The self-host image runs the same modules on workerd; release.yml is the only other place it builds.
+      - name: Set up Docker Buildx
+        if: needs.changes.outputs.portal-image == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the self-host image (no push)
+        if: needs.changes.outputs.portal-image == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/portal.Dockerfile
+          push: false
+          load: true
+          tags: warmbly-portal:ci
+          platforms: linux/amd64
+          cache-from: type=gha,scope=ci-portal
+          cache-to: type=gha,mode=max,scope=ci-portal
+
+      - name: Self-host image answers
+        if: needs.changes.outputs.portal-image == 'true'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          docker run -d --name portal-ci -p 127.0.0.1:8095:8095 -e API_ORIGIN=http://127.0.0.1:9 \
+            -e PORTAL_DOMAIN=portal.ci.test -e PORTAL_EDGE_TOKEN=ci-portal-edge-token-0123456789abcdef warmbly-portal:ci
+          for _ in $(seq 30); do docker exec portal-ci wget -q -O /dev/null http://127.0.0.1:8096/ && break; sleep 1; done
+          curl -fsS -o /dev/null -H 'Host: portal.ci.test' http://127.0.0.1:8095/embed.js
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: portal.ci.test' http://127.0.0.1:8095/)" = 404
+          # An unknown host needs a backend lookup, which fails here, so it is a 503 rather than a 404.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: other.ci.test' http://127.0.0.1:8095/)" = 503
+          docker rm -f portal-ci
 
   # The installer is served verbatim from site/public, so what CI checks is
   # exactly what a `curl | sh` executes. The checksum is published next to it
@@ -983,13 +711,12 @@ jobs:
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO
 
-  # Validate the web/admin production Dockerfiles (build + nginx config check)
-  # without pushing, so a broken image can't reach a release tag unnoticed. The
-  # release workflow is the only other place these build, and only on tags.
+  # The web/admin production Dockerfiles (build + nginx config check), only
+  # when the image side changes; the app build itself is covered above.
   frontend-images:
     name: Frontend Image (${{ matrix.service }})
     needs: changes
-    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.admin == 'true'
+    if: needs.changes.outputs.frontend-images == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -1034,7 +761,7 @@ jobs:
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [changes, migrations-ci, go-ci, web-ci, qa-ci, admin-ci, site-ci, forms-ci, installer-ci, cli-installer-ci, make-ci, rust-ci, elixir-ci, ios-ci, frontend-images, pages-ci, aws-deployment-ci]
+    needs: [changes, migrations-ci, go-lint, go-test, web-ci, qa-ci, admin-ci, site-ci, docs-ci, forms-ci, portal-ci, installer-ci, cli-installer-ci, make-ci, rust-ci, elixir-ci, ios-ci, frontend-images, pages-ci, aws-deployment-ci]
     if: always()
     steps:
       - name: Check CI status

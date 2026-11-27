@@ -51,6 +51,7 @@ A `data` plus `pagination` envelope. `next_cursor` is the campaign id to resume 
       "end_date": null,
       "timezone": "",
       "effective_timezone": "America/New_York",
+      "timezone_mode": "campaign",
       "days": 62,
       "start_time": "09:00",
       "end_time": "17:00",
@@ -66,6 +67,7 @@ A `data` plus `pagination` envelope. `next_cursor` is the campaign id to resume 
       "ramp_increment": 0,
       "ramp_ceiling": 0,
       "ramp_level": 0,
+      "warmup_graduation": true,
       "esp_match_mode": "off",
       "max_new_leads_per_day": 0,
       "prioritize_new_leads": false,
@@ -115,7 +117,7 @@ Status-bucket counts plus per-folder totals for the organization, used to drive 
 
 `POST /campaigns-estimate`
 
-Project an audience against a sender pool before a campaign exists. The campaign is simulated day by day under the scheduler's own rules: each mailbox's cap and the campaign limit, the warmup graduation ceiling as it climbs, the workspace's risk band, health bands and holds, domain authentication, cold rotation, sending behaviour profiles, the plan's daily allowance, what other campaigns already send from the same mailboxes, and the sending window with its spacing. The warmup mail each warming mailbox keeps sending shares that spacing, so it is counted too. For a sequence, due follow-ups go out before new contacts start, and the totals assume nobody replies. Nothing is written, so it needs no `Idempotency-Key`. The dashboard's new-campaign flow shows this as its launch plan. **Scope** `READ_CAMPAIGNS` · **Org permission** `view_campaigns`.
+Project an audience against a sender pool before a campaign exists. The campaign is simulated day by day under the scheduler's own rules: each mailbox's cap and the campaign limit, the campaign's ramp-up (its schedule as it climbs, or the warmup graduation ceiling when it ramps as replies come in), the workspace's risk band, health bands and holds, domain authentication, cold rotation, sending behaviour profiles, the plan's daily allowance, what other campaigns already send from the same mailboxes, and the sending window with its spacing. The warmup mail each warming mailbox keeps sending shares that spacing, so it is counted too. For a sequence, due follow-ups go out before new contacts start, and the totals assume nobody replies. Nothing is written, so it needs no `Idempotency-Key`. The dashboard's new-campaign flow shows this as its launch plan. **Scope** `READ_CAMPAIGNS` · **Org permission** `view_campaigns`.
 
 ### Request body
 
@@ -130,6 +132,8 @@ Project an audience against a sender pool before a campaign exists. The campaign
 | `start_time` | string | no | Daily window start (`HH:MM`). Defaults to `08:00`, the window a new campaign gets. |
 | `end_time` | string | no | Daily window end (`HH:MM`). Defaults to `18:00`. An end at or before the start returns `400`. |
 | `step_waits` | integer[] | no | Each follow-up's `wait_after` in days (0 to 365), in order. Omit for a single email. At most 30. |
+| `warmup_graduation` | boolean | no | As on create. Defaults to the saved campaign's, else `true`. |
+| `ramp_enabled`, `ramp_start`, `ramp_increment`, `ramp_ceiling` | boolean, integers | no | The ramp schedule to project, as on create. Unsent fields come from the saved campaign, else a new campaign's defaults. A saved campaign's ramp keeps the level it has reached unless one of the numbers changes. |
 | `campaign_id` | string | no | Project a saved campaign of this workspace. Its leads that no linked segment enrolled count toward `recipients` together with `segment_ids` (each contact once; leads a segment link enrolled count only while that segment is in `segment_ids`, since unlinking it withdraws them). Anything not sent (`daily_limit`, `days`, `timezone`, the window, including per-day windows) is taken from the campaign, and one that sends from mailboxes picked one by one uses those. A campaign from another workspace returns `404`. |
 
 ### Response
@@ -140,10 +144,10 @@ Project an audience against a sender pool before a campaign exists. The campaign
 | --- | --- |
 | `steps`, `total_sends` | Emails per contact, and `recipients` times `steps`. |
 | `first_touch_finish_at` | The day the last contact gets their first email. |
-| `ramping`, `held` | Mailboxes still climbing their graduation ceiling, and mailboxes that send nothing today. |
+| `ramping`, `held` | Mailboxes still climbing their warmup graduation ceiling, and mailboxes that send nothing today. A campaign that ramps on a schedule shows its climb in `first_day_cap`, `steady_cap` and `full_capacity_at` instead. |
 | `warmup` | `{mailboxes, per_day, per_day_without, reply_rate}`: the warmup mail running alongside the campaign, what the same mailboxes warm at with no live campaign, and the least chance (in percent) that a pool partner with reply share left answers it on arrival while the campaign runs. Partners answer this warmup before other warmup mail, within their own reply rate. |
 | `other_campaigns_per_day` | What the pool's mailboxes sent for other campaigns on an average day over the last week. |
-| `bottleneck` | The clamp that costs the most sends on the first full sending day: `campaign_limit`, `warmup_graduation`, `spacing`, `other_campaigns`, `health`, `held`, `workspace_risk`, `org_daily_limit` or `sending_behavior`. Empty when the mailboxes' own caps are the limit. |
+| `bottleneck` | The clamp that costs the most sends on the first full sending day: `campaign_limit`, `campaign_ramp`, `warmup_graduation`, `spacing`, `other_campaigns`, `health`, `held`, `workspace_risk`, `org_daily_limit` or `sending_behavior`. Empty when the mailboxes' own caps are the limit. |
 | `timeline` | Up to 120 days from the start: `date`, `sending_day`, `capacity`, `sends`, `first_emails`, `follow_ups`, `warmup`. |
 | `senders` | Up to 200 mailboxes: `id`, `email`, `provider`, `state` (`ready`, `ramping`, `throttled`, `health_hold`, `domain_auth`, `resting`, `no_worker`), `first_day_cap`, `steady_cap`, `warmup_per_day`, `warmup_without`, `full_cap_at`. |
 | `scenarios` | Changes that would finish sooner, each simulated the same way and listed only when it beats `estimated_finish_at`: `kind` (`replies`: the given percent of leads reply, `more_mailboxes`: that many more mailboxes like these, `every_day`: the same hours on every day of the week), `value`, `finish_at`. |
@@ -208,6 +212,7 @@ Create a campaign. Only `name` is required, every other field is optional and ap
 | `start_date` | string (RFC 3339), nullable | no | Earliest send time. Today or later; omit or send `null` to start as soon as the campaign is active. |
 | `end_date` | string (RFC 3339), nullable | no | Latest send time. Must be in the future; omit or send `null` for an open-ended campaign. |
 | `timezone` | string | no | IANA timezone for the schedule. Omit or send `""` to follow the workspace timezone, resolved on every read (UTC when none is set). The response carries the zone in use as `effective_timezone`. |
+| `timezone_mode` | string | no | Whose clock the sending windows are read on: `campaign` (default, the campaign's timezone) or `recipient` (each lead's own timezone, worked out from their record; a lead nothing places uses the campaign's). Any other value is `400`. See [sending by region and timezone](/guides/regions-and-timezones/). |
 | `days` | integer (0-127) | no | Legacy weekday bitmask (superseded by `schedule_windows`). |
 | `start_time` | string | no | Legacy daily start (`HH:MM`). |
 | `end_time` | string | no | Legacy daily end (`HH:MM`). |
@@ -216,11 +221,13 @@ Create a campaign. Only `name` is required, every other field is optional and ap
 | `folder_ids` | string[] | no | Folder ids to file the campaign under. |
 | `sender_strategy` | string | no | `tags` (default) or `explicit`. `tags` resolves the pool from `email_tag_ids`, and falls back to every active mailbox in the workspace when no tag and no explicit sender is set. `explicit` sends from the mailboxes in `senders`, plus any `email_tag_ids` set alongside them. It never falls back to every active mailbox, so a pool that empties out parks the campaign at `paused_no_accounts` instead of widening to the whole workspace. |
 | `rotation_mode` | string | no | How volume spreads across the chosen mailboxes. |
+| `follow_up_sender` | string | no | Which mailbox sends a lead's follow-ups: `same` (default, the mailbox that sent the first email), `same_domain` (rotate among mailboxes on that domain) or `rotate` (rotate across the pool). Any other value is `400`. |
 | `senders` | object[] | no | Explicit-strategy mailbox pool (see sender input below). |
-| `ramp_enabled` | boolean | no | Enable per-campaign daily ramp-up. |
-| `ramp_start` | integer | no | Ramp starting volume. |
-| `ramp_increment` | integer | no | Daily ramp increment. |
-| `ramp_ceiling` | integer | no | Ramp ceiling (never raises above the per-mailbox cap). |
+| `ramp_enabled` | boolean | no | Ramp each mailbox's volume on a schedule: `ramp_start` on the first sending day, plus `ramp_increment` each sending day, up to `ramp_ceiling`. Default `false`. |
+| `ramp_start` | integer | no | Ramp starting volume, `1` to `5000` (default `10`). |
+| `ramp_increment` | integer | no | Daily ramp increment, `0` to `100` (default `5`). |
+| `ramp_ceiling` | integer | no | Ramp ceiling, `1` to `5000` and at least `ramp_start` (default `50`). It never raises a mailbox above its own cap. |
+| `warmup_graduation` | boolean | no | Hold mailboxes whose warmup is running or paused to the reply-earned ceiling in this campaign: `5` a day, plus one a day for each lead who replied in the last seven days. Default `true`. `false` leaves each mailbox's daily cap, `daily_limit` and the ramp. The dashboard sets `false` with `ramp_enabled: true` for **On a schedule**, and both `false` for **Full volume**. See [ramp-up](/guides/campaigns/#ramp-up). |
 | `esp_match_mode` | string | no | `off`, `prefer`, or `strict`. |
 | `max_new_leads_per_day` | integer | no | New-lead throttle, `0` is unlimited. |
 | `prioritize_new_leads` | boolean | no | Prefer new leads in each send window. |
@@ -287,7 +294,7 @@ Patch any subset of campaign fields. Omitted fields are left unchanged. The expl
 
 ### Request body
 
-Every field is optional. Scalar fields use nullable pointers, so any field you send is applied. `timezone` accepts `""` to make the campaign follow the workspace timezone. `start_date` and `end_date` additionally accept an explicit `null` to clear the stored date: a null `start_date` means "start now" and a null `end_date` means "run open-ended". Changing any schedule field (`start_date`, `end_date`, `timezone`, `days`, `start_time`, `end_time`, `schedule_windows`, `entry_delay_minutes`) on an active campaign reschedules its next send immediately, so clearing a future start date or shortening the entry delay takes effect right away. Notable fields: `name`, `description`, `status`, `stop_on_reply`, `stop_on_meeting`, `open_tracking`, `link_tracking`, `text_only`, `daily_limit`, `unsubscribe_header`, `risky_emails`, `cc`, `bcc`, `start_date`, `end_date`, `timezone`, `days`, `start_time`, `end_time`, `schedule_windows`, `email_tags`, `folders`, `contact_order_by`, `contact_order_dir`, `contact_order_field`, `sender_strategy`, `rotation_mode`, `ramp_enabled`, `ramp_start`, `ramp_increment`, `ramp_ceiling`, `esp_match_mode`, `max_new_leads_per_day`, `prioritize_new_leads`, `entry_delay_minutes`, `continuous`, `tracking_domain`, `utm_tracking`, `utm_source`, `utm_medium`, `utm_campaign`.
+Every field is optional. Scalar fields use nullable pointers, so any field you send is applied. `timezone` accepts `""` to make the campaign follow the workspace timezone. `start_date` and `end_date` additionally accept an explicit `null` to clear the stored date: a null `start_date` means "start now" and a null `end_date` means "run open-ended". Changing any schedule field (`start_date`, `end_date`, `timezone`, `timezone_mode`, `days`, `start_time`, `end_time`, `schedule_windows`, `entry_delay_minutes`) on an active campaign reschedules its next send immediately, so clearing a future start date or shortening the entry delay takes effect right away. Notable fields: `name`, `description`, `status`, `stop_on_reply`, `stop_on_meeting`, `open_tracking`, `link_tracking`, `text_only`, `daily_limit`, `unsubscribe_header`, `risky_emails`, `cc`, `bcc`, `start_date`, `end_date`, `timezone`, `timezone_mode`, `days`, `start_time`, `end_time`, `schedule_windows`, `email_tags`, `folders`, `contact_order_by`, `contact_order_dir`, `contact_order_field`, `sender_strategy`, `rotation_mode`, `follow_up_sender`, `ramp_enabled`, `ramp_start`, `ramp_increment`, `ramp_ceiling`, `warmup_graduation`, `esp_match_mode`, `max_new_leads_per_day`, `prioritize_new_leads`, `entry_delay_minutes`, `continuous`, `tracking_domain`, `utm_tracking`, `utm_source`, `utm_medium`, `utm_campaign`.
 
 `entry_delay_minutes` is anchored on when each contact entered the campaign, not on when the campaign started, so a contact enrolled by a linked segment next week waits the same amount from their own arrival. Leads that were in the campaign before the field existed count from the campaign's `created_at`, so turning a delay on never re-delays leads that have been enrolled for weeks.
 
@@ -667,6 +674,39 @@ Each step entry lists the Original (`variant_id: null`) and every variant of tha
 
 The top-level `winner_id`, `winner_name` and `confidence` describe campaign-level variants only.
 
+## Get warmup placement
+
+`GET /campaigns/:id/warmup-placement`
+
+Where each arm of the campaign's opening steps landed when its senders' warmup opened threads with it over the last 30 days (see [your campaign copy](/guides/warmup/#your-campaign-copy)). Only arms warmup carried are listed, so a campaign warmup has not used returns an empty `data`. **Scope** `READ_CAMPAIGNS` · **Org permission** `view_campaigns`.
+
+| Parameter | In | Type | Description |
+| --- | --- | --- | --- |
+| `id` | path | uuid | Campaign id. |
+
+### Response
+
+`variant_id` is `null` for the step's own copy. Campaign copy can open a warmup thread to any recipient that files warmup out of its inbox, whatever its host, but only business inboxes on Google Workspace and Microsoft 365 are counted here: `by_group` splits the sends into `google` (Google Workspace) and `microsoft` (Microsoft 365), and `placement` adds them up. `sent` counts the openings and `reported` how many of them the recipient has filed a receipt for; `inbox`, `tabs`, `spam` and `rescued` count within those receipts, so read rates over `reported`.
+
+```json
+{
+  "days": 30,
+  "data": [
+    {
+      "sequence_id": "7e3b2c1d-4f5a-4b6c-8d7e-9f0a1b2c3d4e",
+      "variant_id": null,
+      "placement": { "sent": 24, "reported": 22, "inbox": 19, "tabs": 1, "spam": 2, "rescued": 2 },
+      "by_group": [
+        { "group": "google", "sent": 14, "reported": 13, "inbox": 12, "tabs": 1, "spam": 0, "rescued": 0 },
+        { "group": "microsoft", "sent": 10, "reported": 9, "inbox": 7, "tabs": 0, "spam": 2, "rescued": 2 }
+      ]
+    }
+  ]
+}
+```
+
+A campaign outside the caller's workspace answers `404`.
+
 ## List attachments
 
 `GET /campaigns/:id/attachments`
@@ -882,7 +922,7 @@ Read whether one contact's flow inside this campaign is currently held. A hold p
 }
 ```
 
-`hold` is absent when the lead is not held, including for a dated hold that has since expired. `until` is absent when the hold has no end, in which case only a resume lifts it. `source` is `out_of_office`, `inbox_tagging` (a classified reply, or with `reply_intent.stop_all_campaigns_on_reply` on, a reply to another campaign), `manual`, or `cc` while the contact is [copied on another lead's emails](#set-a-leads-cc) in this campaign; a `cc` hold's `reason` is that lead's address.
+`hold` is absent when the lead is not held, including for a dated hold that has since expired. `until` is absent when the hold has no end, in which case only a resume lifts it; a `review` hold has no `until` either, and only [approving the lead](#approve-waiting-leads) or turning review mode off lifts it. `source` is `out_of_office`, `inbox_tagging` (a classified reply, or with `reply_intent.stop_all_campaigns_on_reply` on, a reply to another campaign), `manual`, `crm`, `review` while a [review campaign](#turn-review-mode-on-or-off) waits for someone to approve the lead (shown ahead of any other hold the lead has), or `cc` while the contact is [copied on another lead's emails](#set-a-leads-cc) in this campaign; a `cc` hold's `reason` is that lead's address.
 
 ### Errors
 
@@ -905,7 +945,7 @@ The request states an absolute hold rather than applying a delta, and replacing 
 | `until` | body | string | RFC 3339 timestamp the hold lifts at. Must be in the future and within a year. Omit or send `null` for a hold with no end, which only a resume lifts. |
 | `reason` | body | string | Optional note shown next to the hold in the dashboard. Trimmed and capped at 200 characters. |
 
-A manual pause always wins: it replaces a hold an out-of-office auto-reply wrote, and a later auto-reply never shortens it or takes it over.
+A manual pause wins over an automatic hold: it replaces a hold an out-of-office auto-reply wrote, and a later auto-reply never shortens it or takes it over. Pausing a lead waiting for review writes the pause and answers with it (`source` `manual`), and the lead keeps waiting for review. Approving the lead later leaves the pause in place, and resuming the pause leaves the lead waiting for review.
 
 ### Request body
 
@@ -930,7 +970,7 @@ Same shape as [get a lead's hold](#get-a-leads-hold).
 
 Lift the hold now. The held time is dropped rather than carried, so the step returns to the schedule it would have had without the hold: the campaign's next pass when that moment has already passed, otherwise when the step's own wait elapses. The campaign's own wakeup is pulled forward with it, and a campaign that had finished while the lead was held is restarted through the usual launch checks. **Scope** `WRITE_CAMPAIGNS` · **Org permission** `manage_campaigns`.
 
-Resuming a lead that is not held succeeds and changes nothing, so a retry is safe.
+Resuming a lead that is not held succeeds and changes nothing, so a retry is safe. Resuming never approves a lead waiting for review; use [approve waiting leads](#approve-waiting-leads). On a lead waiting for review it lifts any other hold, such as a manual pause, and the lead goes back to waiting for review.
 
 | Parameter | In | Type | Description |
 | --- | --- | --- | --- |
@@ -1053,6 +1093,262 @@ Up to eight contacts who look like the lead's colleagues: the same company name,
 
 `reason` is `company` when the company names match and `domain` when only the email domain does. Company matches come first.
 
+## Get a campaign's readiness report
+
+`GET /campaigns/:id/review`
+
+What the top of an email step's Review tab shows: how its leads split by review state, the merge fields some leads not yet emailed would leave blank, what sending skips, steps whose copy does not render, and how much of the first email's AI copy is written ahead. **Scope** `READ_CAMPAIGNS` · **Org permission** `view_campaigns`.
+
+### Response
+
+```json
+{
+  "campaign_id": "8f1d6b2e-2b7a-4c9e-9a1f-0e6d4c3b2a10",
+  "review_leads": true,
+  "counts": { "total": 240, "waiting": 180, "ready": 12, "held": 3, "started": 45, "personalized": 7 },
+  "missing": [{ "field": "FirstName", "leads": 14 }],
+  "undeliverable": 2,
+  "unsubscribed": 1,
+  "ai": { "step_id": "5c2e7a10-9b1d-4f3e-8a6c-2d4b0e1f7a93", "blocks": 1, "written": 40, "pending": 155, "estimated_cost_usd": 1.55, "auto": true },
+  "template_errors": []
+}
+```
+
+`counts` splits every lead: `waiting` for review, `ready` (not emailed yet, nothing holding them), `held` (not emailed yet, paused for another reason) and `started` (emailed, or a send in flight). `missing` counts unstarted, subscribed leads with a field empty that an email step prints with nothing to fall back on (outside an `{{if}}` and without `default`), largest first. `ai` covers the first email step's AI blocks: leads not yet emailed whose copy is written ahead, the ones still to write, and about what writing them costs at the per-block estimate the balance check reserves. `auto` is true while the campaign is active and the instance can write AI copy: the pending leads are then written in the background without any call. A lead with its own copy of the step needs none.
+
+## Turn review mode on or off
+
+`PUT /campaigns/:id/review`
+
+On, every lead not yet emailed, and every lead enrolled later by any path, waits until a member approves it: its first email is held, and follow-ups after it go out on their own. Off approves every waiting lead, so it also needs `SEND_CAMPAIGNS` and `send_campaigns`. **Scope** `WRITE_CAMPAIGNS` · **Org permission** `manage_campaigns`.
+
+Only a change moves leads. Sending the mode the campaign already has changes nothing, so a retry is safe and no `Idempotency-Key` is needed. A lead not yet emailed that is paused for another reason waits for review too, and keeps that pause after it is approved. Waiting for review is held apart from other holds: resuming a pause, an away message ending, a CRM rule or removing a CC copy never releases it.
+
+| Parameter | In | Type | Description |
+| --- | --- | --- | --- |
+| `id` | path | uuid | Campaign id. |
+| `enabled` | body | boolean | Required. |
+
+### Response
+
+```json
+{ "campaign_id": "8f1d6b2e-2b7a-4c9e-9a1f-0e6d4c3b2a10", "review_leads": true, "held": 192, "released": 0 }
+```
+
+`held` counts leads put into review and `released` counts leads approved by turning it off. The campaign object carries `review_leads` too.
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `bad_request` | `enabled` is missing. |
+| `403` | `forbidden` | Turning review off without `SEND_CAMPAIGNS` and `send_campaigns`. |
+| `404` | `not_found` | The campaign is not the caller's organization's. |
+
+## List leads by review state
+
+`GET /campaigns/:id/review/leads`
+
+The campaign's leads ordered by email, each with its review state. **Scope** `READ_CAMPAIGNS` and `READ_CONTACTS` · **Org permission** `view_campaigns` and `view_contacts`.
+
+| Parameter | In | Type | Description |
+| --- | --- | --- | --- |
+| `id` | path | uuid | Campaign id. |
+| `status` | query | string | `all` (default), `waiting`, `ready`, `held` or `started`. |
+| `missing` | query | string | Only leads with this field empty: `FirstName`, `LastName`, `Company` or `Phone`. |
+| `q` | query | string | Matches email, name or company. |
+| `cursor` | query | string | Opaque cursor from the previous page's `pagination.next_cursor`. |
+| `limit` | query | integer | `1` to `200`, default `50`. |
+
+### Response
+
+```json
+{
+  "data": [
+    {
+      "contact_id": "3a5e9c71-4f2b-4d88-9a0c-1b7e5d2f6c34",
+      "email": "ana@acme.example",
+      "first_name": "",
+      "last_name": "Ruiz",
+      "company": "Acme",
+      "status": "waiting",
+      "hold": { "since": "2026-11-14T10:02:00Z", "source": "review" },
+      "personalized": 1,
+      "missing": ["FirstName"],
+      "added_at": "2026-11-14T10:02:00Z"
+    }
+  ],
+  "pagination": { "next_cursor": "YW5hQGFjbWUuZXhhbXBsZR8zYTVl...", "has_more": true }
+}
+```
+
+`personalized` counts the steps with this lead's own copy. `missing` lists the fields the campaign's emails print that this lead has empty.
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `bad_request` | An unknown `status` or `missing`, a `limit` out of range, or an invalid `cursor`. |
+| `404` | `not_found` | The campaign is not the caller's organization's. |
+
+## Approve waiting leads
+
+`POST /campaigns/:id/review/approve`
+
+Release leads waiting for review. Their first email goes out under the campaign's schedule, daily limits, spacing and every other sending rule, exactly as without review, and the campaign's wakeup is pulled forward. **Scope** `SEND_CAMPAIGNS` · **Org permission** `send_campaigns`.
+
+Approving a lead that is not waiting changes nothing, so retrying the same `contact_ids` is safe and no `Idempotency-Key` is needed. `all` approves whoever is waiting when it runs, so repeating it also approves leads that started waiting since the first call; retry with the `contact_ids` you meant to approve instead. Only this endpoint and turning review off release a waiting lead. A lead also paused for another reason keeps that pause until it lifts.
+
+| Parameter | In | Type | Description |
+| --- | --- | --- | --- |
+| `id` | path | uuid | Campaign id. |
+| `contact_ids` | body | array of uuid | Leads to approve, at most `500`. |
+| `all` | body | boolean | Approve every waiting lead. Send this or `contact_ids`, not both. |
+
+### Response
+
+```json
+{ "campaign_id": "8f1d6b2e-2b7a-4c9e-9a1f-0e6d4c3b2a10", "review_leads": true, "held": 0, "released": 25 }
+```
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `bad_request` | Neither or both of `contact_ids` and `all`, or more than `500` ids. |
+| `404` | `not_found` | The campaign is not the caller's organization's. |
+
+## Send leads back to review
+
+`POST /campaigns/:id/review/reopen`
+
+Hold the listed leads for review again. The campaign must have review mode on. A lead already emailed is left as it is. A lead paused for another reason waits for review too and keeps that pause, so it needs both the approval and the pause to lift before its first email. A lead already waiting stays waiting, so a retry is safe. **Scope** `WRITE_CAMPAIGNS` · **Org permission** `manage_campaigns`.
+
+| Parameter | In | Type | Description |
+| --- | --- | --- | --- |
+| `id` | path | uuid | Campaign id. |
+| `contact_ids` | body | array of uuid | Required, at most `500`. |
+
+### Response
+
+Same shape as [approve waiting leads](#approve-waiting-leads); `held` counts the leads put back.
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `bad_request` | `contact_ids` is missing, empty or longer than `500`, `all` is sent, or review mode is off. |
+| `404` | `not_found` | The campaign is not the caller's organization's. |
+
+## Write AI copy ahead
+
+`POST /campaigns/:id/review/write`
+
+Write the AI blocks of the first email step, or `step_id`, for up to ten leads not yet emailed that still miss one, so they can be read before they go out. Each block is charged to the balance exactly as it would be at send time and cached where the send reads it, so the send reuses it and nothing is charged twice. **Scope** `WRITE_CAMPAIGNS` · **Org permission** `manage_campaigns` and `use_ai`.
+
+Call it again with the `next` it returned as `after` while `remaining` is above zero. The cursor moves past every lead a pass tried, so a lead that keeps failing cannot stall the run. A pass that runs out of balance or reaches a spend limit stops early with `stopped`, keeps what it wrote, and hands back a `next` that resumes where it began. A lead with its own copy of the step is skipped.
+
+| Parameter | In | Type | Description |
+| --- | --- | --- | --- |
+| `id` | path | uuid | Campaign id. |
+| `step_id` | body | uuid | An email step. Default the first one. |
+| `contact_ids` | body | array of uuid | Only these leads, `1` to `500`. An empty list or `null` is refused with `400`; omit it to write every lead. |
+| `waiting_only` | body | boolean | Without `contact_ids`, only leads waiting for review. Without either, every lead not yet emailed. |
+| `after` | body | string | The previous pass's `next`. |
+
+### Response
+
+```json
+{ "written": 10, "failed": 0, "remaining": 145, "next": "YW5hQGFjbWUuZXhhbXBsZR8zYTVl..." }
+```
+
+`stopped` is `insufficient_credits` or `usage_cap_exceeded` when the pass ended early. A failed lead is written at send time instead.
+
+## Get one lead's emails
+
+`GET /campaigns/:id/leads/:contact_id/emails`
+
+Every email step rendered for one lead the way the send will: their own copy or the A/B variant drawn for them, merge fields, spintax (the same choice every time for a lead and step), the AI copy written so far, the signature of the mailbox already writing to them, and the opt-out footer. Nothing is written or charged. **Scope** `READ_CAMPAIGNS` and `READ_CONTACTS` · **Org permission** `view_campaigns` and `view_contacts`.
+
+### Response
+
+```json
+{
+  "campaign_id": "8f1d6b2e-2b7a-4c9e-9a1f-0e6d4c3b2a10",
+  "lead": { "contact_id": "3a5e9c71-4f2b-4d88-9a0c-1b7e5d2f6c34", "email": "ana@acme.example", "status": "waiting", "personalized": 0, "missing": ["FirstName"] },
+  "steps": [
+    {
+      "step_id": "5c2e7a10-9b1d-4f3e-8a6c-2d4b0e1f7a93",
+      "position": 1,
+      "name": "Step 1",
+      "subject": "Quick question about Acme",
+      "body_html": "<p>Hi there, …</p>",
+      "body_plain": "Hi there, …",
+      "source": { "subject": "Quick question about {{.Company}}", "body_html": "<p>Hi {{.FirstName | default \"there\"}}, …</p>", "body_plain": "" },
+      "threaded": false,
+      "personalized": false,
+      "step_changed": false,
+      "ai_blocks": [{ "id": "opener", "name": "Opener", "written": false }],
+      "sent": false
+    }
+  ]
+}
+```
+
+`from` is present once a mailbox has written to the lead. `source` is the template the copy renders from, which a personalization starts from. `threaded` marks a follow-up replying in the lead's thread, whose subject is the conversation's. In `body_html`, written AI copy is wrapped in `<span data-ai-block="ID">` and a block not yet written is an empty `<span data-ai-pending="ID" data-ai-name="...">`, so a preview can mark them; the plain text shows `[AI: name]` for an unwritten block. These markers are never sent. `step_changed` marks a personalized step whose shared copy was edited after it.
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `404` | `not_found` | The campaign is not the caller's organization's, or the contact is not a lead of it. |
+
+## Personalize one email for one lead
+
+`PUT /campaigns/:id/leads/:contact_id/emails/:step_id`
+
+Store this lead's own copy of one email step. It replaces the step's copy, and any A/B variant, for this lead only. Merge fields, spintax and AI blocks in it still resolve when it sends, and it is checked like a step's copy. Later edits to the step do not change it. **Scope** `WRITE_CAMPAIGNS` and `READ_CONTACTS` · **Org permission** `manage_campaigns` and `view_contacts`.
+
+The body replaces the whole copy, so a retry lands on the same row and no `Idempotency-Key` is needed.
+
+| Parameter | In | Type | Description |
+| --- | --- | --- | --- |
+| `subject` | body | string | Up to 998 characters. Ignored on a follow-up that replies in the lead's thread. |
+| `body_html` | body | string | Send this, `body_plain`, or both. |
+| `body_plain` | body | string | |
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `bad_request` | No body, or the email is too long. |
+| `400` | `invalid_template` | The copy does not render as written. |
+| `404` | `not_found` | The campaign, the lead or the email step is not found. |
+| `409` | `lead_step_sent` | This lead already received this email, or it is being sent now. |
+
+## Reset one lead's email
+
+`DELETE /campaigns/:id/leads/:contact_id/emails/:step_id`
+
+Drop this lead's own copy, so the step's copy goes out again. Deleting a copy that is not there succeeds with `204`. **Scope** `WRITE_CAMPAIGNS` and `READ_CONTACTS` · **Org permission** `manage_campaigns` and `view_contacts`. Answers `409 lead_step_sent` once the lead received the email or while it is being sent.
+
+## Write one lead's AI copy now
+
+`POST /campaigns/:id/leads/:contact_id/emails/:step_id/write`
+
+Write the step's AI blocks for this lead now instead of at send time, and answer the lead's emails as [get one lead's emails](#get-one-leads-emails) does. Charged and cached as in [write AI copy ahead](#write-ai-copy-ahead), so a retry writes and charges nothing more. Send `{"rewrite": true}` to replace copy already written with a new generation, which is charged again. A repeated rewrite is another new generation and another charge, so do not retry one automatically. The blocks of a step are written one at a time and each is saved as it is written, so a call that fails partway keeps and charges the blocks it finished; a retry writes only the ones still missing. **Scope** `WRITE_CAMPAIGNS` and `READ_CONTACTS` · **Org permission** `manage_campaigns`, `use_ai` and `view_contacts`.
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `402` | `insufficient_credits` | The balance is too low for the next block. Blocks written before it stay written and charged. |
+| `404` | `not_found` | The campaign, the lead or the email step is not found. |
+| `409` | `lead_step_sent` | The lead already received this email, or it is being sent now, so its copy can no longer change. |
+| `429` | `usage_cap_exceeded` | The workspace reached its AI spend limit. |
+| `503` | `ai_unavailable` | The instance has no AI provider. |
+| `503` | `ai_generation_failed` | The provider did not answer. The failed block is not charged, though a web lookup it already made can be, and blocks written before it stay written and charged. Try again. |
+
 ## Get campaign logs
 
 `GET /campaigns/:id/logs`
@@ -1087,6 +1383,34 @@ A `data` plus `pagination` envelope. Here `pagination` carries only `next_cursor
   }
 }
 ```
+
+## Leads by timezone
+
+`GET /campaigns/:id/lead-timezones`
+
+The campaign's leads counted by the timezone their records resolve to, largest first, plus the leads nothing places. Read it before launching a campaign whose `timezone_mode` is `recipient`. Nothing is written. **Scope** `READ_CAMPAIGNS` · **Org permission** `view_campaigns`.
+
+| Parameter | In | Type | Description |
+| --- | --- | --- | --- |
+| `id` | path | uuid | Campaign id. |
+
+```json
+{
+  "campaign_id": "6b1f7f0e-2a0c-4c8e-9a51-1d2b3c4d5e6f",
+  "timezone_mode": "recipient",
+  "timezone": "America/New_York",
+  "total": 1240,
+  "unknown": 85,
+  "resolving": 0,
+  "zones": [
+    { "timezone": "America/Chicago", "country": "US", "leads": 410 },
+    { "timezone": "Europe/London", "country": "GB", "leads": 302 },
+    { "timezone": "Etc/GMT-2", "country": "", "leads": 12 }
+  ]
+}
+```
+
+`timezone` is the campaign's own clock, the one an `unknown` lead is sent on. `resolving` counts leads whose record changed and has not been read again yet, usually for under a minute; they are counted under their previous answer meanwhile. A zone's `country` is empty for `UTC` and fixed offsets (`Etc/GMT-2` is `UTC+2`). An unknown campaign is `404`.
 
 ## Today's sending plan
 
@@ -1407,7 +1731,7 @@ All fields optional.
 | `thread_reply` | boolean | no | Send this step as a reply on the conversation the contact is already in, rather than as a new email. Default `true`. A threading step carries the conversation's subject, so its own `subject` is only used once it is turned off. It has no effect on a contact's first email, which has nothing to reply to. |
 | `conditions` | object | no | The connections out of this step (`{branches: [...]}`), evaluated in order; a branch with no `conditions` is a plain "go there next" link. Routing follows connections only: a step with `{}` or no branches has no outgoing path and ends the flow for the contact. |
 | `kind` | string | no | `email` (default), `action`, or `wait`. |
-| `action` | object | no | Typed config for non-email nodes. `type` is the switch (`wait`, `add_tag`, `remove_tag`, `add_to_segment`, `remove_from_segment` (each with a `segment_id`), `unsubscribe`, `notify`, `create_task`, `create_deal`, `move_deal_stage`, `run_automation`, `end`), the remaining fields are type-scoped. |
+| `action` | object | no | Typed config for non-email nodes. `type` is the switch (`wait`, `add_tag`, `remove_tag`, `add_to_segment`, `remove_from_segment` (each with a `segment_id`), `unsubscribe`, `notify`, `create_task`, `create_deal`, `move_deal_stage`, `run_automation`, `end`, and `social` for a [social step](/guides/sequences/#social-steps)), the remaining fields are type-scoped. A `social` step carries `social`: `{"channel", "action", "note", "fallback_note", "subject", "fallback_subject", "body", "fallback_body", "reaction", "post_age_days", "comments", "voice", "max_skills", "variants", "winner", "if_missing"}`. `channel` is `linkedin`, `instagram`, `whatsapp`, `telegram` or `facebook` and `action` one that channel offers (`invite`, `message`, `inmail`, `voice_note`, `profile_visit`, `follow`, `like_post`, `comment_post`, `endorse` or `withdraw_invite`, as `GET /social/channels` lists). Lengths are checked against the channel's limits: `body` up to `message_max_chars`, `subject` 200, at most 10 `comments` each up to `comment_max_chars`, `post_age_days` 0 to 365, `max_skills` 1 to 3, `voice` `{"mode": "recording", "audio_id", "duration_seconds"}` or `{"mode": "written", "script"}` (script up to 2,000 characters, duration up to the channel's `voice_note_max_seconds`), and at most 4 `variants` `{"id", "weight", "note", "subject", "body"}` with unique ids and weights 0 to 100, the base copy being variant `a`. `if_missing` is `skip` or `stop`. Anything out of range answers `400`. Branch conditions add `social_replied` and `not_social_replied` (with an optional `channel`), `social_connected`, `not_social_connected`, `social_invite_pending`, `social_open_profile` and `not_social_open_profile`. |
 
 ```json
 {
@@ -1481,6 +1805,8 @@ Render subject and body templates for a contact exactly as the send path would, 
 
 A `TemplatePreview` object. `errors` lists template parse errors that would block sending, `unresolved` lists literal tokens left after render. `from` is present when `account_id` was given, `attachments` when `campaign_id` was given and there are files on the send (the campaign-wide ones plus `step_id`'s own). All four are omitted when empty.
 
+The body's [AI blocks](/guides/ai-variables/) are never generated here. Each is replaced by a `<span data-ai-pending="ID" data-ai-name="Name">` marker, or, when `contact_id` is a lead of `campaign_id` and `step_id` is given, by the copy already written for that lead in `<span data-ai-block="ID">`; in `subject` and `body_plain` the written text or `[AI: Name]` stands in. `ai_blocks` lists each block as `{ "id", "name", "written" }`. `lead` is `true` when `step_id` is given and the contact is a lead of `campaign_id` (without `step_id` it is omitted even for a lead), and `personalized` is `true` when that lead has their own copy of the step, which they get instead of the copy previewed. The three are omitted when empty or false.
+
 ```json
 {
   "subject": "Hi Sam at Globex",
@@ -1506,7 +1832,7 @@ A `TemplatePreview` object. `errors` lists template parse errors that would bloc
 
 `POST /generation/write`
 
-Generate outreach copy with the AI writing assistant. Gated to paid and free-trial organizations, and each call consumes one AI credit (refunded if the provider call fails). Supports `Idempotency-Key` so a retried request is not double-charged. **Scope** `WRITE_CAMPAIGNS` · **Org permission** `manage_campaigns`.
+Generate outreach copy with the AI writing assistant. Gated to paid and free-trial organizations, and each call is charged to the workspace balance for the tokens it uses (nothing if the provider call fails). Supports `Idempotency-Key` so a retried request is not double-charged. **Scope** `WRITE_CAMPAIGNS` · **Org permission** `manage_campaigns`.
 
 ### Request body
 
@@ -1524,12 +1850,15 @@ Generate outreach copy with the AI writing assistant. Gated to paid and free-tri
 ```json
 {
   "text": "Hi {{.FirstName}},\n\nNoticed {{.Company}} is scaling outbound...\n\nWorth a quick chat?",
+  "charged_usd": 0.012,
+  "balance_usd": 4.96,
+  "credits_charged": 1,
   "credits_remaining": 248,
   "model": "claude-..."
 }
 ```
 
-When the organization is out of credits the endpoint returns `402` with `code: "insufficient_credits"` and the standard envelope. A depleted balance is checked before any provider call, so no completion is ever burned on a `402`.
+`charged_usd` is what the call cost and `balance_usd` the balance left, in dollars; `credits_charged` and `credits_remaining` are the same in legacy credits, kept for clients written before the dollar balance. When the balance is too low the endpoint returns `402` with `code: "insufficient_credits"` and the standard envelope. A depleted balance is checked before any provider call, so no completion is ever burned on a `402`.
 
 ### Streaming
 
@@ -1539,22 +1868,22 @@ Send `Accept: text/event-stream` to receive the text while the model writes it. 
 | --- | --- | --- |
 | `delta` | `text` | The next fragment, in order. |
 | `stage` | `stage: "checking"` | The text is written and words spam filters flag are being reworded. |
-| `done` | `text`, `credits_remaining`, `credits_charged`, `tokens_used`, `model` | The final text, which can differ from the joined deltas after the rewording. Always the last event on success. |
-| `error` | `code`, `message` | The generation failed. A failure refunds the credit, except when the caller disconnected after text had arrived. |
+| `done` | `text`, `charged_usd`, `balance_usd`, `credits_remaining`, `credits_charged`, `tokens_used`, `model` | The final text, which can differ from the joined deltas after the rewording. Always the last event on success. |
+| `error` | `code`, `message` | The generation failed. A failure charges nothing, except when the caller disconnected after text had arrived. |
 
 ```text
 data: {"type":"delta","text":"Hi {{.FirstName}},"}
 
 data: {"type":"delta","text":" saw that"}
 
-data: {"type":"done","text":"Hi {{.FirstName}}, saw that...","credits_remaining":247,"credits_charged":1,"tokens_used":412,"model":"..."}
+data: {"type":"done","text":"Hi {{.FirstName}}, saw that...","charged_usd":0.0118,"balance_usd":4.9482,"credits_remaining":247,"credits_charged":1,"tokens_used":412,"model":"..."}
 ```
 
 ## Preview an AI variable
 
 `POST /generation/ai-variable`
 
-Generate the recipient-specific snippet a per-recipient AI variable block would produce, for the campaign editor's preview. The prompt is rendered against a supplied contact (must belong to the organization) or a sample contact, then generated with the same framing the send path uses, including the surrounding email so the fragment fits. The charge is metered by usage (the model and tokens the snippet uses, plus any web lookup), refunded if the provider call fails, and `Idempotency-Key` is honored so a retried request is not double-charged. See the [AI variables](/guides/ai-variables/) guide. **Scope** `WRITE_CAMPAIGNS` · **Org permission** `manage_campaigns` and `use_ai`. Passing `contact_id` additionally requires `READ_CONTACTS` (org permission `view_contacts`), since the prompt reads that contact's fields.
+Generate the recipient-specific snippet a per-recipient AI variable block would produce, for the campaign editor's preview. The prompt is rendered against a supplied contact (must belong to the organization) or a sample contact, then generated with the same framing the send path uses, including the surrounding email so the fragment fits. The charge is metered by usage (the model and tokens the snippet uses, plus any web lookup), charged to the workspace balance and nothing if the provider call fails, and `Idempotency-Key` is honored so a retried request is not double-charged. See the [AI variables](/guides/ai-variables/) guide. **Scope** `WRITE_CAMPAIGNS` · **Org permission** `manage_campaigns` and `use_ai`. Passing `contact_id` additionally requires `READ_CONTACTS` (org permission `view_contacts`), since the prompt reads that contact's fields.
 
 ### Request body
 
@@ -1577,6 +1906,8 @@ Generate the recipient-specific snippet a per-recipient AI variable block would 
 ```json
 {
   "text": "Saw Acme just shipped its new billing API.",
+  "charged_usd": 0.0053,
+  "balance_usd": 4.92,
   "credits_remaining": 246,
   "credits_charged": 1,
   "tokens_used": 180,
@@ -1584,4 +1915,4 @@ Generate the recipient-specific snippet a per-recipient AI variable block would 
 }
 ```
 
-A `contact_id` that is not in the organization returns `404`. When the organization is out of credits the endpoint returns `402` with `code: "insufficient_credits"`, checked before any provider call.
+A `contact_id` that is not in the organization returns `404`. When the balance is too low the endpoint returns `402` with `code: "insufficient_credits"`, checked before any provider call.

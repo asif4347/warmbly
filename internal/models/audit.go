@@ -23,6 +23,7 @@ const (
 	AuditActionStop       AuditAction = "stop"
 	AuditActionPause      AuditAction = "pause"
 	AuditActionResume     AuditAction = "resume"
+	AuditActionApprove    AuditAction = "approve"
 	AuditActionSend       AuditAction = "send"
 	AuditActionDuplicate  AuditAction = "duplicate"
 	AuditActionDisconnect AuditAction = "disconnect"
@@ -61,10 +62,18 @@ const (
 	AuditEntityMailboxGrant   AuditEntityType = "mailbox_grant"
 	AuditEntityMailboxVendor  AuditEntityType = "mailbox_vendor"
 	AuditEntityDomainRedirect AuditEntityType = "domain_redirect"
-	AuditEntityAPIKey         AuditEntityType = "api_key"
-	AuditEntitySequence       AuditEntityType = "step"
-	AuditEntityUser           AuditEntityType = "user"
-	AuditEntityOrganization   AuditEntityType = "organization"
+	// Store purchases: an order, a domain and a mailbox bought through GraphKit.
+	AuditEntityStoreOrder   AuditEntityType = "store_order"
+	AuditEntityStoreDomain  AuditEntityType = "store_domain"
+	AuditEntityStoreMailbox AuditEntityType = "store_mailbox"
+	// Social add-on: a connected account, the link to a GraphKit workspace, a saved LinkedIn lead search.
+	AuditEntitySocialAccount       AuditEntityType = "social_account"
+	AuditEntitySocialLink          AuditEntityType = "social_link"
+	AuditEntityLinkedInSavedSearch AuditEntityType = "linkedin_saved_search"
+	AuditEntityAPIKey              AuditEntityType = "api_key"
+	AuditEntitySequence            AuditEntityType = "step"
+	AuditEntityUser                AuditEntityType = "user"
+	AuditEntityOrganization        AuditEntityType = "organization"
 	// AuditEntityOrgRisk carries a risk-posture transition. It rides the audit
 	// spine like every other entity, so a change reaches every teammate's
 	// dashboard without a bespoke emit site.
@@ -110,6 +119,8 @@ const (
 	AuditEntityTeam           AuditEntityType = "team"
 	AuditEntityAutomation     AuditEntityType = "automation"
 	AuditEntityLeadSyncSource AuditEntityType = "lead_sync_source"
+	AuditEntityLead           AuditEntityType = "lead"
+	AuditEntityLeadSearch     AuditEntityType = "lead_search"
 	AuditEntityMeeting        AuditEntityType = "meeting"
 
 	// Workspace archives (export/import for moving between instances).
@@ -164,6 +175,25 @@ const (
 	AuditEntityPlacementTest    AuditEntityType = "placement_test"
 	AuditEntityPlacementMonitor AuditEntityType = "placement_monitor"
 	AuditEntityPlacementBatch   AuditEntityType = "placement_batch"
+
+	// Partnership tools: a workspace's own OAuth app saved or removed, and a sign-in link made or revoked.
+	AuditEntityMailboxOAuthApp    AuditEntityType = "mailbox_oauth_app"
+	AuditEntityMailboxConnectLink AuditEntityType = "mailbox_connect_link"
+
+	// An agency changed: renamed, staff, clients, a client's monthly limit, billing.
+	AuditEntityAgency AuditEntityType = "agency"
+
+	// The brand a workspace's public pages and client members' dashboard show.
+	AuditEntityWorkspaceBrand AuditEntityType = "workspace_brand"
+
+	// A client connect link created, revoked, or used to connect a mailbox.
+	AuditEntityClientConnectLink AuditEntityType = "client_connect_link"
+
+	// A client report, its share link or its email schedule.
+	AuditEntityClientReport AuditEntityType = "client_report"
+
+	// A migration from another outreach tool created, started, canceled, finished or dismissed.
+	AuditEntityToolMigration AuditEntityType = "tool_migration"
 )
 
 // AuditActor is the minimal identity of the member who performed an action,

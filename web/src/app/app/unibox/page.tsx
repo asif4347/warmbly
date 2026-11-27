@@ -41,6 +41,9 @@ import { cn } from "@/lib/utils";
 import type { UniboxSearchParams } from "@/lib/api/models/app/unibox/UniboxSearch";
 import { useUniboxRailSync } from "@/hooks/useUniboxRailSync";
 import useInboxBrowseState from "./useInboxBrowseState";
+import { SocialConversationList } from "@/components/app/unibox/social/SocialConversationList";
+import { SocialThreadView } from "@/components/app/unibox/social/SocialThreadView";
+import { useSocialUnibox } from "@/lib/api/hooks/app/social/useSocial";
 
 function startOfToday(): Date {
   const d = new Date();
@@ -64,6 +67,8 @@ export default function UniboxPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [scopeSheetOpen, setScopeSheetOpen] = React.useState(false);
+  const social = useSocialUnibox(overview.data?.social_unread);
+  const socialRail = social.visible ? { unread: social.unread } : undefined;
 
   // ── Pane widths ────────────────────────────────────────────────
   // The list column is drag-resizable against the thread pane and the width is
@@ -213,6 +218,8 @@ export default function UniboxPage() {
         return { kind: "snoozed" };
       case "scheduled":
         return { kind: "scheduled" };
+      case "social":
+        return { kind: "social" };
       case "inbox":
       case "sent":
       case "drafts":
@@ -286,16 +293,6 @@ export default function UniboxPage() {
   // an effect: an effect runs after paint, so on a reload of a scoped
   // URL the list would fire and render the default "all" query first,
   // then flash to the scoped one.
-  const storeEmails = useAppStore((s) => s.emails);
-  const tagAccountIds = React.useMemo(
-    () =>
-      scope.kind === "tag"
-        ? storeEmails
-            .filter((m) => (m.tags ?? []).includes(scope.tagId))
-            .map((m) => m.id)
-        : null,
-    [scope, storeEmails],
-  );
   // A premade view resolves to the workspace's label rows by slug, so the
   // filter is recomputed once the overview has loaded them.
   const viewCategoriesData = overview.data?.categories;
@@ -334,10 +331,7 @@ export default function UniboxPage() {
           next.automated = false;
           break;
         case "tag":
-          // Tag→mailbox membership resolves through the store's
-          // mailbox directory (populated by DataSyncProvider); the
-          // server only knows accountIds.
-          next.accountIds = tagAccountIds ?? [];
+          // The server resolves the tag to its mailboxes (tag_ids).
           next.tagId = scope.tagId;
           next.automated = false;
           break;
@@ -371,11 +365,11 @@ export default function UniboxPage() {
       }
       return next;
     },
-    [scope, tagAccountIds, viewCategoriesData],
+    [scope, viewCategoriesData],
   );
   const scopeBase = React.useMemo(() => paramsForScope("newest"), [paramsForScope]);
   const { params, baseParams, setParams, search, setSearch, keepSearch } =
-    useInboxBrowseState(scopeKey(scope), scopeBase, storeEmails);
+    useInboxBrowseState(scopeKey(scope), scopeBase);
 
   // ── Scope label for header chip ────────────────────────────────
   const overviewData = overview.data;
@@ -395,6 +389,8 @@ export default function UniboxPage() {
         return "Snoozed";
       case "scheduled":
         return "Scheduled";
+      case "social":
+        return "Social";
       case "folder":
         return scope.folder.charAt(0).toUpperCase() + scope.folder.slice(1);
       case "mailbox": {
@@ -441,6 +437,7 @@ export default function UniboxPage() {
           setOpen={setScopeSheetOpen}
           scope={scope}
           onChange={setScope}
+          social={socialRail}
         />
 
         <div ref={rowRef} className="flex-1 min-h-0 flex">
@@ -450,7 +447,7 @@ export default function UniboxPage() {
             style={{ "--unibox-rail-w": `${renderedRailWidth}px` } as React.CSSProperties}
             className="hidden lg:flex w-[var(--unibox-rail-w)] shrink-0 h-full [&>nav]:border-r-0"
           >
-            <ScopeRail scope={scope} onChange={setScope} />
+            <ScopeRail scope={scope} onChange={setScope} social={socialRail} />
           </aside>
 
           <div
@@ -480,6 +477,13 @@ export default function UniboxPage() {
                   urlThread ? "hidden md:flex" : "flex",
                 )}
               >
+                {scope.kind === "social" ? (
+                  <SocialConversationList
+                    selectedId={urlThread}
+                    onOpen={(id) => goTo({ threadId: id })}
+                    onOpenScopeSheet={() => setScopeSheetOpen(true)}
+                  />
+                ) : (
                 <ConversationList
                   scopeKey={scopeKey(scope)}
                   scopeLabel={scopeLabel}
@@ -501,6 +505,7 @@ export default function UniboxPage() {
                   }
                   onOpenScopeSheet={() => setScopeSheetOpen(true)}
                 />
+                )}
               </div>
 
               {/* The divider IS the drag handle: a 6px column with the
@@ -536,7 +541,11 @@ export default function UniboxPage() {
                           change, the reader is what has to start clean, so a
                           half-typed reply never follows you to the next
                           conversation. */}
-                      <ThreadView key={urlThread} threadId={urlThread} onClose={closeThread} />
+                      {scope.kind === "social" ? (
+                        <SocialThreadView key={urlThread} conversationId={urlThread} onClose={closeThread} />
+                      ) : (
+                        <ThreadView key={urlThread} threadId={urlThread} onClose={closeThread} />
+                      )}
                     </div>
                   </>
                 ) : (

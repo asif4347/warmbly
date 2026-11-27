@@ -294,6 +294,8 @@ type DomainGrant struct {
 	VerifiedAt     *time.Time `json:"verified_at,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	Mailboxes      int        `json:"mailboxes"`
+	// Purchased is a grant GraphKit made in a domain bought in the store; AdminEmail then names one of its mailboxes.
+	Purchased bool `json:"purchased"`
 }
 
 // DirectoryUser is one account in a granted domain or tenant.
@@ -325,6 +327,80 @@ type MigrationMailbox struct {
 	Email  string    `json:"email"`
 	Name   string    `json:"name"`
 	Status string    `json:"status"`
+	// VendorConnectionID is the healthy vendor connection that can sign in again as the mailbox, when one can.
+	VendorConnectionID *uuid.UUID `json:"vendor_connection_id,omitempty"`
+	Vendor             string     `json:"vendor,omitempty"`
+}
+
+// How a mailbox signs in, as GET /emails/:id/signin names it.
+const (
+	SigninMethodGoogle      = "google_signin"
+	SigninMethodGrant       = "google_grant"
+	SigninMethodAppPassword = "app_password"
+	SigninMethodOther       = "other"
+)
+
+// MailboxSigninState is what deciding a mailbox's sign-in options reads from the store.
+type MailboxSigninState struct {
+	AccountID       uuid.UUID
+	Email           string
+	Provider        InboxProvider
+	AuthMethod      string
+	MailHost        string
+	Status          string
+	Managed         bool
+	GrantedScopes   []string
+	VendorMailboxID string
+	// Vendor is the connection the mailbox was imported from, nil when none.
+	Vendor *VendorConnection
+	Switch *MailboxSigninSwitch
+}
+
+// MailboxSignin is how a mailbox signs in and the switches that can succeed for it.
+type MailboxSignin struct {
+	Method string `json:"method"`
+	// FullMailAccess is set for a Google sign-in whose granted scopes are recorded.
+	FullMailAccess *bool                `json:"full_mail_access"`
+	Personal       bool                 `json:"personal"`
+	Managed        bool                 `json:"managed"`
+	Options        MailboxSigninOptions `json:"options"`
+	// AutoSwitch is a mailbox Warmbly reconnects through its vendor without a click.
+	AutoSwitch bool                 `json:"auto_switch"`
+	Switch     *MailboxSigninSwitch `json:"switch"`
+}
+
+// MailboxSigninOptions are the switches offered; each is nil or false when it cannot succeed.
+type MailboxSigninOptions struct {
+	GoogleSignin *MailboxSigninGoogle `json:"google_signin"`
+	AppPassword  bool                 `json:"app_password"`
+	Vendor       *MailboxSigninVendor `json:"vendor"`
+	Grant        *MailboxSigninGrant  `json:"grant"`
+}
+
+// MailboxSigninGoogle is the client a Workspace admin marks trusted before the new Google sign-in.
+type MailboxSigninGoogle struct {
+	ClientID string `json:"client_id"`
+}
+
+// MailboxSigninVendor is the healthy vendor connection that can sign in again as the mailbox.
+type MailboxSigninVendor struct {
+	ConnectionID uuid.UUID `json:"connection_id"`
+	Vendor       string    `json:"vendor"`
+	Label        string    `json:"label"`
+}
+
+// MailboxSigninGrant is the domain's active admin grant the mailbox can move onto.
+type MailboxSigninGrant struct {
+	ID     uuid.UUID `json:"id"`
+	Domain string    `json:"domain"`
+}
+
+// MailboxSigninSwitch is where the mailbox's last vendor reconnect stands.
+type MailboxSigninSwitch struct {
+	Status    string    `json:"status"`
+	Message   string    `json:"message,omitempty"`
+	Automatic bool      `json:"automatic"`
+	At        time.Time `json:"at"`
 }
 
 // VendorConnection is an inbox vendor account the workspace imports from. Its credentials never leave the server.
@@ -338,8 +414,42 @@ type VendorConnection struct {
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	Mailboxes      int        `json:"mailboxes"`
+	// AgencyConnectionID names the agency's account this connection was made from; only agency staff use it.
+	AgencyConnectionID *uuid.UUID `json:"agency_connection_id,omitempty"`
 	// Credentials is the sealed field map; never serialized.
 	Credentials string `json:"-"`
+}
+
+// VendorConnectionNoKey is the refusal recorded on a connection that holds no key.
+const VendorConnectionNoKey = "This connection has no API key on this instance. Update the key."
+
+// AgencyVendorAccount is an inbox vendor account an agency holds once and uses in any of its clients.
+type AgencyVendorAccount struct {
+	ID        uuid.UUID `json:"id"`
+	AgencyID  uuid.UUID `json:"-"`
+	Vendor    string    `json:"vendor"`
+	Label     string    `json:"label"`
+	CreatedAt time.Time `json:"created_at"`
+	// Status is invalid when the vendor refused the key in any client that uses it.
+	Status    string `json:"status"`
+	LastError string `json:"last_error,omitempty"`
+	// Mailboxes counts the mailboxes connected from it across every client.
+	Mailboxes int                         `json:"mailboxes"`
+	Clients   []AgencyVendorAccountClient `json:"clients"`
+	// Credentials is the sealed field map; never serialized.
+	Credentials string `json:"-"`
+}
+
+// AgencyVendorAccountClient is one client workspace an agency's vendor account is used in.
+type AgencyVendorAccountClient struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Name           string    `json:"name"`
+	ConnectionID   uuid.UUID `json:"connection_id"`
+	Mailboxes      int       `json:"mailboxes"`
+	// MailboxesHidden is a client whose mailbox list the caller cannot read, so its count is left out.
+	MailboxesHidden bool   `json:"mailboxes_hidden,omitempty"`
+	Status          string `json:"status"`
+	LastError       string `json:"last_error,omitempty"`
 }
 
 // VendorMailbox is one mailbox in a vendor account, as the picker shows it.
@@ -467,6 +577,10 @@ const (
 	RedirectHintNoListener  RedirectReachHint = "no_listener"
 	// RedirectHintSettling: the tracking service answered for the domain but has not picked the redirect up yet.
 	RedirectHintSettling RedirectReachHint = "settling"
+	// RedirectHintEdgeRecord: Cloudflare refused the name because its records point at Cloudflare's own addresses.
+	RedirectHintEdgeRecord RedirectReachHint = "edge_record"
+	// RedirectHintEdgeInactive: Cloudflare received the visit but has not activated the name for the tracking host.
+	RedirectHintEdgeInactive RedirectReachHint = "edge_inactive"
 )
 
 // RedirectReach is one HTTP check of a verified redirect's domain.

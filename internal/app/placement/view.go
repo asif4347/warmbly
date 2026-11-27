@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/warmbly/warmbly/internal/app/credits"
+	"github.com/warmbly/warmbly/internal/app/instancesettings"
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
@@ -170,21 +172,25 @@ func (s *service) usage(ctx context.Context, orgID uuid.UUID) (models.PlacementU
 	pol := s.policy(ctx)
 	limit, paid := pol.TestsPerMonthTrial, false
 	if s.Gate != nil {
-		if paid, _ = s.Gate.IsPaidOrganization(ctx, orgID); paid {
+		if paid = s.paidAllowance(ctx, orgID); paid {
 			limit = pol.TestsPerMonthPaid
 		}
 	}
 	u.Limit = &limit
-	// Credits come with a paid plan, so a trial past its free tests waits.
-	if paid && s.Credits != nil && !s.Credits.Unmetered() {
-		// An unreadable balance leaves it unknown; the charge itself still
-		// refuses what the workspace cannot pay.
-		if u.CreditsPerTest = pol.CreditPrice(); u.CreditsPerTest > 0 {
+	// The balance comes with a plan that sends, so a trial or the Partnership
+	// plan past its free tests waits. A zero placement_test price, or the legacy
+	// zero credits_per_test, turns paid tests off.
+	if paid && s.balanceUsable(ctx, orgID) && s.Credits != nil && !s.Credits.Unmetered() && pol.CreditPrice() > 0 {
+		if price := s.Credits.Quote(ctx, credits.UnitUsage(instancesettings.UnitPlacementTest, 1)); price > 0 {
+			// An unreadable balance leaves it unknown; the charge itself still
+			// refuses what the workspace cannot pay.
+			var balance *models.Micro
 			if bal, xerr := s.Credits.GetBalance(ctx, orgID); xerr == nil {
-				u.CreditBalance = &bal
+				balance = &bal
 			} else {
 				errs.CaptureException(xerr)
 			}
+			u.SetPrice(price, balance)
 		}
 	}
 	return u, nil

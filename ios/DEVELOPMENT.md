@@ -67,9 +67,13 @@ After login the app resolves your workspace (auto-selects if you have exactly on
 The email step shows native **Sign in with Apple** and **Continue with Google** buttons based on what the connected backend advertises at `GET /v1/auth/providers`:
 
 - **Apple** — enabled whenever the backend has an expected bundle ID (`APPLE_IOS_BUNDLE_ID`, default `com.warmbly.app`). The app sends the Apple identity token to `POST /v1/auth/apple`, which verifies it against Apple's public keys. Trying it end-to-end needs a signed build and a simulator/device signed into an Apple ID.
-- **Google** — hidden until the backend sets `GOOGLE_IOS_CLIENT_ID` (an iOS OAuth client ID from Google Cloud Console). The app runs the OAuth ceremony in an in-app browser with PKCE, exchanges the code on device (iOS clients have no secret), and sends the ID token to `POST /v1/auth/google`.
+- **Google** — with `GOOGLE_IOS_CLIENT_ID` set (an iOS OAuth client ID from Google Cloud Console), the app runs the OAuth ceremony in an in-app browser with PKCE, exchanges the code on device (iOS clients have no secret), and sends the ID token to `POST /v1/auth/google`. Without it, when `GET /v1/auth/config` lists `google` and its `app_url` is a host the app is associated with (`AppConfig.associatedWebHosts`, today `app.warmbly.com`), the app runs the website's own Google sign-in instead: `POST /v1/auth/google/begin`, the returned URL in an in-app browser, the backend callback's redirect to `https://app.warmbly.com/auth/sso?code=` caught by the browser session, and `POST /v1/auth/sso/exchange` with the code and the binding from begin. Otherwise the button is hidden.
 
-First-time social sign-ins auto-provision the user, workspace, and trial server-side; there is no OTP step because the provider identity is already verified.
+First-time social sign-ins auto-provision the user, workspace, and trial server-side; there is no OTP step because the provider identity is already verified. An Apple or Google sign-in on an address that already has a password asks for that password once (`POST /v1/auth/sso/link`) before the identity is linked.
+
+### Saved passwords
+
+The entitlement `webcredentials:app.warmbly.com` and the dashboard's `/.well-known/apple-app-site-association` (in `web/public`) let iOS AutoFill offer passwords saved for the dashboard on the email and password fields, and save new ones there. The App ID needs the Associated Domains capability; automatic signing with `-allowProvisioningUpdates` enables it. A domain change takes effect after Apple's CDN refetches the file, so a fresh install picks it up first. Self-hosted dashboards are not associated with the App Store build.
 
 ### Confirming a recent sign-in
 
@@ -107,12 +111,26 @@ cd ios && find Warmbly -name '*.swift' -print0 | xargs -0 swiftc -parse
 
 A real typecheck happens when you build in Xcode.
 
+## Layout on iPad, iPhone Duo and landscape
+
+One layout adapts to the window rather than to the device (`DesignSystem/AdaptiveLayout.swift`), so Split View, Stage Manager, rotation and folding all land on the same rules:
+
+- **The tab bar goes where the system would put its own** (`ShellLayout.resolve`, read from the `verticalBarEdge` trait). On the iPhone Duo cover screen, and unfolded in landscape, the system keeps a strip down one side for the Dynamic Island, the status bar and its toolbars, and the tab bar (`WTabRail`) sits at the bottom of that strip with the round action above it. The strip is already safe area, so this costs the content no width. On the cover screen the bar steps aside when a screen hides it (an open thread, whose own toolbar the system then moves into the strip); unfolded, only the keyboard hides it. Unfolded in portrait the bars are horizontal again, and the app uses the bottom bar (`WTabBar`), kept at phone width.
+- **iPad windows 900pt and wider** get Warmbly's own sidebar (`AppSidebar`) as a first column, built from the drawers' parts so it reads as the same app: the workspace switcher at the top, then Home, Inbox, Campaigns and Contacts, Sales (Deals, Tasks, Meetings) and Workspace (Mailboxes, Analytics, Templates, Members, Activity), with Ask Remie and the account (which opens Settings) at its foot. Every page the settings hub links to on iPhone is a page of its own here, without a close button (`isSidebarDestination`), so beside the sidebar Settings drops its workspace tiles and holds only settings. The button beside the workspace name, or Control-Command-S, hides the sidebar (remembered under `ipad_sidebar_hidden`); the bottom bar then shows a sidebar button to bring it back. Narrower iPad windows use the bottom bar. Beside the sidebar there is no round bar action, so Compose sits in the Inbox header like Mail's and Command-J opens Remie's page. A list tab's own drawer pins as a further column only when the content is wide enough without the sidebar, and a detail shown beside its list never hides the bar.
+- **Pages lay out for the room they have.** At 720pt of content (`SplitMetrics.detailMinContentWidth`, measured by each page so it holds with the sidebar hidden) a page switches from its phone column to a wide layout: Settings splits into a list of its pages and the open page, like the iPad Settings app; Mailboxes, Templates and Activity show the open item beside the list, like Inbox; Deals and Tasks become boards with a column per stage or due group (drag a deal between stages); Meetings puts the agenda beside the next call and its counts; Members becomes a grid of cards; Analytics becomes a two-column dashboard. Below 720pt every page is the phone layout. On iPad these pages sit on the same white canvas as Inbox and Home, with hairline-edged cards and leading titles (`SurfaceStyle`); the grey grouped look with white cards is kept for iPhone, where they open as covers.
+- **Every other window**, including an iPhone held sideways, keeps the floating bar at the bottom like other iPhone apps. Command-1 to Command-5 switch tabs, Command-N runs the round action (or composes, on iPad) and Command-J asks Remie on a hardware keyboard.
+- **Inbox, Campaigns and Contacts** (`ListDetailShell`) show the open item beside the list once there is 720pt of content, and pin the drawer open as a first column past 1180pt. Without a pinned drawer the list ends at the middle of the window, so on the unfolded iPhone Duo the list and the open conversation each sit on their own half of the fold. Whatever is open moves between the stack and the detail column when the window changes size; the move rebuilds it, so a page pushed inside it and unsaved edits there start over, while an instant reply keeps its undo.
+- **Pages** (settings, analytics, CRM lists, mailboxes) keep their content at a reading width (`readableMargins`), and Home becomes a two-column dashboard past 840pt.
+- Backgrounds run under the Duo's side strip and content stays clear of it, through the safe area.
+
+The Duo simulator boots folded, and only Device Hub opens it. The cover screen is the simulator's own display: `xcrun simctl io <udid> enumerate` lists both screens, and `screenshot --display=<id>` captures the 1398px-wide one. To see the unfolded Duo from a script, launch on an iPad with `WARMBLY_DEBUG_FRAME=951x669 WARMBLY_DEBUG_BARS=trailing` for landscape or `WARMBLY_DEBUG_FRAME=669x951 WARMBLY_DEBUG_BARS=bottom` for portrait (below).
+
 ### Scripted simulator runs
 
 Debug builds read launch environment variables so a script can open the app signed in on a given tab without tapping through sign-in (both are compiled out of Release builds):
 
 - `WARMBLY_DEBUG_TOKEN`: the JSON body returned by `POST /v1/auth/login/confirm`. It is written to the Keychain on launch, and the push permission prompt is skipped.
-- `WARMBLY_DEBUG_TAB`: `home`, `inbox`, `campaigns`, `contacts` or `more`.
+- `WARMBLY_DEBUG_TAB`: `home`, `inbox`, `campaigns`, `contacts` or `more`, and on iPad also the sidebar pages `deals`, `tasks`, `meetings`, `mailboxes`, `analytics`, `templates`, `team`, `activity` or `assistant`.
 - `WARMBLY_DEBUG_HOME`: the Home hero style to render, `immersive` (the default), `card` or `fade`.
 - `WARMBLY_DEBUG_SCROLL`: opens Home, the settings hub, a settings page or Analytics scrolled to the `center` or `bottom`, for screenshots below the hero.
 - `WARMBLY_DEBUG_THREAD`: with `WARMBLY_DEBUG_TAB=inbox`, `1` opens the newest conversation once the list loads `end` also scrolls it to the bottom, where an inbox agent's drafted reply sits, and `edit` opens that draft in the reply composer.
@@ -120,8 +138,10 @@ Debug builds read launch environment variables so a script can open the app sign
 - `WARMBLY_DEBUG_CAMPAIGN`: with `WARMBLY_DEBUG_TAB=campaigns`, opens the campaign whose name contains the value (the first campaign when nothing matches).
 - `WARMBLY_DEBUG_CONTACT`: with `WARMBLY_DEBUG_TAB=contacts`, opens the contact whose name or address contains the value. `WARMBLY_DEBUG_SORT` sets the contacts sort by its API name (`first_name`, `created_at`, ...).
 - `WARMBLY_DEBUG_SETTINGS`: with `WARMBLY_DEBUG_TAB=more`, opens a settings page (`profile`, `notifications`, `security`, `billing`, `team`, `templates` or `activity`) or a full-screen browser (`analytics`, `mailboxes`, `deals`, `tasks` or `meetings`). `WARMBLY_DEBUG_NOTIFICATIONS=preferences` opens the notifications page on its preferences. `WARMBLY_DEBUG_ANALYTICS` picks the analytics page (`overview`, `deliverability`, `warmup` or `accounts`), and `WARMBLY_DEBUG_ANALYTICS_ACCOUNT=1` then opens a mailbox's health. `WARMBLY_DEBUG_TEMPLATE=1` opens the first template and `WARMBLY_DEBUG_AUDIT_ENTRY=1` the newest activity entry. With `mailboxes`, `WARMBLY_DEBUG_CONNECT` opens the add-a-mailbox flow on a step (`provider`, `google`, `twostep`, `apppassword`, `appconnect`, `account`, `imap`, `smtp`, `grants`, `users`, `vendors`, `vendorkey`, `vendormailboxes`, `file`, `filereview` or `running`); every step past `provider` uses sample data, including an admin grant, a vendor catalog and a file preview, and `home` opens the first step with that data.
-- `WARMBLY_DEBUG_PHASE`: opens a screen from before the app, leaving the stored session alone: `launching` holds the splash, `signedout` shows sign-in, `onboarding` the first-run questions and `workspace` the create-a-workspace step. With `signedout`, `WARMBLY_DEBUG_AUTH` opens a later sign-in step (`signup`, `password`, `verify`, `twofa` or `reset`), or `server` to open the Server sheet; with `onboarding`, `WARMBLY_DEBUG_ONBOARDING` opens `referral`, `role` or `team`.
+- `WARMBLY_DEBUG_PHASE`: opens a screen from before the app, leaving the stored session alone: `launching` holds the splash, `signedout` shows sign-in, `onboarding` the first-run questions and `workspace` the create-a-workspace step. With `signedout`, `WARMBLY_DEBUG_AUTH` opens a later sign-in step (`signup`, `password`, `verify`, `twofa`, `newpassword` or `reset`), or `server` to open the Server sheet; with `onboarding`, `WARMBLY_DEBUG_ONBOARDING` opens `referral`, `role` or `team`.
 - `WARMBLY_DEBUG_ASSISTANT`: opens Remie on launch. `1` opens it empty, any other text is sent as the first message, and `demo` or `demo-approval` plays a scripted run (tool steps, a streamed answer and, for the second, an approval card) without calling the AI provider, which the local stack does not configure.
+- `WARMBLY_DEBUG_FRAME`: renders the app in a window of `<width>x<height>` points, scaled to fit, so an iPad simulator can show another device's layout. `951x669` is an unfolded iPhone Duo, `1376x1032` a 13-inch iPad in landscape. It sets the size only: safe-area insets and full-screen covers still come from the host, so check those on the target simulator.
+- `WARMBLY_DEBUG_BARS`: places the tab bar as another device would, for a `WARMBLY_DEBUG_FRAME` run: `bottom`, `sidebar` (the iPad sidebar), or `leading`/`trailing` (the Duo side strip; a host without one has the content give up the rail's width instead).
 
 `simctl` forwards variables prefixed with `SIMCTL_CHILD_`:
 
@@ -152,7 +172,7 @@ xcrun simctl io booted screenshot inbox.png
 
 ## Releasing to TestFlight and the App Store
 
-The app ships for iPhone only. Every merge to `main` that touches `ios/` runs `.github/workflows/ios-release.yml` on a `macos-26` runner: it archives a Release build, signs it with cloud-managed certificates through an App Store Connect API key, and uploads it to TestFlight. The build number is the workflow's run number; the version is `MARKETING_VERSION` in the project. **Run workflow** on the Actions tab uploads a build without a merge. Promoting a build to the App Store stays a manual step in App Store Connect.
+The app ships for iPhone and iPad (`TARGETED_DEVICE_FAMILY = "1,2"`). Every merge to `main` that touches `ios/` runs `.github/workflows/ios-release.yml` on a `macos-26` runner: it archives a Release build, signs it with cloud-managed certificates through an App Store Connect API key, and uploads it to TestFlight. The build number is the workflow's run number; the version is `MARKETING_VERSION` in the project. **Run workflow** on the Actions tab uploads a build without a merge. Promoting a build to the App Store stays a manual step in App Store Connect.
 
 ### One-time setup
 
@@ -178,7 +198,7 @@ Environment secrets never reach a pull request from a fork, and the job only run
 
 - **Review account.** Create an account for App Review on the production instance, then turn on **Skip emailed sign-in code** for it in the admin panel (or `warmblyctl user login-code-exempt`), so a reviewer can sign in with only the password. Give them a workspace with sample mailboxes and campaigns, and put the credentials in the review notes.
 - **App Attest.** The production backend must accept the App Store build: `APP_ATTEST_APP_IDS` defaults to `APPLE_TEAM_ID.APPLE_IOS_BUNDLE_ID`, so setting `APPLE_TEAM_ID` is enough.
-- **Store listing.** iPhone screenshots (6.9-inch), the privacy policy URL `https://warmbly.com/privacy/`, a support URL, and the App Privacy answers, which match `Warmbly/PrivacyInfo.xcprivacy`: email address, name, emails and other user content, linked to the user, used for app functionality, no tracking.
+- **Store listing.** iPhone screenshots (6.9-inch) and, because the app runs natively on iPad, iPad screenshots (13-inch), the privacy policy URL `https://warmbly.com/privacy/`, a support URL, and the App Privacy answers, which match `Warmbly/PrivacyInfo.xcprivacy`: email address, name, emails and other user content, linked to the user, used for app functionality, no tracking.
 - **Billing.** The app shows the plan, usage and credits and sells nothing; it carries no purchase link, because plans are bought outside the App Store.
 
 ### Shipping a version

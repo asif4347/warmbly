@@ -89,10 +89,14 @@ type OrganizationMember struct {
 	// AccessScope is which resources the role applies to; Access is filled where the grants are listed.
 	AccessScope AccessScope   `json:"access_scope"`
 	Access      *MemberAccess `json:"access,omitempty"`
+	// ScopeActions are the permissions a restricted member may act with inside their grants, where listed.
+	ScopeActions OrganizationPermission `json:"scope_actions,omitempty"`
 
 	// Joined data
 	User         *User         `json:"user,omitempty"`
 	Organization *Organization `json:"organization,omitempty"`
+	// Agency is the agency the workspace is a client of, filled on the caller's own membership list.
+	Agency *AgencyRef `json:"agency,omitempty"`
 
 	// Flattened convenience fields populated from the joined user, so clients
 	// can read member.email / member.name directly (the member list UIs,
@@ -276,9 +280,11 @@ type OrganizationRole struct {
 	Description    string                 `json:"description"`
 	Color          string                 `json:"color"`
 	Permissions    OrganizationPermission `json:"permissions"`
-	MemberCount    int                    `json:"member_count"`
-	CreatedAt      time.Time              `json:"created_at"`
-	UpdatedAt      time.Time              `json:"updated_at"`
+	// ActsInScope lets a restricted member holding the role act with its scope action permissions, not only read.
+	ActsInScope bool      `json:"acts_in_scope"`
+	MemberCount int       `json:"member_count"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // CreateOrganizationRoleRequest creates a custom role.
@@ -287,6 +293,7 @@ type CreateOrganizationRoleRequest struct {
 	Description string `json:"description,omitempty"`
 	Color       string `json:"color,omitempty"`
 	Permissions uint16 `json:"permissions"`
+	ActsInScope bool   `json:"acts_in_scope,omitempty"`
 }
 
 // UpdateOrganizationRoleRequest edits a custom role (edits propagate to
@@ -296,6 +303,7 @@ type UpdateOrganizationRoleRequest struct {
 	Description *string `json:"description,omitempty"`
 	Color       *string `json:"color,omitempty"`
 	Permissions *uint16 `json:"permissions,omitempty"`
+	ActsInScope *bool   `json:"acts_in_scope,omitempty"`
 }
 
 // TransferOwnershipRequest represents the request to transfer organization ownership
@@ -348,6 +356,10 @@ type OrganizationWithLimits struct {
 	Organization
 	Limits *OrganizationLimits `json:"limits,omitempty"`
 	Counts *OrganizationCounts `json:"counts,omitempty"`
+	// Agency is the agency this workspace is a client of, when it is one.
+	Agency *AgencyRef `json:"agency,omitempty"`
+	// Partner is the reseller that bills this workspace, when one does.
+	Partner *PartnerManagedRef `json:"partner,omitempty"`
 }
 
 // OrganizationLimitOverrides is the per-org override row. Each numeric

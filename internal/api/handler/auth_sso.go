@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -37,7 +38,14 @@ func (h *Handler) AppleBegin(c *gin.Context) {
 }
 
 func (h *Handler) ssoBegin(c *gin.Context, provider string) {
-	redirect, err := h.AuthService.SSOBegin(c.Request.Context(), provider)
+	// The body is optional and carries only attribution, so an unreadable one signs in without it.
+	var req struct {
+		Acquisition models.OrgAcquisition `json:"acquisition"`
+	}
+	if c.Request.Body != nil {
+		_ = json.NewDecoder(io.LimitReader(c.Request.Body, 16<<10)).Decode(&req)
+	}
+	redirect, err := h.AuthService.SSOBegin(c.Request.Context(), provider, req.Acquisition)
 	if err != nil {
 		errx.Handle(c, err)
 		return
@@ -97,7 +105,11 @@ func (h *Handler) AppleCallback(c *gin.Context) {
 }
 
 func (h *Handler) ssoCallback(c *gin.Context, in auth.SSOCallback) {
+	// Read before the state is consumed; only a verified portal origin replaces APP_URL.
 	base := config.AppBaseURL()
+	if origin := h.AuthService.SSOReturnOrigin(c.Request.Context(), in.State); origin != "" {
+		base = origin
+	}
 
 	// A provider-side refusal arrives as error=, not as a failed exchange.
 	// A closed consent screen is not a failure, so it returns quietly.

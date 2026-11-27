@@ -29,6 +29,7 @@ Auth: public (not available to API keys).
 | `password` | string | yes | Account password. |
 | `turnstile` | string | yes, unless `app_attest` is sent | Cloudflare Turnstile token. |
 | `app_attest` | object | no | The native app's [App Attest proof](#app-attest-native-apps), sent instead of `turnstile`. |
+| `supports_password_change` | boolean | no | Sent by the iOS app to say it can take a `password_change_required` answer. |
 
 ```json
 {
@@ -56,6 +57,8 @@ When the password is an [issued initial password](/development/accounts-and-acce
   "expires_in": 600
 }
 ```
+
+The iOS app takes this step when it sends `supports_password_change: true`. An earlier app build, which does not send it, is answered `initial_password_web_only` instead, so its holder finishes the first sign-in on the web. Browsers and API clients always get the step above.
 
 ### Choose a password after an issued one
 
@@ -688,6 +691,7 @@ Auth: Session only (not available to API keys).
 {
   "preferences": {
     "inbound_reply": { "enabled": false, "channels": { "in_app": true, "email": false, "slack": false, "push": true } },
+    "inbound_positive_reply": { "enabled": true, "channels": { "in_app": true, "email": false, "slack": false, "push": true } },
     "inbound_out_of_office": { "enabled": false, "channels": { "in_app": true, "email": false, "slack": false, "push": true } },
     "health_bounce": { "enabled": true, "channels": { "in_app": true, "email": false, "slack": false, "push": true } },
     "health_complaint": { "enabled": true, "channels": { "in_app": true, "email": false, "slack": false, "push": true } },
@@ -709,7 +713,7 @@ Auth: Session only (not available to API keys).
 
 `PUT /auth/me/notification-preferences`
 
-Replaces the caller's preferences. The full preferences object is sent under a `preferences` key and echoed back.
+Saves the caller's preferences. The preferences object is sent under a `preferences` key and the saved result is returned.
 
 Auth: Session only (not available to API keys).
 
@@ -717,12 +721,13 @@ Auth: Session only (not available to API keys).
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `preferences` | object | yes | The complete preferences object. Each category has `enabled` plus a `channels` object (`in_app`, `email`, `slack`, `push`), alongside `email_digest_minutes` (the email bundling window, `30` to `1440`). Categories absent from the request fall back to their defaults. |
+| `preferences` | object | yes | The preferences object. Each category has `enabled` plus a `channels` object (`in_app`, `email`, `slack`, `push`), alongside `email_digest_minutes` (the email bundling window, `30` to `1440`). A category or field absent from the request keeps its saved value, so a client that does not know a newer category never changes it. While `inbound_reply.enabled` is true, a positive reply is delivered under `inbound_reply` with its channels, whatever `inbound_positive_reply` is set to; `inbound_positive_reply` applies only while `inbound_reply` is off. |
 
 ```json
 {
   "preferences": {
     "inbound_reply": { "enabled": true, "channels": { "in_app": true, "email": false, "slack": false, "push": true } },
+    "inbound_positive_reply": { "enabled": true, "channels": { "in_app": true, "email": false, "slack": false, "push": true } },
     "inbound_out_of_office": { "enabled": false, "channels": { "in_app": true, "email": false, "slack": false, "push": true } },
     "health_bounce": { "enabled": true, "channels": { "in_app": true, "email": false, "slack": false, "push": true } },
     "health_complaint": { "enabled": true, "channels": { "in_app": true, "email": false, "slack": false, "push": true } },
@@ -742,7 +747,7 @@ Auth: Session only (not available to API keys).
 
 #### Response
 
-The same `{ "preferences": { ... } }` object that was sent.
+The saved `{ "preferences": { ... } }` object: what was sent, merged over the values already saved for anything the request left out.
 
 ### List notifications
 
@@ -1341,7 +1346,7 @@ The updated organization object.
 
 `GET /organization/current/limits`
 
-Returns the current organization's plan-resolved limits and current usage counts.
+Returns the current organization's plan-resolved limits and current usage counts. `max_contacts` is the ceiling every contact write enforces against `total_contacts`: an approved limit increase, else the plan's, else the product cap. On a self-hosted instance it is absent, meaning no ceiling, unless an operator set a contact limit for the workspace.
 
 Auth: Session only (not available to API keys). Requires a selected organization.
 
@@ -1353,6 +1358,7 @@ Auth: Session only (not available to API keys). Requires a selected organization
     "max_campaigns": 50,
     "max_team_members": 10,
     "max_email_accounts": 25,
+    "max_contacts": 25000,
     "daily_campaign_limit": 500
   },
   "counts": {
@@ -1501,6 +1507,7 @@ Auth: Session only (not available to API keys). Requires a selected organization
       "description": "Run campaigns, view contacts",
       "color": "#22c55e",
       "permissions": 4352,
+      "acts_in_scope": false,
       "member_count": 4,
       "created_at": "2026-05-01T09:00:00Z",
       "updated_at": "2026-06-01T09:00:00Z"
@@ -1525,6 +1532,7 @@ Auth: Session only (not available to API keys). **Org permission** `manage_team`
 | `description` | string | no | Role description. |
 | `color` | string | no | Hex color for the chip. |
 | `permissions` | int | no | Organization permission bitmask granted by the role. |
+| `acts_in_scope` | bool | no | Lets a member restricted to [selected resources](/guides/team-roles/#client-roles) act with the role's `access_unibox`, `manage_campaigns` and `send_campaigns` inside their grants. Defaults to `false`, which keeps such a member read-only. |
 
 ```json
 {
@@ -1557,6 +1565,7 @@ All fields optional; nil fields are left untouched.
 | `description` | string | no | New description. |
 | `color` | string | no | New chip color. |
 | `permissions` | int | no | New permission bitmask. |
+| `acts_in_scope` | bool | no | Whether restricted members act with the role inside their grants. Changing it needs every permission the role grants. |
 
 ### Delete a custom role
 
@@ -1637,9 +1646,9 @@ Auth: Session only (not available to API keys). **Org permission** `manage_team`
 
 `POST /organization/transfer-ownership`
 
-Transfers organization ownership to another member.
+Transfers organization ownership to another member. The caller must be the current owner and becomes an Admin; the new owner's roles and restricted access are cleared.
 
-Auth: Session only (not available to API keys). **Org permission** `transfer_ownership`.
+Auth: Session only (not available to API keys). **Org permission** `transfer_ownership`. Requires a recent confirmation (`POST /auth/reauth`); without one it answers `403 reauth_required`.
 
 #### Request body
 
@@ -1656,6 +1665,14 @@ Auth: Session only (not available to API keys). **Org permission** `transfer_own
 ```json
 { "message": "ownership transferred" }
 ```
+
+#### Errors
+
+| Status | When |
+|--------|------|
+| `400` | `new_owner_user_id` is the caller, or is not a member of the organization. |
+| `403` | The caller is not the organization's owner. |
+| `409` | The member's account is scheduled for deletion or suspended. |
 
 ### Upload organization avatar
 
@@ -2351,17 +2368,158 @@ Auth: Session only (not available to API keys).
 }
 ```
 
-### Promo codes and referrals
+<a id="promo-codes-and-referrals"></a>
 
-All session only, requiring org permission `manage_billing` and a selected organization. See the [referral program guide](/guides/referral-program/) for the product rules.
+### Promo codes
+
+Session only, requiring org permission `manage_billing` and a selected organization.
 
 | Endpoint | Returns |
 |----------|---------|
 | `GET /subscription/discounts` | The org's promo-code redemption history (`code`, `type`, `percent_off`, `duration`, `redeemed_at`). |
-| `GET /subscription/referral` | The org's referral status and code. |
-| `POST /subscription/referral` | Creates the org's referral code. |
-| `GET /subscription/referral/attributions` | One row per referred signup. `status` is `pending` (signed up, not yet paid), `qualified` (reached a paid checkout), `rewarded`, or `void` (clawback, self-referral, or cap). `reward_cents` is integer cents. |
-| `GET /subscription/referral/earnings` | The reward ledger. `amount_cents` is positive for a reward, negative for a clawback within the 30-day window; `reason` is `referral_reward` or `referral_clawback:<cause>`; `balance_after_cents` is the running balance. |
+
+### Balance and usage
+
+The workspace balance in US dollars: the plan's monthly allowance plus money the workspace added, charged for actual usage. All session only, requiring org permission `manage_billing` and a selected organization; adding money, saving a card and changing automatic reload also need a [recent confirmation](/api/endpoints/#actions-that-need-a-recent-confirmation). See the [Balance and usage guide](/guides/ai-credits/) for the product rules. On a deployment with `BILLING_PROVIDER=none` the balance is bypassed: `GET /subscription/balance` answers `{"unlimited": true}` and every credits endpoint reports `unlimited: true` with zero amounts.
+
+#### Get the balance
+
+`GET /subscription/balance`
+
+`burn` is included only with `?include=burn`, because it sums a month of the ledger; the example below asks for it.
+
+```json
+{
+  "unlimited": false,
+  "balance_usd": 21.4375,
+  "monthly_usd": 6.4375,
+  "purchased_usd": 15,
+  "monthly_allowance_usd": 15,
+  "monthly_used_usd": 8.5625,
+  "next_reset_at": "2026-12-01T00:00:00Z",
+  "low_balance_usd": 0.5,
+  "payment_method": { "brand": "visa", "last4": "4242", "exp_month": 8, "exp_year": 2028 },
+  "charge_in_progress": false,
+  "auto_reload": {
+    "enabled": true,
+    "threshold_usd": 5,
+    "amount_usd": 25,
+    "monthly_limit_usd": 250,
+    "reloaded_this_month_usd": 25,
+    "last_reload": { "amount_usd": 25, "at": "2026-11-03T14:12:09Z" },
+    "retry_at": null,
+    "retry_reason": null,
+    "failure_code": null,
+    "failed_at": null
+  },
+  "top_up": { "min_usd": 5, "max_usd": 5000, "presets_usd": [10, 25, 50, 100, 250], "default_usd": 25, "fee_bps": 300 },
+  "burn": {
+    "per_day_usd": 1.12,
+    "mailboxes_per_day_usd": 0.3,
+    "renewals_per_day_usd": 0.62,
+    "ai_per_day_usd": 0.2,
+    "mailboxes_monthly_usd": 9,
+    "renewals_due_usd": 11.17,
+    "billing_day": 17
+  }
+}
+```
+
+`burn` is what the balance pays for a day, for a "lasts about N days" estimate: a month of [bought mailboxes](/guides/buy-mailboxes/) over 30 days, each auto-renewing domain charged in the next 60 days over the days until its charge, and the average daily AI spend over the last 30 days. `billing_day` is the day of the month the mailboxes are billed, `null` before the first one.
+
+`payment_method` is `null` with no saved card. `retry_at` and `retry_reason` are set while a declined automatic reload waits for its next try (1, 6 and 18 hours after the attempts before it). `failure_code` and `failed_at` record why automatic reload last turned itself off: `card_declined`, `authentication_required`, `no_payment_method`, `payment_failed`, or `unavailable` when Stripe could not be reached after 8 tries. A reload waiting for its next try is canceled when automatic reload is turned off or the balance is back above `threshold_usd`.
+
+#### Add money on the saved card
+
+`POST /subscription/balance/top-up`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `amount_usd` | number | yes | From `5` to `5000`, rounded to whole cents. |
+
+Charges the saved card now, billed as a Stripe invoice, and answers `200` with `{"status": "paid", "amount_usd": 25, "charged_usd": 25.75, "balance_usd": 46.4375, "charge_in_progress": false}`. The card is charged `amount_usd` plus the processing fee of `top_up.fee_bps` basis points (3%), rounded half up to the cent and billed as its own invoice line; `amount_usd` is what the balance gains and `charged_usd` what the card paid. While the payment is still going through (the card network has not confirmed, or Stripe did not answer and Warmbly retries it in the background) it answers `202` with `status` `processing` and `charge_in_progress` `true`; the money is added when the payment lands. Needs an active paid plan (`403` otherwise). Send an `Idempotency-Key` to retry the call safely; without one, a retry while the first payment is pending answers `409` `charge_in_progress` rather than charging twice.
+
+| Status | Code | Meaning |
+|--------|------|---------|
+| `402` | `card_declined`, `authentication_required`, `payment_failed` | The card was not charged. Offer `POST /subscription/balance/checkout` instead. |
+| `409` | `payment_method_required` | No saved card. |
+| `409` | `charge_in_progress` | Another payment is still going through. |
+
+#### Add money through Checkout
+
+`POST /subscription/balance/checkout`
+
+Takes the same `amount_usd` and returns `{"session_id": "cs_...", "checkout_url": "https://checkout.stripe.com/..."}`. Checkout shows the amount and the 3% processing fee as two lines, and the balance gains `amount_usd`. Checkout saves the card for later one-click payments. The money is added when Stripe confirms the payment, in the webhook, exactly once.
+
+#### Save or replace the card
+
+`POST /subscription/balance/payment-method`
+
+No body. Returns a Checkout `checkout_url` in setup mode, which saves a card without charging it.
+
+#### Save a card in the page
+
+`POST /subscription/balance/setup-intent`
+
+No body. Returns `{"client_secret": "seti_..._secret_...", "publishable_key": "pk_..."}`: a Stripe SetupIntent on the workspace's customer, card only, for off-session charges. Confirm it with Stripe.js (`stripe.confirmSetup`), which runs any 3-D Secure check in the page; the card is saved without a charge. A workspace with no Stripe customer yet gets one. `409` when the workspace has no billing account at all, in which case use `POST /subscription/balance/payment-method`.
+
+#### Make a saved card the default
+
+`POST /subscription/balance/setup-intent/default`
+
+`{"setup_intent_id": "seti_..."}`. Makes the card a confirmed SetupIntent from `POST /subscription/balance/setup-intent` saved the workspace's default, so the next top-up, automatic reload or store charge uses it, including when it replaces an older card. Call it after `stripe.confirmSetup` succeeds and before charging. Answers `204`. `404` when the SetupIntent is not on the workspace's Stripe customer, `409` while it has not succeeded. Setting the same default again changes nothing, so a retry is safe.
+
+#### Change automatic reload
+
+`PATCH /subscription/balance/auto-reload`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enabled` | boolean | yes | Turns automatic reload on or off. Turning it on needs a saved card and an active paid plan. |
+| `threshold_usd` | number | yes | Reload when the balance falls below this, `0.01` to `1000`. |
+| `amount_usd` | number | yes | What each reload adds, `5` to `5000`, more than `threshold_usd`. Each reload charges it plus the 3% processing fee. |
+| `monthly_limit_usd` | number | yes | The most reloaded in a calendar month (added to the balance, the fee not counted), at least `amount_usd` and at most `50000`. |
+
+Answers with the body of `GET /subscription/balance`. Refusals: `422` `recharge_too_small` (the amount is not above the threshold), `422` `monthly_limit_too_small` (the limit is below one reload or above the maximum), `409` `payment_method_required`.
+
+#### List invoices
+
+`GET /subscription/balance/invoices`
+
+The latest Stripe invoices for the workspace, newest first, subscription and balance alike.
+
+```json
+{
+  "data": [
+    {
+      "id": "in_...",
+      "number": "ABCD-0012",
+      "kind": "auto_reload",
+      "status": "paid",
+      "amount_cents": 2500,
+      "currency": "usd",
+      "created_at": "2026-11-03T14:12:09Z",
+      "hosted_url": "https://invoice.stripe.com/...",
+      "pdf_url": "https://pay.stripe.com/invoice/.../pdf"
+    }
+  ]
+}
+```
+
+`kind` is `subscription`, `top_up` or `auto_reload`.
+
+#### Credits endpoints
+
+The endpoints from before the dollar balance remain and carry dollar figures next to their legacy credit fields, which older clients read:
+
+| Endpoint | Dollar fields |
+|----------|---------------|
+| `GET /subscription/credits` | `balance_usd`, `monthly_usd`, `purchased_usd`, `monthly_allowance_usd`, `total_purchased_usd` |
+| `GET /subscription/credits/transactions` | Per row: `amount_usd` (negative for a charge), `cost_usd` (the provider price before the markup), `input_tokens`, `output_tokens`, `quantity` (units such as web searches), `balance_after_usd`, `monthly_after_usd`, `purchased_after_usd`, `purchased_delta_usd`. Keyset paginated with an opaque `cursor`. |
+| `GET /subscription/credits/usage?days=30` | `spent_today_usd`, `spent_week_usd`, `spent_month_usd`, `limit_daily_usd`, `limit_weekly_usd`, `limit_monthly_usd`, and `amount_usd` on each `series`, `by_reason` and `by_model` entry. `days` is 1 to 90. |
+| `GET` and `PATCH /subscription/credits/settings` | `spend_limit_daily_usd`, `spend_limit_weekly_usd`, `spend_limit_monthly_usd`, `member_limit_daily_usd`, `member_limit_weekly_usd`, `member_limit_monthly_usd`, `low_balance_usd`, `ai_overage_enabled` (whether AI may use money the workspace added once the plan's included usage is spent; default `true`), `ai_overage_monthly_limit_usd` and `ai_overage_monthly_limit_micros` (the most AI may take from that money per calendar month, UTC; `null` is no cap; the `PATCH` accepts either, micros first), and read-only `auto_reload_enabled`. A spend limit left out of the `PATCH` body is removed; the two `ai_overage_*` fields left out are kept, and a `null` limit removes it. |
+
+`POST /subscription/credits/checkout`, which bought a fixed credit pack, is removed.
 
 ## Reference data
 

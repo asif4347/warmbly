@@ -375,7 +375,7 @@ func (c *Client) Close() error {
 // loopback-proved unencrypted mode.
 func (c *Client) plainAuth() *errx.MailError {
 	if err := c.client.Login(c.Credentials.Username, c.Credentials.Password).Wait(); err != nil {
-		return c.handleError(err)
+		return c.loginError(err)
 	}
 
 	return nil
@@ -401,7 +401,12 @@ func (c *Client) oauth2Auth() *errx.MailError {
 	})
 
 	if err := c.client.Authenticate(saslc); err != nil {
-		return c.handleError(err)
+		// A bearer refusal (wrong scope, revoked token) comes back as the SASL challenge, not a tagged NO.
+		var bearer *sasl.OAuthBearerError
+		if errors.As(err, &bearer) {
+			return errx.ErrMailAuthenticationFailed
+		}
+		return c.loginError(err)
 	}
 
 	return nil

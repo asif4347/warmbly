@@ -24,6 +24,7 @@ import (
 	"github.com/warmbly/warmbly/internal/app/segment"
 	"github.com/warmbly/warmbly/internal/app/sequence"
 	"github.com/warmbly/warmbly/internal/app/subscription"
+	"github.com/warmbly/warmbly/internal/app/toolmigrate"
 	"github.com/warmbly/warmbly/internal/app/unibox"
 	"github.com/warmbly/warmbly/internal/app/warmup"
 	"github.com/warmbly/warmbly/internal/app/webhook"
@@ -31,12 +32,15 @@ import (
 	"github.com/warmbly/warmbly/internal/infrastructure/cache"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/generation"
+	"github.com/warmbly/warmbly/internal/pkg/webread"
 )
 
 // Deps are the SERVICE-LAYER dependencies the tool handlers close over. Every
 // handler calls one of these exactly as the matching HTTP handler would, so a
 // tool never bypasses business rules, validation, or org scoping.
 type Deps struct {
+	// MailboxLock refuses removing a mailbox a partner attached or the workspace still pays for; read at call time.
+	MailboxLock *func(ctx context.Context, orgID, accountID uuid.UUID) *errx.Error
 	Contacts    contact.ContactService
 	CRM         crm.CRMService
 	Campaigns   campaign.CampaignService
@@ -45,7 +49,13 @@ type Deps struct {
 	Automations integration.Service
 	Audit       audit.AuditService
 	Search      generation.SearchClient
-	Cache       *cache.Cache
+	// WorkspaceSearch is a workspace's own web search (an MCP tool it picked,
+	// its Jina key), what search_web uses when the instance has none.
+	WorkspaceSearch func(ctx context.Context, orgID uuid.UUID) generation.SearchClient
+	// Reader fetches a page through a reader service after a site turns
+	// fetch_url away.
+	Reader webread.Reader
+	Cache  *cache.Cache
 	// Emails / EmailSend / Compose / Warmup back the mailbox-management and
 	// unified-inbox send tools. EmailSend is the only path that transmits mail
 	// to a real recipient (its tools are RiskSend).
@@ -87,6 +97,8 @@ type Deps struct {
 	Advisor AdvisorReader
 	// WarmupScheduler seeds a mailbox's warmup chain after a tool turns it on. Optional.
 	WarmupScheduler func(ctx context.Context, accountID uuid.UUID) error
+	// ToolMigrations backs the migrate-from-another-tool tools. Optional.
+	ToolMigrations toolmigrate.API
 	// Slack backs the Slack settings tools, added by RegisterSlackTools once
 	// the Slack app is built.
 	Slack SlackControl
@@ -128,6 +140,7 @@ func BuildRegistry(d Deps) *Registry {
 	d.registerSegmentTools(r)
 	d.registerFormTools(r)
 	d.registerSuppressionTools(r)
+	d.registerMigrationTools(r)
 	d.registerAnalyticsTools(r)
 	d.registerUniboxTools(r)
 	d.registerInboxActionTools(r)
@@ -142,6 +155,7 @@ func BuildRegistry(d Deps) *Registry {
 	d.registerWebTools(r)
 	d.registerSkillTools(r)
 	d.registerIntegrationTools(r)
+	d.registerKnowledgeTools(r)
 	// Advisor tools are registered separately, after the advisor service is
 	// constructed against this registry (see aitools.RegisterAdvisorTools).
 	return r
@@ -151,7 +165,7 @@ func BuildRegistry(d Deps) *Registry {
 // dashboard spine refreshes for every teammate after a write-class tool runs.
 func (d Deps) logAudit(ctx context.Context, inv Invocation, action models.AuditAction, entity models.AuditEntityType, entityID *uuid.UUID, meta map[string]string) {
 	if d.Audit != nil {
-		d.Audit.LogAction(ctx, inv.OrgID, inv.UserID, action, entity, entityID, inv.IP, inv.UserAgent, nil, meta)
+		d.Audit.LogAction(ctx, inv.OrgID, inv.UserID, action, entity, entityID, inv.IP, inv.UserAgent, nil, agencyKeyMeta(inv.AgencyKeyID, inv.AgencyKeyName, meta))
 	}
 }
 

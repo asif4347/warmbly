@@ -2,6 +2,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudLinkMailboxRow, CloudLinkStatus } from "@/lib/api/models/app/cloudlink/CloudLink";
 import WarmblyCloudSettingsPage from "./page";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+function draw() {
+    return render(<QueryClientProvider client={new QueryClient()}><WarmblyCloudSettingsPage /></QueryClientProvider>);
+}
 
 const fixture = vi.hoisted(() => ({
     status: {} as CloudLinkStatus,
@@ -54,7 +59,7 @@ describe("existing Cloud connections", () => {
     });
 
     it("shows the normal connection and allows enrollment without a migration", async () => {
-        render(<WarmblyCloudSettingsPage />);
+        draw();
         expect(screen.getByText("Existing Cloud workspace")).toBeInTheDocument();
         expect(screen.getByText("Existing Cloud mailboxes")).toBeInTheDocument();
         expect(screen.queryByText(/legacy/i)).not.toBeInTheDocument();
@@ -64,14 +69,34 @@ describe("existing Cloud connections", () => {
         await waitFor(() => expect(fixture.enroll).toHaveBeenCalledWith("mailbox"));
     });
 
+    it("hands the credential of a mailbox kept on this server to Cloud only on request", async () => {
+        fixture.rows[0] = { ...fixture.rows[0], enrolled: true, executor: "instance", enrollment_state: "active" };
+        draw();
+        expect(screen.getByText(/mailboxes whose credential stayed on this server are paused/)).toBeInTheDocument();
+        expect(screen.queryByRole("group", { name: "Where the credential lives" })).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: /Hand to Cloud/ }));
+        expect(fixture.enroll).not.toHaveBeenCalled();
+        expect(fixture.confirm.mock.calls[0][0]).toContain("Hand sender@test.local's credential to Warmbly Cloud");
+        await fixture.confirm.mock.calls[0][1]();
+        expect(fixture.enroll).toHaveBeenCalledWith({ id: "mailbox", executor: "cloud" });
+    });
+
+    it("offers no handover for a Google or Microsoft mailbox kept on this server, only removal", () => {
+        fixture.rows[0] = { ...fixture.rows[0], provider: "gmail", enrolled: true, executor: "instance", enrollment_state: "active" };
+        draw();
+        expect(screen.queryByRole("button", { name: /Hand to Cloud/ })).not.toBeInTheDocument();
+        expect(screen.getByText(/remove it and add it again through Warmbly Cloud sign-in/)).toBeInTheDocument();
+        expect(screen.getByRole("switch")).toBeEnabled();
+    });
+
     it("still prevents enrollment of an unsupported local OAuth mailbox", () => {
         fixture.rows[0].provider = "gmail";
-        render(<WarmblyCloudSettingsPage />);
+        draw();
         expect(screen.getByRole("switch")).toBeDisabled();
     });
 
     it("requires confirmation of server-wide disconnect scope", async () => {
-        render(<WarmblyCloudSettingsPage />);
+        draw();
         fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
         expect(fixture.disconnect).not.toHaveBeenCalled();
         expect(fixture.confirm.mock.calls[0][0]).toContain("across all local workspaces");
@@ -81,7 +106,7 @@ describe("existing Cloud connections", () => {
 
     it("keeps both disconnect scopes explicit when connections coexist", async () => {
         fixture.status.link!.organization_id = "local";
-        render(<WarmblyCloudSettingsPage />);
+        draw();
         expect(screen.queryByText(/legacy/i)).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
         expect(fixture.confirm.mock.calls[0][0]).toContain("this workspace");
@@ -97,7 +122,7 @@ describe("existing Cloud connections", () => {
         fixture.status.connected = false;
         fixture.status.legacy_connected = false;
         fixture.status.link = null;
-        render(<WarmblyCloudSettingsPage />);
+        draw();
         expect(screen.getByText("Redirected to /app/settings/profile")).toBeInTheDocument();
     });
 });

@@ -41,6 +41,8 @@ import (
 )
 
 type Service interface {
+	// ProcessSocialReply runs an inbound social message through the reply path.
+	ProcessSocialReply(ctx context.Context, in models.SocialReply) *errx.Error
 	GetOrganizationSettings(ctx context.Context, organizationID uuid.UUID) (*models.AdvancedOutreachSettings, *errx.Error)
 	UpdateOrganizationSettings(ctx context.Context, organizationID, updatedBy uuid.UUID, settings *models.AdvancedOutreachSettings) *errx.Error
 
@@ -970,6 +972,16 @@ func pickVariantDeterministic(variants []models.CampaignABVariant, seed string) 
 }
 
 func (s *service) SelectVariant(ctx context.Context, organizationID, campaignID, contactID, sequenceID uuid.UUID, subject, bodyHTML, bodyPlain string) (*models.VariantSelection, *errx.Error) {
+	return s.selectVariant(ctx, organizationID, campaignID, contactID, sequenceID, subject, bodyHTML, bodyPlain, true)
+}
+
+// PeekVariant is SelectVariant without recording a campaign-level assignment,
+// for a preview: a contact with none yet is shown the step's own copy.
+func (s *service) PeekVariant(ctx context.Context, organizationID, campaignID, contactID, sequenceID uuid.UUID, subject, bodyHTML, bodyPlain string) (*models.VariantSelection, *errx.Error) {
+	return s.selectVariant(ctx, organizationID, campaignID, contactID, sequenceID, subject, bodyHTML, bodyPlain, false)
+}
+
+func (s *service) selectVariant(ctx context.Context, organizationID, campaignID, contactID, sequenceID uuid.UUID, subject, bodyHTML, bodyPlain string, assign bool) (*models.VariantSelection, *errx.Error) {
 	settings, xerr := s.effectiveSettings(ctx, organizationID, campaignID)
 	if xerr != nil {
 		return nil, xerr
@@ -1025,7 +1037,7 @@ func (s *service) SelectVariant(ctx context.Context, organizationID, campaignID,
 		}
 		if assigned != nil && assigned.IsActive && assigned.SequenceID == nil {
 			selected = assigned
-		} else {
+		} else if assign {
 			selected = pickVariantWeightedRandom(campaignVariants)
 			if selected != nil {
 				_ = s.repo.AssignVariant(ctx, campaignID, contactID, selected.ID)
@@ -1880,6 +1892,10 @@ func (s *service) ProcessIncomingReply(ctx context.Context, emailAccountID uuid.
 		cat := models.NotifInboundReply
 		title := "New reply from " + sender
 		body := msg.Subject
+		if intent == models.ReplyIntentPositive {
+			cat = models.NotifInboundPositiveReply
+			title = "Positive reply from " + sender
+		}
 		if models.IsAutomatedIntent(intent) {
 			// The "out-of-office detected" preference is what someone mutes to
 			// stop hearing about auto-responders, so every machine reply goes
@@ -2096,10 +2112,14 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 	// cause goes in metadata only: the reason text is the contract downstream
 	// classifiers read. One judge call per ambiguous bounce, no cache.
 	var cause string
-	addressFine := false
+	addressFine, namesAddress := false, false
 	if eventType == models.DeliverabilityEventBounce {
+		// The cause is ours to decide; a caller-supplied one never stands.
+		for _, k := range []string{"bounce_cause", "bounce_cause_source", "bounce_cause_confidence"} {
+			delete(req.Metadata, k)
+		}
 		rule := dsn.Blame(req.Reason)
-		cause, addressFine = string(rule), rule.AddressIsFine()
+		cause, addressFine, namesAddress = string(rule), rule.AddressIsFine(), rule.NamesAddress()
 		source := "rule"
 		if rule == dsn.CauseUnknown && s.bounceJudge != nil && strings.TrimSpace(req.Reason) != "" {
 			// Bounded: a bounce storm must not queue behind a rate-limited judge.
@@ -2109,8 +2129,8 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 			switch {
 			case vErr != nil:
 				log.Debug().Err(vErr).Str("recipient", req.RecipientEmail).Msg("bounce reason not classified")
-			case v != nil:
-				cause, addressFine, source = v.Cause, v.AddressIsFine(), "judge"
+			case v.Confident() && v.Cause != bounceclass.CauseOther:
+				cause, addressFine, namesAddress, source = v.Cause, v.AddressIsFine(), v.NamesAddress(), "judge"
 				if req.Metadata == nil {
 					req.Metadata = map[string]interface{}{}
 				}
@@ -2151,15 +2171,20 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 		(eventType == models.DeliverabilityEventComplaint && settings.BouncePipeline.AutoSuppressOnComplaint) ||
 		(eventType == models.DeliverabilityEventUnsubscribe && settings.BouncePipeline.AutoSuppressOnUnsubscribe)
 
-	// The address is not what failed: record the bounce, feed the breaker and
-	// mailbox health below, but keep the recipient sendable.
-	if shouldSuppress && addressFine {
+	// Only clear evidence that the address cannot receive mail suppresses it.
+	// A bounce nothing places (a bare 550 included) stops this lead below but
+	// leaves the address sendable, since a wrong suppression is silent and permanent.
+	if shouldSuppress && eventType == models.DeliverabilityEventBounce && !namesAddress {
 		shouldSuppress = false
+		msg := "bounce not placed; recipient not suppressed"
+		if addressFine {
+			msg = "bounce not about the address; recipient not suppressed and lead kept"
+		}
 		log.Info().
 			Str("organization_id", organizationID.String()).
 			Str("recipient", req.RecipientEmail).
 			Str("bounce_cause", cause).
-			Msg("bounce not about the address; recipient not suppressed and lead kept")
+			Msg(msg)
 	}
 
 	if shouldSuppress {
@@ -2184,6 +2209,7 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 	// Record bounces + complaints in campaign progress so analytics and the
 	// breaker work correctly. Complaints were previously never recorded, which
 	// is why complaint-rate auto-pause could never fire.
+	pulseSequence := ""
 	if req.CampaignID != nil && req.ContactID != nil && req.TaskID != nil &&
 		(eventType == models.DeliverabilityEventBounce || eventType == models.DeliverabilityEventComplaint) {
 		campaignTask, cErr := s.taskRepo.GetCampaignTask(ctx, *req.TaskID)
@@ -2214,7 +2240,21 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 					return toErrx(err)
 				}
 			}
+			pulseSequence = campaignTask.SequenceID.String()
 		}
+	}
+
+	// Every teammate's campaign numbers move on a bounce or complaint, including
+	// one with no contact (a CC or BCC), and only once it is committed.
+	if req.CampaignID != nil && s.realtime != nil &&
+		(eventType == models.DeliverabilityEventBounce || eventType == models.DeliverabilityEventComplaint) {
+		rt, org, campaign, contact, recipient := s.realtime, organizationID.String(), req.CampaignID.String(), "", req.RecipientEmail
+		if req.ContactID != nil {
+			contact = req.ContactID.String()
+		}
+		repository.AfterSendResultCommit(ctx, func(ctx context.Context) {
+			rt.PublishEmailBounced(ctx, org, "", campaign, contact, recipient, pulseSequence)
+		})
 	}
 
 	if req.CampaignID != nil &&
@@ -2222,10 +2262,12 @@ func (s *service) IngestDeliverabilityEvent(ctx context.Context, organizationID 
 		s.evaluateCampaignBreaker(ctx, organizationID, *req.CampaignID, settings)
 	}
 
-	// Trigger warmup health re-evaluation on bounce or complaint events.
-	// This connects deliverability signals to the warmup pool health system.
-	if s.warmupService != nil && req.TaskID != nil &&
-		(eventType == models.DeliverabilityEventBounce || eventType == models.DeliverabilityEventComplaint) {
+	// Trigger warmup health re-evaluation on bounce or complaint events. A full
+	// mailbox or a temporary failure says nothing about the sender, so it is
+	// not reported against it.
+	chargesSender := eventType == models.DeliverabilityEventComplaint ||
+		eventType == models.DeliverabilityEventBounce && cause != string(dsn.CauseMailboxFull) && cause != string(dsn.CauseTransient)
+	if s.warmupService != nil && req.TaskID != nil && chargesSender {
 		task, tErr := s.taskRepo.GetTask(ctx, *req.TaskID)
 		if tErr == nil && task != nil {
 			if _, err := s.warmupService.ApplySpamReport(ctx, task.EmailAccountID, task.EmailAccountID, req.IdempotencyKey, string(eventType)); err != nil {
@@ -2336,6 +2378,15 @@ func (s *service) evaluateCampaignBreaker(ctx context.Context, orgID, campaignID
 	pauseComplaint := complaintThresh > 0 && complaintRate >= complaintThresh
 	if pauseBounce || pauseComplaint {
 		if err := s.campaignRepo.UpdateStatus(ctx, campaignID, "paused"); err == nil {
+			if s.realtime != nil {
+				rt, userID, name := s.realtime, "", ""
+				if c, cerr := s.campaignRepo.GetByID(ctx, campaignID); cerr == nil && c != nil {
+					userID, name = c.UserID, c.Name
+				}
+				repository.AfterSendResultCommit(ctx, func(ctx context.Context) {
+					rt.PublishCampaignPaused(ctx, orgID.String(), userID, campaignID.String(), name)
+				})
+			}
 			s.emit(ctx, orgID, models.WebhookEventCampaignPaused, map[string]any{
 				"campaign_id":    campaignID.String(),
 				"reason":         "deliverability_auto_pause",

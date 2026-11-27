@@ -16,6 +16,7 @@ import (
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/infrastructure/db"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/pkg/geo"
 	"github.com/warmbly/warmbly/internal/pkg/mailhtml"
 	"github.com/warmbly/warmbly/internal/utils"
 	"github.com/warmbly/warmbly/internal/utils/paging"
@@ -57,11 +58,16 @@ type CampaignRepository interface {
 	// with their branch graph, tags, folders, senders, variants, advanced
 	// settings, attachment rows) and none of its execution state.
 	Duplicate(ctx context.Context, in DuplicateCampaignInput) (*models.Campaign, error)
+	// CopyToOrganization copies a campaign's configuration into a draft in
+	// another workspace, without anything that only means something in the source.
+	CopyToOrganization(ctx context.Context, in CopyCampaignAcrossInput) (*models.Campaign, []models.CopyReview, error)
 
 	// Campaign start/stop
 	StartCampaign(ctx context.Context, campaignID uuid.UUID) error
 	StopCampaign(ctx context.Context, campaignID uuid.UUID) error
 	ValidateCampaignReady(ctx context.Context, campaignID uuid.UUID) error
+	// CountLeadsWithoutSocial is how many of the campaign's leads have no handle, by channel.
+	CountLeadsWithoutSocial(ctx context.Context, campaignID uuid.UUID) (map[string]int, error)
 	GetPendingCampaignTasks(ctx context.Context, campaignID uuid.UUID) ([]Task, error)
 	// IsPacedSuccessor reports whether a pending wakeup was parked by a tick
 	// that sent, so it is send spacing rather than a deferral recheck.
@@ -116,6 +122,8 @@ type CampaignRepository interface {
 	// CountNewLeadsStartedToday returns new_leads_started for the current UTC
 	// day (0 when no row exists yet).
 	CountNewLeadsStartedToday(ctx context.Context, campaignID uuid.UUID) (int, error)
+	// LeadTimezones counts the campaign's leads by resolved timezone, largest first.
+	LeadTimezones(ctx context.Context, orgID, campaignID uuid.UUID) (*models.CampaignLeadTimezones, error)
 	// DecrementCampaignDailySend gives back a send that never left, against the
 	// day it was counted on (sentAt), so the new-lead cap does not charge for
 	// it. The matching increment lives in CampaignProgressRepository.ReserveSend,
@@ -174,7 +182,8 @@ const CAMPAIGN_SELECT = `id, name, description, status,
 		  guardrail_tripped_at, guardrail_reason,
 		  utm_tracking, utm_source, utm_medium, utm_campaign,
 		  unsubscribe_mode,
-		  continuous, idle_since, stop_on_meeting`
+		  continuous, idle_since, stop_on_meeting,
+		  follow_up_sender, timezone_mode, warmup_graduation, review_leads`
 
 func getCampaign(rows db.Scannable, campaign *models.Campaign, extra ...any) error {
 	var dest []any = []any{
@@ -196,6 +205,7 @@ func getCampaign(rows db.Scannable, campaign *models.Campaign, extra ...any) err
 		&campaign.UTMTracking, &campaign.UTMSource, &campaign.UTMMedium, &campaign.UTMCampaign,
 		&campaign.UnsubscribeMode,
 		&campaign.Continuous, &campaign.IdleSince, &campaign.StopOnMeeting,
+		&campaign.FollowUpSender, &campaign.TimezoneMode, &campaign.WarmupGraduation, &campaign.ReviewLeads,
 	}
 	dest = append(dest, extra...)
 	return rows.Scan(
@@ -222,6 +232,7 @@ const CAMPAIGN_SELECT_FULL = `
 	c.utm_tracking, c.utm_source, c.utm_medium, c.utm_campaign,
 	c.unsubscribe_mode,
 	c.continuous, c.idle_since, c.stop_on_meeting,
+	c.follow_up_sender, c.timezone_mode, c.warmup_graduation, c.review_leads,
 	COALESCE(array_agg(cet.tag_id) FILTER (WHERE cet.tag_id IS NOT NULL), '{}') AS email_tag_ids,
 	COALESCE(array_agg(cec.folder_id) FILTER (WHERE cec.folder_id IS NOT NULL), '{}') AS email_folder_ids
 `
@@ -416,6 +427,20 @@ func (r *campaignRepository) Create(ctx context.Context, userID string, orgID *u
 		}
 		rotationMode = *data.RotationMode
 	}
+	followUpSender := string(models.FollowUpSameMailbox)
+	if data.FollowUpSender != nil {
+		if err := validate.CampaignFollowUpSender(*data.FollowUpSender); err != nil {
+			return nil, err
+		}
+		followUpSender = *data.FollowUpSender
+	}
+	timezoneMode := string(models.TimezoneModeCampaign)
+	if data.TimezoneMode != nil {
+		if err := validate.CampaignTimezoneMode(*data.TimezoneMode); err != nil {
+			return nil, err
+		}
+		timezoneMode = *data.TimezoneMode
+	}
 	rampEnabled := false
 	if data.RampEnabled != nil {
 		rampEnabled = *data.RampEnabled
@@ -436,6 +461,10 @@ func (r *campaignRepository) Create(ctx context.Context, userID string, orgID *u
 		if err := validate.CampaignRamp(rampStart, rampIncrement, rampCeiling); err != nil {
 			return nil, err
 		}
+	}
+	warmupGraduation := true
+	if data.WarmupGraduation != nil {
+		warmupGraduation = *data.WarmupGraduation
 	}
 	espMatchMode := "off"
 	if data.ESPMatchMode != nil {
@@ -509,7 +538,7 @@ func (r *campaignRepository) Create(ctx context.Context, userID string, orgID *u
 			tracking_domain,
 			utm_tracking, utm_source, utm_medium, utm_campaign,
 			unsubscribe_mode, continuous, entry_delay_minutes,
-			stop_on_meeting,
+			stop_on_meeting, follow_up_sender, timezone_mode, warmup_graduation,
 			created_at, updated_at
 		) VALUES (
 			gen_random_uuid(), $1, $2, $3, $4,
@@ -523,7 +552,7 @@ func (r *campaignRepository) Create(ctx context.Context, userID string, orgID *u
 			$30,
 			$31, $32, $33, $34,
 			$35, $36, $37,
-			$38,
+			$38, $39, $40, $41,
 			NOW(), NOW()
 		)
 		RETURNING %s
@@ -568,6 +597,9 @@ func (r *campaignRepository) Create(ctx context.Context, userID string, orgID *u
 		continuous,         // $36
 		entryDelay,         // $37
 		stopOnMeeting,      // $38
+		followUpSender,     // $39
+		timezoneMode,       // $40
+		warmupGraduation,   // $41
 	}
 
 	row := tx.QueryRow(ctx, insertSQL, params...)
@@ -662,18 +694,35 @@ func (r *campaignRepository) Create(ctx context.Context, userID string, orgID *u
 			if seq.ThreadReply != nil {
 				threadReply = *seq.ThreadReply
 			}
+			kind, action := "email", []byte("{}")
+			if seq.Kind != "" && seq.Kind != "email" {
+				if seq.Kind != "action" && seq.Kind != "wait" {
+					return nil, errx.ErrSequenceKind
+				}
+				if verr := validateActionConfig(seq.Action); verr != nil {
+					return nil, verr
+				}
+				kind = seq.Kind
+				if seq.Action != nil {
+					raw, merr := json.Marshal(seq.Action)
+					if merr != nil {
+						return nil, errx.InternalError()
+					}
+					action = raw
+				}
+			}
 			seqInsert := `
 				INSERT INTO sequences (
 					campaign_id, organization_id, name, subject,
 					body_plain, body_html, body_sync, body_code,
-					wait_after, position, thread_reply
-				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+					wait_after, position, thread_reply, kind, action
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 				RETURNING id
 			`
 			seqParams := []any{
 				campaign.ID, orgID, seq.Name, seq.Subject,
 				seq.BodyPlain, bodyHTML, bodySync, bodyCode,
-				waitAfter, i + 1, threadReply,
+				waitAfter, i + 1, threadReply, kind, action,
 			}
 			var stepID uuid.UUID
 			if err := tx.QueryRow(ctx, seqInsert, seqParams...).Scan(&stepID); err != nil {
@@ -1166,6 +1215,22 @@ func (r *campaignRepository) Update(ctx context.Context, orgID, campaignID strin
 		args = append(args, *data.RotationMode)
 		argPos++
 	}
+	if data.FollowUpSender != nil {
+		if err := validate.CampaignFollowUpSender(*data.FollowUpSender); err != nil {
+			return nil, err
+		}
+		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", "follow_up_sender", argPos))
+		args = append(args, *data.FollowUpSender)
+		argPos++
+	}
+	if data.TimezoneMode != nil {
+		if err := validate.CampaignTimezoneMode(*data.TimezoneMode); err != nil {
+			return nil, err
+		}
+		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", "timezone_mode", argPos))
+		args = append(args, *data.TimezoneMode)
+		argPos++
+	}
 	if data.RampEnabled != nil {
 		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", "ramp_enabled", argPos))
 		args = append(args, *data.RampEnabled)
@@ -1220,6 +1285,11 @@ func (r *campaignRepository) Update(ctx context.Context, orgID, campaignID strin
 		if start > ceiling {
 			return nil, errx.New(errx.BadRequest, "ramp start cannot exceed ramp ceiling")
 		}
+	}
+	if data.WarmupGraduation != nil {
+		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", "warmup_graduation", argPos))
+		args = append(args, *data.WarmupGraduation)
+		argPos++
 	}
 	if data.ESPMatchMode != nil {
 		if err := validate.CampaignESPMatchMode(*data.ESPMatchMode); err != nil {
@@ -1469,6 +1539,7 @@ func (r *campaignRepository) GetByID(ctx context.Context, campaignID uuid.UUID) 
 		&campaign.UTMTracking, &campaign.UTMSource, &campaign.UTMMedium, &campaign.UTMCampaign,
 		&campaign.UnsubscribeMode,
 		&campaign.Continuous, &campaign.IdleSince, &campaign.StopOnMeeting,
+		&campaign.FollowUpSender, &campaign.TimezoneMode, &campaign.WarmupGraduation, &campaign.ReviewLeads,
 		&campaign.EmailTags, &campaign.Folders,
 	)
 	if err != nil {
@@ -1676,6 +1747,44 @@ func (r *campaignRepository) ValidateCampaignReady(ctx context.Context, campaign
 			"campaign has no leads yet; add contacts, or turn on Keep running for new leads to start it empty and send as they arrive")
 	}
 
+	// Social steps need a campaign social account on their channel; a campaign of only social steps needs no sender pool.
+	var socialSteps, emailSteps, orgMailboxes int
+	var missing []string
+	if err := resultDB(ctx, r.DB).QueryRow(ctx, `
+		SELECT COUNT(*) FILTER (WHERE kind = 'action' AND action->>'type' = 'social'),
+		       COUNT(*) FILTER (WHERE kind = 'email'),
+		       (SELECT COUNT(*) FROM email_accounts WHERE organization_id = (SELECT organization_id FROM campaigns WHERE id = $1)),
+		       COALESCE((SELECT array_agg(DISTINCT s.action->'social'->>'channel') FROM sequences s
+		         WHERE s.campaign_id = $1 AND s.kind = 'action' AND s.action->>'type' = 'social' AND s.action->'social'->>'channel' IS NOT NULL
+		           AND NOT EXISTS (SELECT 1 FROM campaign_social_accounts csa
+		             JOIN social_accounts a ON a.id = csa.social_account_id
+		             JOIN campaigns ca ON ca.id = csa.campaign_id
+		             WHERE csa.campaign_id = $1 AND a.organization_id = ca.organization_id AND a.removed_at IS NULL
+		               AND a.channel = s.action->'social'->>'channel')), '{}')
+		FROM sequences WHERE campaign_id = $1`, campaignID).Scan(&socialSteps, &emailSteps, &orgMailboxes, &missing); err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		names := make([]string, 0, len(missing))
+		for _, ch := range models.SocialChannels {
+			for _, m := range missing {
+				if m == ch {
+					names = append(names, models.SocialChannelLabel(ch))
+				}
+			}
+		}
+		list := strings.Join(names, " and ")
+		return errx.NewWithIdentifier(errx.BadRequest, "social_accounts_required",
+			"this campaign has "+list+" steps but no "+list+" account to run them; add one to its social senders first")
+	}
+	if socialSteps > 0 && emailSteps == 0 {
+		if orgMailboxes == 0 {
+			return errx.NewWithIdentifier(errx.BadRequest, "social_needs_mailbox",
+				"connect one mailbox to this workspace first; campaigns are scheduled through a mailbox even when they send no email")
+		}
+		return nil
+	}
+
 	// Sender pool (unified): valid if it has any enabled explicit sender OR any
 	// email tag OR — when neither is selected ("all") — at least one active
 	// mailbox in the campaign's organization to fall back to.
@@ -1714,6 +1823,30 @@ func (r *campaignRepository) ValidateCampaignReady(ctx context.Context, campaign
 		return errx.New(errx.BadRequest, "campaign must have at least one active sending mailbox")
 	}
 	return nil
+}
+
+// CountLeadsWithoutSocial implements the interface comment on CampaignRepository.
+func (r *campaignRepository) CountLeadsWithoutSocial(ctx context.Context, campaignID uuid.UUID) (map[string]int, error) {
+	out := map[string]int{}
+	rows, err := resultDB(ctx, r.DB).Query(ctx, `SELECT ch.channel, count(*) FROM campaign_leads cl
+		JOIN campaigns ca ON ca.id = cl.campaign_id
+		CROSS JOIN unnest($2::text[]) AS ch(channel)
+		WHERE cl.campaign_id = $1 AND NOT EXISTS (SELECT 1 FROM contact_social_identities i
+			WHERE i.contact_id = cl.contact_id AND i.channel = ch.channel AND i.organization_id = ca.organization_id)
+		GROUP BY ch.channel`, campaignID, models.SocialChannels)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ch string
+		var n int
+		if err := rows.Scan(&ch, &n); err != nil {
+			return nil, err
+		}
+		out[ch] = n
+	}
+	return out, rows.Err()
 }
 
 // IsPacedSuccessor implements the interface comment on CampaignRepository. A
@@ -2269,7 +2402,7 @@ func (r *campaignRepository) AdvanceCampaignSender(ctx context.Context, campaign
 func (r *campaignRepository) AdvanceRampLevel(ctx context.Context, campaignID uuid.UUID) error {
 	_, err := resultDB(ctx, r.DB).Exec(ctx, `
 		UPDATE campaigns
-		SET ramp_level = LEAST(ramp_ceiling, GREATEST(ramp_level, ramp_start) + ramp_increment),
+		SET ramp_level = LEAST(ramp_ceiling, CASE WHEN ramp_level < ramp_start THEN ramp_start ELSE ramp_level + ramp_increment END),
 		    ramp_level_date = CURRENT_DATE
 		WHERE id = $1
 		  AND ramp_enabled
@@ -2464,4 +2597,39 @@ func (r *campaignRepository) ActiveCampaignIDsForOrganization(ctx context.Contex
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+func (r *campaignRepository) LeadTimezones(ctx context.Context, orgID, campaignID uuid.UUID) (*models.CampaignLeadTimezones, error) {
+	query := `
+		SELECT c.location_timezone, COUNT(*),
+		       COUNT(*) FILTER (WHERE c.location_fingerprint IS DISTINCT FROM contact_location_fingerprint(c.custom_fields, c.phone, c.email))
+		FROM campaign_leads cl
+		JOIN campaigns ca ON ca.id = cl.campaign_id
+		JOIN contacts c ON c.id = cl.contact_id
+		WHERE cl.campaign_id = $1 AND ca.organization_id = $2
+		GROUP BY c.location_timezone
+		ORDER BY COUNT(*) DESC, c.location_timezone
+	`
+	rows, err := resultDB(ctx, r.DB).Query(ctx, query, campaignID, orgID)
+	if err != nil {
+		db.CaptureError(err, query, nil, "query")
+		return nil, err
+	}
+	defer rows.Close()
+	out := &models.CampaignLeadTimezones{CampaignID: campaignID, Zones: []models.CampaignLeadZone{}}
+	for rows.Next() {
+		var zone string
+		var leads, resolving int
+		if err := rows.Scan(&zone, &leads, &resolving); err != nil {
+			return nil, err
+		}
+		out.Total += leads
+		out.Resolving += resolving
+		if zone == "" {
+			out.Unknown += leads
+			continue
+		}
+		out.Zones = append(out.Zones, models.CampaignLeadZone{Timezone: zone, Country: geo.ZoneCountry(zone), Leads: leads})
+	}
+	return out, rows.Err()
 }

@@ -21,28 +21,25 @@ func (r *warmupRepository) WarmupPartnerCounts(ctx context.Context, poolType str
 	if err != nil || len(orgs) == 0 {
 		return out, err
 	}
-	cands, err := r.partnerCohort(ctx, partnerCandidateColumns+`
-		FROM warmup_pool_participants wpp
-		JOIN warmup_pools wp ON wpp.pool_id = wp.id
-		JOIN email_accounts ea ON ea.id = wpp.email_account_id
-		WHERE wp.pool_type = $1 AND `+partnerEligibleSQL,
-		poolType, models.WarmupPartnerOwnTier, poolType)
+	members, err := r.poolCohort(ctx, poolType)
 	if err != nil {
 		return nil, err
 	}
+	cands := make([]models.WarmupPartnerCandidate, 0, len(members))
+	for _, m := range members {
+		cands = append(cands, m.as(models.WarmupPartnerOwnTier))
+	}
 	borrowFrom, borrows := models.WarmupPoolBorrowsFrom(poolType)
 	if borrows {
-		borrowed, err := r.partnerCohort(ctx, partnerCandidateColumns+`
-			FROM warmup_pool_participants wpp
-			JOIN warmup_pools wp ON wpp.pool_id = wp.id
-			JOIN email_accounts ea ON ea.id = wpp.email_account_id
-			JOIN organizations o ON o.id = ea.organization_id
-			WHERE wp.pool_type = $1 AND `+partnerEligibleSQL+` AND `+partnerProvenSQL,
-			borrowFrom, models.WarmupPartnerBorrowed, borrowFrom, config.WarmupPoolFallbackMinAgeDays)
+		lenders, err := r.poolCohort(ctx, borrowFrom)
 		if err != nil {
 			return nil, err
 		}
-		cands = append(cands, borrowed...)
+		for _, m := range lenders {
+			if m.proven {
+				cands = append(cands, m.as(models.WarmupPartnerBorrowed))
+			}
+		}
 	}
 	returnTo, returnsTo := models.WarmupPoolReturnsTo(poolType)
 	if returnsTo {
@@ -67,37 +64,27 @@ func (r *warmupRepository) WarmupPartnerCounts(ctx context.Context, poolType str
 		return nil, err
 	}
 
-	// Two instance-executed mailboxes never pair, matching WarmupPartnerCandidates.
-	executed, err := r.instanceExecutedAmong(ctx, orgs, cands)
-	if err != nil {
-		return nil, err
-	}
 	ownIDs := make(map[uuid.UUID]bool)
-	returnIDs := make(map[uuid.UUID]bool)
+	returns := make(map[uuid.UUID]models.WarmupPartnerCandidate)
+	// Bounces are rare, so each sender walks only the bounced few.
+	var bounced []models.WarmupPartnerCandidate
 	borrowedByOrg := make(map[uuid.UUID]int)
-	execBorrowedByOrg := make(map[uuid.UUID]int)
-	own, borrowed, execOwn, execBorrowed := 0, 0, 0, 0
+	own, borrowed := 0, 0
 	for _, c := range cands {
+		if len(c.BouncedBy) > 0 {
+			bounced = append(bounced, c)
+		}
 		switch c.Origin {
 		case models.WarmupPartnerOwnTier:
 			own++
 			ownIDs[c.ID] = true
-			if executed[c.ID] {
-				execOwn++
-			}
 		case models.WarmupPartnerBorrowed:
 			borrowed++
-			if executed[c.ID] {
-				execBorrowed++
-			}
 			if c.OrganizationID != nil {
 				borrowedByOrg[*c.OrganizationID]++
-				if executed[c.ID] {
-					execBorrowedByOrg[*c.OrganizationID]++
-				}
 			}
 		case models.WarmupPartnerReturn:
-			returnIDs[c.ID] = true
+			returns[c.ID] = c
 		}
 	}
 	for id, org := range orgs {
@@ -108,14 +95,15 @@ func (r *warmupRepository) WarmupPartnerCounts(ctx context.Context, poolType str
 		if borrows {
 			out[id] += borrowed - borrowedByOrg[org]
 		}
-		if executed[id] {
-			// The sender itself was already taken out of own above.
-			out[id] -= execOwn
-			if ownIDs[id] {
-				out[id]++
+		for _, c := range bounced {
+			if !c.BouncedFrom(&org) {
+				continue
 			}
-			if borrows {
-				out[id] -= execBorrowed - execBorrowedByOrg[org]
+			switch {
+			case c.Origin == models.WarmupPartnerOwnTier && c.ID != id:
+				out[id]--
+			case c.Origin == models.WarmupPartnerBorrowed && borrows && (c.OrganizationID == nil || *c.OrganizationID != org):
+				out[id]--
 			}
 		}
 	}
@@ -140,8 +128,10 @@ func (r *warmupRepository) WarmupPartnerCounts(ctx context.Context, poolType str
 			if err := rows.Scan(&sender, &partner); err != nil {
 				return nil, err
 			}
-			if _, eligible := orgs[sender]; eligible && returnIDs[partner] && !(executed[sender] && executed[partner]) {
-				out[sender]++
+			if org, eligible := orgs[sender]; eligible {
+				if c, ok := returns[partner]; ok && !c.BouncedFrom(&org) {
+					out[sender]++
+				}
 			}
 		}
 		if err := rows.Err(); err != nil {
@@ -149,31 +139,6 @@ func (r *warmupRepository) WarmupPartnerCounts(ctx context.Context, poolType str
 		}
 	}
 	return out, nil
-}
-
-// instanceExecutedAmong names which of the senders and candidates a linked instance executes.
-func (r *warmupRepository) instanceExecutedAmong(ctx context.Context, senders map[uuid.UUID]uuid.UUID, cands []models.WarmupPartnerCandidate) (map[uuid.UUID]bool, error) {
-	ids := make([]uuid.UUID, 0, len(senders)+len(cands))
-	for id := range senders {
-		ids = append(ids, id)
-	}
-	for _, c := range cands {
-		ids = append(ids, c.ID)
-	}
-	rows, err := resultDB(ctx, r.db).Query(ctx, `SELECT email_account_id FROM pool_link_mailboxes WHERE executor = 'instance' AND email_account_id = ANY($1::uuid[])`, ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[uuid.UUID]bool)
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out[id] = true
-	}
-	return out, rows.Err()
 }
 
 func (r *warmupRepository) eligiblePartnerSenders(ctx context.Context, poolType string, senderIDs []uuid.UUID) (map[uuid.UUID]uuid.UUID, error) {

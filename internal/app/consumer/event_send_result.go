@@ -98,10 +98,6 @@ func (s *JobsService) applyEmailSent(ctx context.Context, result models.SendEmai
 				log.Warn().Err(err).Str("task_id", task.ID.String()).Msg("could not record a placement probe's message id")
 			}
 		}
-	case repository.TaskTypeCloudWarmup:
-		if s.CloudExec != nil {
-			return s.CloudExec.SendResolved(ctx, task.ID, result)
-		}
 	case "warmup":
 		// Without this the recipient has nothing to match a warmup email
 		// against when the verify header did not survive delivery.
@@ -206,6 +202,11 @@ func (s *JobsService) applyEmailFailed(ctx context.Context, result models.SendEm
 	}
 
 	reason, code := sendFailureReason(result)
+	if kind := pauseOf(result); kind != errx.SendPauseNone && kind != errx.SendPauseRetry {
+		// The mailbox's sending just paused; open drawers and lists refetch.
+		accountID := task.EmailAccountID
+		repository.AfterSendResultCommit(ctx, func(ctx context.Context) { s.publishAccountSynced(ctx, accountID) })
+	}
 	if task.TaskType == "warmup" {
 		return s.failWarmupSend(ctx, task, reason)
 	}
@@ -221,10 +222,6 @@ func (s *JobsService) applyEmailFailed(ctx context.Context, result models.SendEm
 	case "placement":
 		if s.PlacementRepo != nil {
 			return s.PlacementRepo.FailProbeByTask(ctx, task.ID, reason)
-		}
-	case repository.TaskTypeCloudWarmup:
-		if s.CloudExec != nil {
-			return s.CloudExec.SendResolved(ctx, task.ID, result)
 		}
 	}
 	return nil
@@ -292,7 +289,7 @@ func (s *JobsService) failCampaignSend(ctx context.Context, task *repository.Tas
 
 	// Only permanent recipient refusals are bounce evidence; deferrals may use the same wording.
 	if s.Evidence != nil && ct.ContactID != nil && ct.SequenceID != nil && !copyRefused &&
-		code != string(errx.MailErrorCodeServerUnreachable) && code != models.ServerPacingCode && emailverify.NamesRecipient(reason) {
+		code != string(errx.MailErrorCodeServerUnreachable) && code != models.ServerPacingCode && code != models.SenderPausedCode && emailverify.NamesRecipient(reason) {
 		s.Evidence.RecordEvidence(ctx, *ct.ContactID, models.Step(&campaignID, ct.SequenceID), "bounced_recipient", "send:"+ct.SequenceID.String(), reason)
 	}
 
@@ -308,7 +305,7 @@ func (s *JobsService) failCampaignSend(ctx context.Context, task *repository.Tas
 
 	attempts, exhausted, rolledBack := 0, false, false
 	if ct.ContactID != nil && ct.SequenceID != nil && s.CampaignProgressRepo != nil {
-		if copyExcluded || code == models.MailboxLoadingCode || code == models.ServerPacingCode {
+		if copyExcluded || code == models.MailboxLoadingCode || code == models.ServerPacingCode || code == models.SenderPausedCode {
 			attempts, exhausted, rolledBack, err = s.CampaignProgressRepo.WalkBackSend(ctx, campaignID, *ct.ContactID, *ct.SequenceID, reason, false)
 		} else {
 			attempts, exhausted, rolledBack, err = s.CampaignProgressRepo.RecordSendFailure(ctx, campaignID, *ct.ContactID, *ct.SequenceID, reason)
@@ -524,10 +521,23 @@ func (s *JobsService) logCampaignSendFailure(ctx context.Context, campaignID uui
 		meta["mailbox_loading_retry"] = true
 		msg = fmt.Sprintf("Sending to %s was delayed while the mailbox reconnected. An automatic retry was scheduled.", who)
 	}
+	// A mailbox still loading is deferred only on its own evidence, above.
+	if rolledBack && !exhausted && code != models.MailboxLoadingCode && !strings.HasPrefix(reason, models.MailboxNotLoadedPrefix) {
+		if deferred, ok := models.TransientSendRetryMessage(who, code, attempts, config.CampaignSendMaxAttempts); ok {
+			eventType, msg = "email_deferred", deferred
+			meta["level"] = "info"
+		}
+	}
 	if code == models.ServerPacingCode && rolledBack && !exhausted {
 		eventType = "email_deferred"
 		meta["level"] = "info"
 		msg = fmt.Sprintf("Sending to %s was delayed because the mailbox's mail server is limiting connections from Warmbly's sending address. Nothing was sent yet; an automatic retry was scheduled.", who)
+	}
+	if code == models.SenderPausedCode && rolledBack && !exhausted {
+		eventType = "email_deferred"
+		meta["level"] = "info"
+		meta["sender_paused"] = true
+		msg = fmt.Sprintf("Sending to %s was delayed because the provider paused this mailbox's sending (a sending limit or a temporary restriction), not because of %s. Nothing was sent and no attempt was counted; the mailbox rests until the provider's limit resets and the step is retried: %s", who, who, reason)
 	}
 	_ = s.CampaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
 		CampaignID: campaignID,
@@ -552,6 +562,18 @@ func (s *JobsService) notifyUserSendFailed(ctx context.Context, task *repository
 		s.StreamingPublisher.PublishEmailError(ctx, account.UserID, account.ID, taskID,
 			"Email could not be sent", fmt.Sprintf("%s could not send your email: %s", account.Email, reason))
 	})
+}
+
+// notifyManualSendUnsent tells the owner of a manual send that recovery released before any worker started it.
+func (s *JobsService) notifyManualSendUnsent(ctx context.Context, taskID uuid.UUID) {
+	if s.TaskRepo == nil {
+		return
+	}
+	task, err := s.TaskRepo.GetTask(ctx, taskID)
+	if err != nil || task == nil {
+		return
+	}
+	s.notifyUserSendFailed(ctx, task, "it never reached its sending worker, so nothing was sent. Send it again.")
 }
 
 // sendFailureReason picks the most useful human-readable reason and the
@@ -589,6 +611,9 @@ func sendFailureReason(result models.SendEmailResult) (reason, code string) {
 		code == string(errx.MailErrorCodeServerUnreachable) {
 		code = models.ServerPacingCode
 	}
+	if code != models.ServerPacingCode && pauseOf(result).SparesLead(failureOf(result)) {
+		code = models.SenderPausedCode
+	}
 	if code == "" {
 		code = "SEND_FAILED"
 	}
@@ -600,6 +625,14 @@ func failureOf(result models.SendEmailResult) *errx.SendFailure {
 		return nil
 	}
 	return result.Error.Failure
+}
+
+// pauseOf is what the failure does to the sending mailbox, the same reading the send-result transaction stores.
+func pauseOf(result models.SendEmailResult) errx.SendPause {
+	if result.Error == nil {
+		return errx.SendPauseNone
+	}
+	return errx.ClassifySendPause(result.Error.Code, result.Error.Failure)
 }
 
 // campaignOrgID returns the campaign's organization id for org-scoped

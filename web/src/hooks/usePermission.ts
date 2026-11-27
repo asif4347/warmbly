@@ -2,6 +2,8 @@ import { useCallback } from "react";
 import { useAppStore } from "@/stores";
 import { hasPermission, PERMISSION_BITS } from "@/lib/permissions";
 import useUser from "@/lib/api/hooks/auth/useUser";
+import { scopeCanAct } from "@/lib/accessScope";
+import useWorkspaceWritable, { showWorkspaceReadOnly } from "@/hooks/useWorkspaceWritable";
 
 export type PermissionKey = keyof typeof PERMISSION_BITS;
 
@@ -90,25 +92,30 @@ export function showAdminMFARequired() {
 }
 
 export interface WriteGuard {
-    /** Whether the current member may perform this write. */
+    /** Whether the current member may perform this write, in a workspace that takes writes. */
     allowed: boolean;
     /** Convenience: !allowed — render a lock affordance when true. */
     locked: boolean;
+    /** Why the write is locked, for a tooltip; undefined while allowed. */
+    reason: string | undefined;
     /**
-     * Wrap a click/submit handler. When the member lacks the permission the
-     * wrapped handler swallows the event and pops the permission dialog instead
-     * of running the action — so a denied edit is blocked before any request.
+     * Wrap a click/submit handler. When the member lacks the permission or the
+     * workspace is paused, the wrapped handler swallows the event and opens the
+     * permission dialog with the reason instead.
      */
     guard: <E extends { preventDefault?: () => void; stopPropagation?: () => void }>(
         fn?: (e: E) => void,
     ) => (e: E) => void;
 }
 
-// useWriteGuard gates a write action by permission. Use it to disable/lock an
-// edit control AND to wrap its handler so clicking it (e.g. via keyboard) still
-// can't perform the action — it explains the missing permission instead.
+// useWriteGuard gates a write action by permission and by whether the workspace
+// takes writes at all (useWorkspaceWritable). Use it to disable/lock an edit
+// control AND to wrap its handler so clicking it (e.g. via keyboard) still
+// can't perform the action — it explains why instead.
 export function useWriteGuard(key: PermissionKey): WriteGuard {
-    const allowed = usePermission(key);
+    const permitted = usePermission(key);
+    const workspace = useWorkspaceWritable();
+    const allowed = permitted && workspace.writable;
     const guard = useCallback(
         <E extends { preventDefault?: () => void; stopPropagation?: () => void }>(
             fn?: (e: E) => void,
@@ -117,18 +124,27 @@ export function useWriteGuard(key: PermissionKey): WriteGuard {
                 if (!allowed) {
                     e?.preventDefault?.();
                     e?.stopPropagation?.();
-                    showPermissionDenied(key);
+                    if (!workspace.writable) showWorkspaceReadOnly(workspace.reason);
+                    else showPermissionDenied(key);
                     return;
                 }
                 fn?.(e);
             },
-        [allowed, key],
+        [allowed, key, workspace.writable, workspace.reason],
     );
-    return { allowed, locked: !allowed, guard };
+    const reason = !workspace.writable ? workspace.reason : permitted ? undefined : "You don't have permission for this";
+    return { allowed, locked: !allowed, reason, guard };
+}
+
+// useScopeReadOnly reports whether a restricted member may only read where key
+// applies: none of their roles act in scope with it. Unrestricted members never are.
+export function useScopeReadOnly(key: PermissionKey): boolean {
+    const org = useAppStore((s) => s.currentOrganization);
+    return isAccessRestricted(org) && !scopeCanAct(org, PERMISSION_BITS[key]);
 }
 
 // useAccessRestricted reports whether the current member reaches only the
-// campaigns and mailboxes granted to them, read-only. The owner never does.
+// campaigns and mailboxes granted to them. The owner never does.
 export function useAccessRestricted(): boolean {
     const org = useAppStore((s) => s.currentOrganization);
     return isAccessRestricted(org);

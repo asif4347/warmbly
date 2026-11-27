@@ -11,67 +11,74 @@ import type Campaign from "@/lib/api/models/app/campaigns/Campaign";
 import { Label, NumberInput } from "@/components/ui/field";
 import { EmailListInput, OptionSelect, SettingRow, Toggle } from "./components/CampaignPreferenceBoolBox";
 import EspCoveragePanel from "./EspCoveragePanel";
+import RampUpChoice from "@/components/app/campaigns/RampUpChoice";
 
 type SetCampaign = React.Dispatch<React.SetStateAction<Campaign>>;
 
-/** RampPreview — a small day-by-day projection of the per-mailbox ramp curve
- *  (Day 1 = start, +increment each day, capped at the ceiling). Highlights the
- *  bar nearest today's live cap (ramp_level). */
-function RampPreview({
-    start,
-    increment,
-    ceiling,
-    level,
+/** Which mailbox a lead's follow-ups leave from, with the tradeoff spelled out
+ *  whenever follow-ups stop being pinned to one address. */
+function FollowUpSenderSetting({
+    newCampaign,
+    setNewCampaign,
 }: {
-    start: number;
-    increment: number;
-    ceiling: number;
-    level: number;
+    newCampaign: Campaign;
+    setNewCampaign: SetCampaign;
 }) {
-    if (start <= 0 || ceiling <= 0 || start > ceiling) return null;
-    const days: number[] = [];
-    let v = start;
-    let guard = 0;
-    while (guard < 60) {
-        const capped = Math.min(v, ceiling);
-        days.push(capped);
-        if (capped >= ceiling) break;
-        v += Math.max(1, increment);
-        guard++;
-    }
-    const MAX_BARS = 14;
-    const shown = days.slice(0, MAX_BARS);
-    const more = days.length - shown.length;
-    const todayIdx = days.findIndex((d) => d >= level);
-
+    const mode = newCampaign.follow_up_sender ?? "same";
     return (
         <div>
-            <div className="flex items-end gap-1 h-14">
-                {shown.map((val, i) => {
-                    const today = i === todayIdx;
-                    return (
-                        <div
-                            key={i}
-                            title={`Day ${i + 1}: ${val}/day`}
-                            className={`flex-1 min-w-[4px] rounded-t-sm ${today ? "bg-sky-500" : "bg-sky-200"}`}
-                            style={{ height: `${Math.max(10, (val / ceiling) * 100)}%` }}
-                        />
-                    );
-                })}
-            </div>
-            <div className="flex items-center justify-between mt-1.5 text-[10px] text-slate-400">
-                <span>
-                    Day 1 · {start}/day
-                </span>
-                <span>
-                    {more > 0 ? `+${more} more · ` : ""}Day {days.length} · {ceiling}/day, then steady
-                </span>
-            </div>
+            <SettingRow
+                title="Follow-ups"
+                description="Which mailbox sends a lead's second and later emails."
+                stack
+                control={
+                    <OptionSelect
+                        aria-label="Follow-up sender"
+                        cols={1}
+                        value={mode}
+                        onChange={(v) => setNewCampaign((bef) => ({ ...bef, follow_up_sender: v }))}
+                        options={[
+                            {
+                                value: "same",
+                                label: "Same mailbox as the first email",
+                                hint: "Recommended. One address per conversation; a follow-up waits for that mailbox when it is busy.",
+                            },
+                            {
+                                value: "same_domain",
+                                label: "Rotate within the same domain",
+                                hint: "Each follow-up comes from another mailbox on the domain the lead already heard from.",
+                            },
+                            {
+                                value: "rotate",
+                                label: "Rotate every step",
+                                hint: "Each follow-up is placed like a first email, from any mailbox in the campaign.",
+                            },
+                        ]}
+                    />
+                }
+            />
+            {mode !== "same" && (
+                <div className="mt-2.5 rounded-md border border-amber-100 bg-amber-50/70 px-3 py-2.5 flex gap-2.5">
+                    <AlertCircleIcon className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="min-w-0 space-y-1">
+                        <p className="text-[11.5px] text-amber-900/90 leading-relaxed">
+                            Each follow-up can come from a different address, so a lead may see several senders in one
+                            conversation. Threaded steps still reference every earlier email, which most mail apps use
+                            to keep them together, but that is up to the recipient's app.
+                        </p>
+                        <p className="text-[10.5px] text-amber-800/70 leading-relaxed">
+                            A reply goes to whichever mailbox sent the email being answered, so one lead's replies can
+                            land in different inboxes. They are all still credited to the lead. To collect them in one
+                            inbox, give the mailboxes the same reply-to address in their settings.
+                        </p>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
 
-/** Inbox rotation — distribution mode + per-mailbox daily ramp-up. */
+/** Inbox rotation — distribution mode + how per-mailbox volume ramps up. */
 export function RotationRampSection({
     newCampaign,
     setNewCampaign,
@@ -79,7 +86,6 @@ export function RotationRampSection({
     newCampaign: Campaign;
     setNewCampaign: SetCampaign;
 }) {
-    const rampInvalid = newCampaign.ramp_enabled && newCampaign.ramp_start > newCampaign.ramp_ceiling;
     return (
         <div className="space-y-5">
             {/* Inbox rotation */}
@@ -115,80 +121,34 @@ export function RotationRampSection({
                     }
                 />
                 <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
-                    Rotation picks the mailbox for a lead's first email, and every follow-up to that lead comes from
-                    the same address, so the conversation stays consistent. Each mailbox stays within its own daily
-                    limit, and a lead only changes address if its mailbox stops being able to send for this campaign.
+                    {newCampaign.follow_up_sender === "same"
+                        ? "Rotation picks the mailbox for a lead's first email, and every follow-up to that lead comes from the same address, so the conversation stays consistent. A lead only changes address if its mailbox stops being able to send for this campaign."
+                        : "Rotation picks the mailbox for a lead's first email and, with the follow-up setting below, for every follow-up too."}{" "}
+                    Each mailbox stays within its own daily limit and minimum gap.
                 </p>
             </div>
 
-            {/* Daily ramp-up */}
+            <FollowUpSenderSetting newCampaign={newCampaign} setNewCampaign={setNewCampaign} />
+
+            {/* Ramp-up */}
             <SettingRow
-                title="Daily ramp-up"
-                description="Gradually raise each mailbox's daily volume instead of starting at full limit — a smooth growth curve protects deliverability. (Separate from warmup.)"
+                title="Ramp-up"
+                description="How each mailbox's daily volume grows in this campaign. Separate from warmup, which keeps running alongside."
+                stack
                 control={
-                    <Toggle
-                        id="campaign-pref-ramp"
-                        value={newCampaign.ramp_enabled}
-                        onChange={(v) => setNewCampaign((bef) => ({ ...bef, ramp_enabled: v }))}
+                    <RampUpChoice
+                        value={{
+                            warmup_graduation: newCampaign.warmup_graduation !== false,
+                            ramp_enabled: newCampaign.ramp_enabled,
+                            ramp_start: newCampaign.ramp_start,
+                            ramp_increment: newCampaign.ramp_increment,
+                            ramp_ceiling: newCampaign.ramp_ceiling,
+                        }}
+                        onChange={(p) => setNewCampaign((bef) => ({ ...bef, ...p }))}
+                        level={newCampaign.ramp_level}
                     />
                 }
             />
-            {newCampaign.ramp_enabled && (
-                <div className="rounded-md border border-slate-200 bg-slate-50/40 p-3.5 space-y-3.5">
-                    <div className="flex flex-wrap items-end gap-4">
-                        <div>
-                            <Label>Start</Label>
-                            <NumberInput
-                                value={newCampaign.ramp_start}
-                                min={1}
-                                max={5000}
-                                onChange={(v) => setNewCampaign((bef) => ({ ...bef, ramp_start: v }))}
-                                suffix="/ day"
-                                className="w-36"
-                            />
-                        </div>
-                        <div>
-                            <Label>Increase by</Label>
-                            <NumberInput
-                                value={newCampaign.ramp_increment}
-                                min={1}
-                                max={100}
-                                onChange={(v) => setNewCampaign((bef) => ({ ...bef, ramp_increment: v }))}
-                                suffix="/ day"
-                                className="w-36"
-                            />
-                        </div>
-                        <div>
-                            <Label>Ceiling</Label>
-                            <NumberInput
-                                value={newCampaign.ramp_ceiling}
-                                min={1}
-                                max={5000}
-                                onChange={(v) => setNewCampaign((bef) => ({ ...bef, ramp_ceiling: v }))}
-                                suffix="/ day"
-                                className="w-36"
-                            />
-                        </div>
-                        <span className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-sky-50 text-sky-700 text-[11.5px] font-medium">
-                            Today's cap
-                            <span className="font-mono tabular-nums">{newCampaign.ramp_level}</span>
-                        </span>
-                    </div>
-                    {rampInvalid ? (
-                        <p className="flex items-center gap-1.5 text-[11px] text-rose-500">
-                            <AlertCircleIcon className="w-3.5 h-3.5 shrink-0" />
-                            Start must be less than or equal to the ceiling.
-                        </p>
-                    ) : (
-                        <RampPreview
-                            start={newCampaign.ramp_start}
-                            increment={newCampaign.ramp_increment}
-                            ceiling={newCampaign.ramp_ceiling}
-                            level={newCampaign.ramp_level}
-                        />
-                    )}
-                </div>
-            )}
         </div>
     );
 }

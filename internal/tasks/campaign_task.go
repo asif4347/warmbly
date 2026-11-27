@@ -16,6 +16,7 @@ import (
 	"github.com/warmbly/warmbly/internal/infrastructure/pubsub"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/observability/errs"
+	"github.com/warmbly/warmbly/internal/pkg/mailhdr"
 	"github.com/warmbly/warmbly/internal/pkg/mailhtml"
 	"github.com/warmbly/warmbly/internal/repository"
 	"github.com/warmbly/warmbly/internal/scheduler"
@@ -346,7 +347,10 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 		return xerr
 	}
 
-	if s.advanced != nil {
+	// A contact with no address has nothing for the address gates to read; their email steps are skipped below.
+	emailless := strings.TrimSpace(contact.Email) == ""
+
+	if s.advanced != nil && !emailless {
 		suppressed, reason, sxerr := s.advanced.ShouldSuppressRecipient(ctx, orgID, contact.Email)
 		if sxerr != nil {
 			return sxerr
@@ -399,7 +403,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 			_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
 				CampaignID: campaign.ID,
 				EventType:  "paused_lead",
-				Message:    fmt.Sprintf("Paused lead skipped: %s", contact.Email),
+				Message:    fmt.Sprintf("Paused lead skipped: %s", contactLabel(contact)),
 				Metadata:   map[string]interface{}{"reason": hold.Reason, "source": hold.Source},
 			})
 		}
@@ -413,7 +417,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 	// bounce. 'invalid' is always dropped; 'risky' is dropped only when the
 	// campaign's "send to risky emails" toggle is off (see the next gate).
 	// 'unknown'/'valid' always send.
-	if contact.VerificationStatus == "invalid" {
+	if !emailless && contact.VerificationStatus == "invalid" {
 		_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_suppressed")
 		if s.campaignLogRepo != nil {
 			_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
@@ -432,7 +436,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 	// addresses verification flagged 'risky' (catch-all / role / low-quality),
 	// which raise bounce risk. Enforces the campaign.RiskyEmails toggle that the
 	// settings UI exposes — without this the toggle is stored but inert.
-	if !campaign.RiskyEmails && contact.VerificationStatus == "risky" {
+	if !emailless && !campaign.RiskyEmails && contact.VerificationStatus == "risky" {
 		_ = s.taskRepo.UpdateTaskStatusWithLock(ctx, taskID, "skipped_suppressed")
 		if s.campaignLogRepo != nil {
 			_ = s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
@@ -465,7 +469,17 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 		if len(sequence.Action) > 0 {
 			_ = json.Unmarshal(sequence.Action, &cfg)
 		}
+		if cfg.Type == models.ActionSocial {
+			s.runSocialStep(ctx, campaign, contact, sequence, &cfg, taskID, accountID, nextTime)
+			executionStatus = "completed"
+			return nil
+		}
 		aerr := s.executeActionNode(ctx, campaign, contact, sequence.ID, &cfg)
+		if errors.Is(aerr, errUnknownAction) {
+			s.holdUnknownStep(ctx, campaign, contact, sequence.ID, cfg.Type, taskID, accountID, nextTime)
+			executionStatus = "completed"
+			return nil
+		}
 		if aerr != nil {
 			log.Warn().Err(aerr).Str("campaign_id", campaign.ID.String()).Str("task_id", taskID.String()).Str("action", cfg.Type).Msg("Action node execution failed")
 		}
@@ -493,6 +507,12 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 			})
 		}
 		s.taskRepo.UpdateTaskStatus(ctx, taskID, "completed")
+		executionStatus = "completed"
+		return nil
+	}
+
+	if emailless {
+		s.skipEmaillessStep(ctx, campaign, contact, sequence, taskID, accountID, nextTime)
 		executionStatus = "completed"
 		return nil
 	}
@@ -612,6 +632,22 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 	if threadSubject != "" {
 		rawSubject = threadSubject
 	}
+	// A lead's own copy of the step replaces it, A/B variants included. Fail
+	// closed: sending the shared copy to a lead someone personalized for is wrong.
+	override, oerr := s.leadOverride(ctx, campaign.ID, contact.ID, sequence.ID)
+	if oerr != nil {
+		errs.CaptureException(oerr)
+		s.taskRepo.RecordTaskFailure(ctx, taskID, "Could not read the lead's own copy of this step", oerr.Error())
+		s.retryCampaignTickLater(ctx, taskRecord)
+		executionStatus = "failed"
+		return errx.InternalError()
+	}
+	if override != nil {
+		rawBodyHTML, rawBodyPlain = override.BodyHTML, override.BodyPlain
+		if threadSubject == "" {
+			rawSubject = override.Subject
+		}
+	}
 	s.resolveFormLinks(ctx, orgID, campaign, contact, &rawSubject, &rawBodyHTML, &rawBodyPlain)
 
 	// STEP 9.75: The recipient's opt-out. The link (when the instance can
@@ -632,7 +668,11 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 	// once and expand any {a|b|c} spintax per-recipient. Rendering happens after
 	// the variant pick so a contact value is never parsed as template text.
 	resolveLinks := func(parts ...*string) { s.resolveFormLinks(ctx, orgID, campaign, contact, parts...) }
-	rendered, sxerr := s.selectAndRender(ctx, orgID, campaign.ID, sequence.ID, *contact, extra, threadSubject, rawSubject, rawBodyHTML, rawBodyPlain, resolveLinks)
+	var picker variantSelector
+	if s.advanced != nil && override == nil {
+		picker = s.advanced
+	}
+	rendered, sxerr := selectAndRender(ctx, picker, orgID, campaign.ID, sequence.ID, *contact, extra, threadSubject, rawSubject, rawBodyHTML, rawBodyPlain, resolveLinks)
 	if sxerr != nil {
 		return sxerr
 	}
@@ -648,9 +688,10 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 	// zero-cost no-op when the body has no AI blocks. A generation failure fails
 	// the send (recorded like other send failures) so the task retries with the
 	// same cached output.
+	var usedAI map[string]string
 	if s.aiProvider != nil && s.aiCredits != nil {
 		var aerr error
-		subject, bodyHTML, bodyPlain, aerr = s.resolveAIVariables(ctx, campaign, contact, sequence.ID, subject, bodyHTML, bodyPlain)
+		subject, bodyHTML, bodyPlain, usedAI, aerr = s.resolveAIVariablesWith(ctx, campaign, contact, sequence.ID, subject, bodyHTML, bodyPlain, aiVarWrite{})
 		if aerr != nil {
 			s.taskRepo.RecordTaskFailure(ctx, taskID, "AI variable resolution failed", aerr.Error())
 			if s.campaignLogRepo != nil {
@@ -718,8 +759,10 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 		}
 	}
 
+	var sendTracking models.SendTracking
 	if campaign.OpenTracking && bodyHTML != "" {
 		bodyHTML = AddOpenTrackingPixel(bodyHTML, taskID, trackingDomain)
+		sendTracking.Opens = true
 	}
 
 	if bodyHTML != "" && (campaign.LinkTracking || campaign.UTMTracking) {
@@ -741,6 +784,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 			bodyHTML, _ = TrackLinks(bodyHTML, LinkTracking{TrackingDomain: linkOpts.TrackingDomain, UTM: linkOpts.UTM})
 		} else {
 			bodyHTML = tracked
+			sendTracking.Clicks = campaign.LinkTracking
 		}
 	}
 	if campaign.UTMTracking && bodyPlain != "" {
@@ -818,7 +862,7 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 		s.retryCampaignTickLater(ctx, taskRecord)
 		return errx.InternalError()
 	}
-	reserved, rerr := s.campaignProgressRepo.ReserveSend(ctx, campaign.ID, contact.ID, sequence.ID, taskID, account.ID, nextPair.IsNewLead, rendered.Arm)
+	reserved, rerr := s.campaignProgressRepo.ReserveSend(ctx, campaign.ID, contact.ID, sequence.ID, taskID, account.ID, nextPair.IsNewLead, rendered.Arm, sendTracking)
 	if rerr != nil {
 		// The attempt could not be made durable, so it must not be made at all.
 		// Retry the whole task rather than sending something nothing remembers.
@@ -849,6 +893,23 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 		executionStatus = "completed"
 		return nil
 	}
+	// A copy change that landed before the claim is sent next pass, never the copy read before it.
+	if changed, cerr := s.leadCopyChanged(ctx, campaign.ID, contact.ID, sequence.ID, override, usedAI); changed || cerr != nil {
+		relCtx, cancel := failurePathContext(ctx)
+		relErr := s.campaignProgressRepo.ReleaseSend(relCtx, campaign.ID, contact.ID, sequence.ID, nextPair.IsNewLead)
+		cancel()
+		if relErr != nil {
+			errs.CaptureException(relErr)
+		}
+		reason := "The lead's copy changed while this send was prepared"
+		if cerr != nil {
+			reason = cerr.Error()
+		}
+		s.taskRepo.RecordTaskFailure(ctx, taskID, "Send postponed for the lead's latest copy", reason)
+		s.retryCampaignTickLater(ctx, taskRecord)
+		executionStatus = "failed"
+		return errx.InternalError()
+	}
 
 	// STEP 16: Send email to worker via Kafka
 	emailMsg := EmailMessage{
@@ -867,6 +928,9 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 	}
 	if threadParent != nil {
 		emailMsg.InReplyTo = threadParent.MessageID
+		// The whole conversation, whichever mailbox sent each step, so the
+		// recipient's client threads a follow-up from another address too.
+		emailMsg.References = mailhdr.ConversationReferences(append(threadParent.References, threadParent.MessageID))
 		// The provider handle needs two things the headers do not. It is
 		// meaningless outside the mailbox that owns it, and Gmail will not
 		// file a message in a thread whose subject it does not match, so it
@@ -901,7 +965,10 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 		switch {
 		case errors.Is(err, ErrSendDispatchUnknown):
 		case errors.Is(err, ErrWorkerOffline), errors.Is(err, ErrWorkerUnconfirmed) || errors.Is(err, repository.ErrSendAdmissionDenied):
-			if relErr := s.campaignProgressRepo.ReleaseSend(ctx, campaign.ID, contact.ID, sequence.ID, nextPair.IsNewLead); relErr != nil {
+			relCtx, cancel := failurePathContext(ctx)
+			relErr := s.campaignProgressRepo.ReleaseSend(relCtx, campaign.ID, contact.ID, sequence.ID, nextPair.IsNewLead)
+			cancel()
+			if relErr != nil {
 				errs.CaptureException(relErr)
 				log.Error().Err(relErr).Str("campaign_id", campaign.ID.String()).Str("task_id", taskID.String()).Msg("Failed to release the reservation for a send that never left; the reclaimer will retry it")
 			}
@@ -917,12 +984,18 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 		failureCode := campaignDispatchFailureCode(err)
 		s.taskRepo.RecordTaskFailure(ctx, taskID, "Send failed", err.Error())
 		if s.campaignLogRepo != nil {
+			eventType, level := "email_failed", "error"
+			message := fmt.Sprintf("%s%s's email, will retry: %s", models.DispatchFailedLogPrefix, contact.Email, err.Error())
+			// A send held back before it left is a postponement, not something to act on.
+			if deferred, ok := models.AdmissionDeferredMessage(contact.Email, failureCode); ok {
+				eventType, level, message = "email_deferred", "info", deferred
+			}
 			s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
 				CampaignID: campaign.ID,
-				EventType:  "email_failed",
-				Message:    fmt.Sprintf("Could not dispatch %s's email, will retry: %s", contact.Email, err.Error()),
+				EventType:  eventType,
+				Message:    message,
 				Metadata: map[string]interface{}{
-					"level":       "error",
+					"level":       level,
 					"code":        failureCode,
 					"contact_id":  contact.ID.String(),
 					"sequence_id": sequence.ID.String(),
@@ -1016,8 +1089,9 @@ func (s *tasksService) HandleCampaignTask(task *proto.ProcessTask) (result *errx
 	// they had been hearing from stopped being one this campaign can send from
 	// (disconnected, taken off its sending accounts, resting, or held by warmup
 	// health), and it is the kind of thing an owner should find in the activity
-	// log rather than in a confused reply.
-	if prev := nextPair.AssignedSender; prev != nil && *prev != account.ID && s.campaignLogRepo != nil {
+	// log rather than in a confused reply. A campaign that rotates follow-ups
+	// changes address on purpose, so it is not logged there.
+	if prev := nextPair.AssignedSender; prev != nil && *prev != account.ID && s.campaignLogRepo != nil && !campaign.FollowUpSender.Rotates() {
 		from := "its previous mailbox"
 		if old, oerr := s.emailRepo.GetByID(ctx, *prev); oerr == nil && old != nil {
 			from = old.Email
@@ -1226,11 +1300,17 @@ func (s *tasksService) pauseUndeliverable(ctx context.Context, campaignID, taskI
 		})
 	}
 	if s.streamingPublisher != nil {
-		s.streamingPublisher.PublishCampaignEvent(ctx, &pubsub.CampaignEvent{
-			BaseEvent:  pubsub.BaseEvent{EventType: pubsub.EventCampaignCompleted},
+		// Org-scoped so every teammate's list and badge see the pause, with the
+		// exact status rather than "completed".
+		event := &pubsub.CampaignEvent{
+			BaseEvent:  pubsub.BaseEvent{EventType: pubsub.EventCampaignUpdated},
 			CampaignID: campaignID.String(),
 			Status:     "paused_undeliverable",
-		})
+		}
+		if c, err := s.campaignRepo.GetByID(ctx, campaignID); err == nil && c != nil {
+			event.UserID, event.OrgID, event.Name = c.UserID, campaignOrgID(c), c.Name
+		}
+		s.streamingPublisher.PublishCampaignEvent(ctx, event)
 	}
 }
 
@@ -1248,7 +1328,7 @@ func HeldLeadsMessage(n int) string {
 	if n != 1 {
 		lead = "leads are"
 	}
-	return fmt.Sprintf("Waiting: %d %s paused. The campaign stays active and continues when they resume.", n, lead)
+	return fmt.Sprintf("Waiting: %d %s paused or waiting for review. The campaign stays active and continues when they resume or are approved.", n, lead)
 }
 
 // CampaignHeldEventType is the activity log entry for a campaign waiting on
@@ -1623,10 +1703,18 @@ func (s *tasksService) executeActionNode(ctx context.Context, campaign *models.C
 		return nil
 	case "switch":
 		return s.execSequenceSwitchStep(ctx, campaign, contact, sequenceID, cfg)
-	default:
+	case "notify":
 		return nil
+	default:
+		return errUnknownAction
 	}
 }
+
+// errUnknownAction is a step type this release does not run; the contact is held on it rather than moved past it.
+var errUnknownAction = errors.New("this step type needs a newer Warmbly release")
+
+// unknownActionRetry is how long a contact waits on a step type this release does not know before it is offered again.
+const unknownActionRetry = 15 * time.Minute
 
 // createCampaignTask creates a new campaign task in GCP Cloud Tasks
 func (s *tasksService) createCampaignTask(ctx context.Context, campaignID, accountID uuid.UUID, scheduleTime time.Time) error {
@@ -1800,6 +1888,8 @@ func (s *tasksService) recordSchedulerFailure(ctx context.Context, campaignID uu
 	if s.campaignLogRepo == nil {
 		return
 	}
+	ctx, cancel := failurePathContext(ctx)
+	defer cancel()
 	meta := map[string]interface{}{
 		"level": "error",
 		"code":  code,
@@ -1832,6 +1922,8 @@ func (s *tasksService) resolveOptOut(ctx context.Context, orgID uuid.UUID, campa
 // out. Its slot moves with it: a due pending task is fired again every second
 // by the in-process dispatcher, and a failure that repeats would run in a loop.
 func (s *tasksService) retryCampaignTickLater(ctx context.Context, task *Task) {
+	ctx, cancel := failurePathContext(ctx)
+	defer cancel()
 	// The slot moves first: a pass left pending at its old, due slot is the
 	// loop this exists to prevent.
 	name := ""
@@ -1839,11 +1931,18 @@ func (s *tasksService) retryCampaignTickLater(ctx context.Context, task *Task) {
 		name = *task.CloudTaskName
 	}
 	if err := s.taskRepo.UpdateTaskScheduledAt(ctx, task.ID, time.Now().Add(config.CampaignTickRetrySeconds*time.Second), name); err != nil {
+		// Left active, keepChainAfterFailure closes it and starts a fresh pass instead.
 		errs.CaptureException(err)
+		return
 	}
 	if err := s.taskRepo.UpdateTaskStatus(ctx, task.ID, "pending"); err != nil {
 		errs.CaptureException(err)
 	}
+}
+
+// failurePathContext outlives the pass's own deadline, which is often what failed it.
+func failurePathContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 }
 
 // keepChainAfterFailure makes sure a campaign whose pass failed still has a
@@ -1900,14 +1999,7 @@ type renderedCopy struct {
 
 // selectAndRender picks the step's copy or an A/B variant from template text, then renders it once.
 // resolveLinks resolves form-link markers in the chosen copy, which a variant brings unresolved.
-func (s *tasksService) selectAndRender(ctx context.Context, orgID, campaignID, sequenceID uuid.UUID, contact models.Contact, extra TemplateContext, threadSubject, rawSubject, rawBodyHTML, rawBodyPlain string, resolveLinks func(...*string)) (renderedCopy, *errx.Error) {
-	var picker variantSelector
-	if s.advanced != nil {
-		picker = s.advanced
-	}
-	return selectAndRender(ctx, picker, orgID, campaignID, sequenceID, contact, extra, threadSubject, rawSubject, rawBodyHTML, rawBodyPlain, resolveLinks)
-}
-
+// A nil picker sends the copy as given.
 func selectAndRender(ctx context.Context, picker variantSelector, orgID, campaignID, sequenceID uuid.UUID, contact models.Contact, extra TemplateContext, threadSubject, rawSubject, rawBodyHTML, rawBodyPlain string, resolveLinks func(...*string)) (renderedCopy, *errx.Error) {
 	var arm *models.StepABArm
 	if picker != nil {
@@ -1927,12 +2019,8 @@ func selectAndRender(ctx context.Context, picker variantSelector, orgID, campaig
 	if resolveLinks != nil {
 		resolveLinks(&rawSubject, &rawBodyHTML, &rawBodyPlain)
 	}
-	out := renderedCopy{
-		Subject:   expandSpintax(RenderTemplateWith(rawSubject, contact, extra)),
-		BodyHTML:  expandSpintax(RenderHTMLTemplateWith(rawBodyHTML, contact, extra)),
-		BodyPlain: expandSpintax(RenderTemplateWith(rawBodyPlain, contact, extra)),
-		Arm:       arm,
-	}
+	out := renderedCopy{Arm: arm}
+	out.Subject, out.BodyHTML, out.BodyPlain = renderLeadCopy(campaignID, sequenceID, contact, extra, rawSubject, rawBodyHTML, rawBodyPlain)
 	if out.BodyPlain == "" && out.BodyHTML != "" {
 		out.BodyPlain = ExtractPlainTextFromHTML(out.BodyHTML)
 	}

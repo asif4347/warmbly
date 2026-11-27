@@ -108,6 +108,10 @@ const (
 	SyncBackfillPerMinute           = 240   // backfill pacing per mailbox
 	SyncFloodPerHour                = 5_000 // new live messages observed in one hour that mark a mailbox as flooding
 	SyncThrottleEscalationDays      = 3     // throttled UTC days out of the last 7 that deactivate a mailbox
+	SyncFullCheckMinMinutesDefault  = 15    // full check interval for a workspace with room left under its plan
+	SyncFullCheckMaxMinutesDefault  = 60    // full check interval for a workspace at its plan's mailbox allowance
+	SyncFullCheckMinutesFloor       = 5     // shortest full check interval an operator may set
+	SyncFullCheckMinutesCeiling     = 180   // longest full check interval an operator may set
 	SyncSkipFoldersMax              = 50    // folders one mailbox may exclude from sync
 	SyncSkipFolderNameMax           = 255   // characters in one excluded folder name
 
@@ -270,8 +274,43 @@ const (
 	// it must stay well clear of a slow provider handshake.
 	CampaignSendReclaimAfterMinutes = 30
 
+	// MailboxUnreachableSwitchOffHours is how long a custom-server mailbox may go without one successful sync or send,
+	// while its server keeps refusing the connection, before Warmbly switches it off instead of retrying forever.
+	MailboxUnreachableSwitchOffHours = 72
+
+	// ManualSendInterruptedAfterMinutes is how long a manual send may sit claimed
+	// without a reservation before recovery treats its execution as lost. It is
+	// well past the handler's two-minute deadline and the execution key's lease.
+	ManualSendInterruptedAfterMinutes = 10
+
+	// ManualSendRetryWithinMinutes bounds how old an interrupted manual send may
+	// be and still go out: older ones fail and the owner is told instead.
+	ManualSendRetryWithinMinutes = 60
+
 	// UnknownSendHoldVisibleAfterMinutes keeps an unconfirmed send out of mailbox health until it outlasts automatic recovery.
 	UnknownSendHoldVisibleAfterMinutes = 2 * CampaignSendReclaimAfterMinutes
+
+	// ProviderRestoredHoldRecheckHours spaces automatic releases of a mailbox's Gmail or Outlook refusal hold, so a provider that keeps refusing costs one send per interval.
+	ProviderRestoredHoldRecheckHours = 6
+
+	// Send pauses after a provider refuses or throttles one mailbox. Each lasts
+	// the provider's own Retry-After when it gives one, capped at SendPauseMax.
+	// SendRateLimitPause doubles per repeated throttle up to SendRateLimitPauseMax.
+	SendRateLimitPause    = 5 * time.Minute
+	SendRateLimitPauseMax = 2 * time.Hour
+	// SendDailyLimitPause covers a rolling 24-hour provider quota with no stated reset.
+	SendDailyLimitPause = 24 * time.Hour
+	// SendBlockedPause re-probes a mailbox the provider restricted, doubling up to SendBlockedPauseMax.
+	SendBlockedPause    = 3 * time.Hour
+	SendBlockedPauseMax = 24 * time.Hour
+	// SendHoldProbe releases a permanent or domain-authentication hold for one more try, doubling up to SendHoldProbeMax.
+	SendHoldProbe    = 3 * time.Hour
+	SendHoldProbeMax = 24 * time.Hour
+	SendPauseMax     = 48 * time.Hour
+	// SendPauseStrikeResetAfter forgets earlier throttles once a mailbox has been clear this long.
+	SendPauseStrikeResetAfter = 24 * time.Hour
+	// SendPauseWaitThreshold is the longest pause a lead bound to the mailbox waits out instead of moving to another sender.
+	SendPauseWaitThreshold = 45 * time.Minute
 
 	// WorkerReleaseGraceMinutes keeps a mailbox in its previous worker's scope after a move, until the reclaimer has resolved any send it left unanswered.
 	WorkerReleaseGraceMinutes = CampaignSendReclaimAfterMinutes
@@ -462,6 +501,12 @@ const (
 	// sweeps and backend replicas.
 	ContactMailHostCacheHours = 24
 
+	// ContactLocationBatchSize is how many contacts one location sweep pass reads.
+	ContactLocationBatchSize = 2000
+	// ContactLocationIntervalSeconds is how often the location sweep passes; a
+	// full batch runs again immediately, so an import drains without waiting.
+	ContactLocationIntervalSeconds = 30
+
 	// VerificationRecheckDays is how long a verification verdict is trusted
 	// before the address is checked again. Mailboxes get created and closed;
 	// a verdict from last quarter is a guess.
@@ -588,30 +633,13 @@ const (
 
 	// Pool link: mailboxes a self-hosted instance may enroll in the hosted
 	// warmup pool without a paid pool plan, and the handshake lifetimes.
-	PoolLinkCodeTTLMinutes      = 15
-	PoolLinkPollIntervalSeconds = 3
-	PoolLinkPlanID              = "00000000-0000-0000-0000-000000000002"
-	PoolLinkPlanPriceUSD        = 15
-	PoolLinkRedirectLimit       = 200 // root redirects Warmbly Cloud serves for one linked instance
-	// Instance-executed mailboxes: a link that leased within the liveness window
-	// is ready; a lease lasts LeaseSeconds; a send must start within its TTL
-	// (under the 10-minute unstarted-dispatch recovery) and an action within its.
-	PoolLinkExecutorLivenessMinutes = 5
-	PoolLinkCommandLeaseSeconds     = 300
-	PoolLinkSendCommandTTLMinutes   = 8
-	PoolLinkActionCommandTTLHours   = 6
-	PoolLinkLeaseLimitMax           = 100
-	PoolLinkArrivalClockSkewMinutes = 5
-	// Reporter trust: a self-executed mailbox's first-landing spam rate is
-	// compared, over the window, with what Cloud-executed recipients of the same
-	// provider family saw from the same senders.
-	PoolLinkTrustWindowDays          = 14
-	PoolLinkTrustMinReported         = 30
-	PoolLinkTrustMinObserved         = 50
-	PoolLinkTrustProbationDivergence = 0.15
-	PoolLinkTrustUntrustedDivergence = 0.30
-	WarmupPoolFallbackMinAgeDays     = 3  // a free mailbox must have been a pool member this long before premium may borrow it, or write back to one
-	WarmupPoolReturnVisitDays        = 14 // a proven free mailbox may write back to a paying mailbox that wrote to it this recently
+	PoolLinkCodeTTLMinutes       = 15
+	PoolLinkPollIntervalSeconds  = 3
+	PoolLinkPlanID               = "00000000-0000-0000-0000-000000000002"
+	PoolLinkPlanPriceUSD         = 15
+	PoolLinkRedirectLimit        = 200 // root redirects Warmbly Cloud serves for one linked instance
+	WarmupPoolFallbackMinAgeDays = 3   // a free mailbox must have been a pool member this long before premium may borrow it, or write back to one
+	WarmupPoolReturnVisitDays    = 14  // a proven free mailbox may write back to a paying mailbox that wrote to it this recently
 	// New threads one inbox may receive from the pool in a day (replies are not counted): WarmupInboundDailyMultiple
 	// times its own daily sends, never below the floor (a recipient-only mailbox
 	// sends nothing) and never above the ceiling. A recipient at its cap is left
@@ -630,7 +658,10 @@ const (
 	WarmupRecipientArrivalGraceHours        = 6
 	WarmupRecipientUnreachableMinDelivered  = 5
 	WarmupRecipientUnreachableMinSenderOrgs = 2
-	DailyThrottleNewOrgs                    = 3 // new workspaces per owner per day
+	// An address that hard-bounced pool warmup as unknown stays out of the
+	// draw this long, unless warmup mail verifiably arrives at it since.
+	WarmupRecipientBounceDays = 7
+	DailyThrottleNewOrgs      = 3 // new workspaces per owner per day
 
 	// CLI sign-in handshake (`warmbly auth login`). Shorter-lived than the pool
 	// link handshake because a person is watching the terminal while it runs.
@@ -679,6 +710,10 @@ const (
 	NotificationEmailWindowMinMinutes     = 30
 	NotificationEmailWindowDefaultMinutes = 30
 	NotificationEmailWindowMaxMinutes     = 1440
+
+	// AgencyIsolatedEgressMaxClients is how many of one agency's client
+	// workspaces hold a reserved worker at once, oldest attached first.
+	AgencyIsolatedEgressMaxClients = 20
 )
 
 // InboundClassificationHeaders are the internet headers the API-based inbound
@@ -701,3 +736,7 @@ var InboundClassificationHeaders = []string{
 	"List-Unsubscribe",
 	"List-Id",
 }
+
+// ContactsWithoutEmail lets a contact be created with a social handle and no email. It stays off until every
+// release on the instance drops the full (user_id, lower(email)) unique index; see the stage 2 notes.
+const ContactsWithoutEmail = false

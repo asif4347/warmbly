@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/warmbly/warmbly/internal/models"
 )
 
 // Additional Topics for realtime updates
@@ -71,6 +72,8 @@ const (
 
 	// A human reply landed for a campaign contact (org-scoped pulse).
 	EventEmailReplied EventType = "EMAIL_REPLIED"
+	// A bounce or complaint was recorded against a campaign send (org-scoped pulse).
+	EventEmailBounced EventType = "EMAIL_BOUNCED"
 
 	// A website page view landed for an identified contact (org-scoped; the
 	// dashboard refreshes that contact's timeline).
@@ -142,6 +145,19 @@ const (
 	// A user's sessions were revoked (sign out, password change, ban). The
 	// realtime service closes every socket the user holds; not forwarded.
 	EventSessionsRevoked EventType = "SESSIONS_REVOKED"
+
+	// Store purchases changed state (org-scoped; the "STORE" family is gated on
+	// manage_emails in the realtime OrgChannel). They carry ids and status only.
+	EventStoreOrderUpdated   EventType = "STORE_ORDER_UPDATED"
+	EventStoreDomainUpdated  EventType = "STORE_DOMAIN_UPDATED"
+	EventStoreMailboxUpdated EventType = "STORE_MAILBOX_UPDATED"
+	// Social add-on.
+	EventSocialAccountUpdated    EventType = "SOCIAL_ACCOUNT_UPDATED"
+	EventSocialConnectionUpdated EventType = "SOCIAL_CONNECTION_UPDATED"
+	EventSocialMessage           EventType = "SOCIAL_MESSAGE"
+	EventSocialLinkUpdated       EventType = "SOCIAL_LINK_UPDATED"
+	EventSocialImportUpdated     EventType = "SOCIAL_IMPORT_UPDATED"
+	EventSocialActionUpdated     EventType = "SOCIAL_ACTION_UPDATED"
 )
 
 // BaseEvent contains common fields for all events
@@ -884,14 +900,18 @@ func (p *StreamingPublisher) PublishAIDraftReady(ctx context.Context, orgID, act
 // balance that tripped the alert and the org's configured threshold.
 type CreditsLowEvent struct {
 	BaseEvent
-	OrgID     string `json:"org_id"`
-	Balance   int    `json:"balance"`
-	Threshold int    `json:"threshold"`
+	OrgID        string  `json:"org_id"`
+	Balance      int     `json:"balance"`
+	Threshold    int     `json:"threshold"`
+	BalanceUSD   float64 `json:"balance_usd"`
+	ThresholdUSD float64 `json:"threshold_usd"`
+	// Out is true when the balance ran out rather than ran low.
+	Out bool `json:"out"`
 }
 
 // PublishCreditsLow emits BILLING_CREDITS_LOW when an org's spendable balance
 // crosses under its alert threshold. Best-effort, system-fired (no actor).
-func (p *StreamingPublisher) PublishCreditsLow(ctx context.Context, orgID uuid.UUID, balance, threshold int) {
+func (p *StreamingPublisher) PublishCreditsLow(ctx context.Context, orgID uuid.UUID, balance, threshold models.Micro, out bool) {
 	if p == nil || p.client == nil || orgID == uuid.Nil {
 		return
 	}
@@ -901,9 +921,12 @@ func (p *StreamingPublisher) PublishCreditsLow(ctx context.Context, orgID uuid.U
 			UserID:    uuid.Nil.String(),
 			Timestamp: time.Now(),
 		},
-		OrgID:     orgID.String(),
-		Balance:   balance,
-		Threshold: threshold,
+		OrgID:        orgID.String(),
+		Balance:      models.CreditsFromMicro(balance),
+		Threshold:    models.CreditsFromMicro(threshold),
+		BalanceUSD:   balance.USD(),
+		ThresholdUSD: threshold.USD(),
+		Out:          out,
 	}
 	attrs := map[string]string{
 		"user_id":    uuid.Nil.String(),
@@ -919,13 +942,14 @@ func (p *StreamingPublisher) PublishCreditsLow(ctx context.Context, orgID uuid.U
 // the spendable balance after a debit, so credit meters update live.
 type CreditsChangedEvent struct {
 	BaseEvent
-	OrgID   string `json:"org_id"`
-	Balance int    `json:"balance"`
+	OrgID      string  `json:"org_id"`
+	Balance    int     `json:"balance"`
+	BalanceUSD float64 `json:"balance_usd"`
 }
 
 // PublishCreditsChanged emits BILLING_CREDITS_CHANGED after a fresh credit
 // debit. Best-effort, system-fired (no actor).
-func (p *StreamingPublisher) PublishCreditsChanged(ctx context.Context, orgID uuid.UUID, balance int) {
+func (p *StreamingPublisher) PublishCreditsChanged(ctx context.Context, orgID uuid.UUID, balance models.Micro) {
 	if p == nil || p.client == nil || orgID == uuid.Nil {
 		return
 	}
@@ -935,8 +959,9 @@ func (p *StreamingPublisher) PublishCreditsChanged(ctx context.Context, orgID uu
 			UserID:    uuid.Nil.String(),
 			Timestamp: time.Now(),
 		},
-		OrgID:   orgID.String(),
-		Balance: balance,
+		OrgID:      orgID.String(),
+		Balance:    models.CreditsFromMicro(balance),
+		BalanceUSD: balance.USD(),
 	}
 	attrs := map[string]string{
 		"user_id":    uuid.Nil.String(),
@@ -1186,6 +1211,37 @@ func (p *StreamingPublisher) PublishEmailReplied(ctx context.Context, orgID, use
 	})
 }
 
+// PublishEmailBounced emits an org-scoped EMAIL_BOUNCED pulse when a bounce or
+// complaint is recorded against a campaign send after it went out.
+func (p *StreamingPublisher) PublishEmailBounced(ctx context.Context, orgID, userID, campaignID, contactID, contactEmail, sequenceID string) {
+	if p == nil || p.client == nil {
+		return
+	}
+	p.PublishTrackingEvent(ctx, &TrackingEventPayload{
+		BaseEvent:    BaseEvent{EventType: EventEmailBounced, UserID: userID},
+		OrgID:        orgID,
+		CampaignID:   campaignID,
+		ContactID:    contactID,
+		ContactEmail: contactEmail,
+		SequenceID:   sequenceID,
+	})
+}
+
+// PublishCampaignPaused emits an org-scoped CAMPAIGN_PAUSED pulse for a pause
+// nobody clicked, such as the deliverability breaker.
+func (p *StreamingPublisher) PublishCampaignPaused(ctx context.Context, orgID, userID, campaignID, name string) {
+	if p == nil || p.client == nil {
+		return
+	}
+	p.PublishCampaignEvent(ctx, &CampaignEvent{
+		BaseEvent:  BaseEvent{EventType: EventCampaignPaused, UserID: userID},
+		OrgID:      orgID,
+		CampaignID: campaignID,
+		Name:       name,
+		Status:     "paused",
+	})
+}
+
 // PublishEmailSent emits an org-scoped EMAIL_SENT pulse when a campaign email
 // goes out, carrying the same rich payload as task progress so the dashboard
 // can show which contact/step just fired without a refetch.
@@ -1224,4 +1280,66 @@ func GetSubscriptionInfo(userID uuid.UUID, wsHost string) *RealtimeSubscriptionI
 			"account:*",
 		},
 	}
+}
+
+// StoreEvent says a purchased order, domain or mailbox changed. It carries ids
+// and status only; the dashboard refetches what it shows.
+type StoreEvent struct {
+	BaseEvent
+	OrgID          string `json:"org_id"`
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	OrderID        string `json:"order_id,omitempty"`
+	DomainID       string `json:"domain_id,omitempty"`
+	EmailAccountID string `json:"email_account_id,omitempty"`
+	ConnectState   string `json:"connect_state,omitempty"`
+}
+
+// PublishStoreEvent emits one STORE_* event to the workspace. Best-effort.
+func (p *StreamingPublisher) PublishStoreEvent(ctx context.Context, orgID uuid.UUID, ev StoreEvent) {
+	if p == nil || p.client == nil || orgID == uuid.Nil {
+		return
+	}
+	ev.BaseEvent.UserID = uuid.Nil.String()
+	ev.BaseEvent.Timestamp = time.Now()
+	ev.OrgID = orgID.String()
+	attrs := map[string]string{
+		"user_id":    uuid.Nil.String(),
+		"org_id":     orgID.String(),
+		"event_type": string(ev.EventType),
+	}
+	_ = p.publish(ctx, TopicUserEvents, &ev, attrs)
+}
+
+// SocialEvent says a social account, connect session, link, conversation or
+// step changed. Ids and status only; the dashboard refetches what it shows.
+type SocialEvent struct {
+	BaseEvent
+	OrgID          string `json:"org_id"`
+	Channel        string `json:"channel,omitempty"`
+	AccountID      string `json:"account_id,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Direction      string `json:"direction,omitempty"`
+	ImportID       string `json:"import_id,omitempty"`
+	CampaignID     string `json:"campaign_id,omitempty"`
+	ContactID      string `json:"contact_id,omitempty"`
+	ActionType     string `json:"action_type,omitempty"`
+}
+
+// PublishSocialEvent emits one SOCIAL_* event to the workspace. Best-effort.
+func (p *StreamingPublisher) PublishSocialEvent(ctx context.Context, orgID uuid.UUID, ev SocialEvent) {
+	if p == nil || p.client == nil || orgID == uuid.Nil {
+		return
+	}
+	ev.BaseEvent.UserID = uuid.Nil.String()
+	ev.BaseEvent.Timestamp = time.Now()
+	ev.OrgID = orgID.String()
+	attrs := map[string]string{
+		"user_id":    uuid.Nil.String(),
+		"org_id":     orgID.String(),
+		"event_type": string(ev.EventType),
+	}
+	_ = p.publish(ctx, TopicUserEvents, &ev, attrs)
 }

@@ -1,35 +1,73 @@
 package wmail
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/warmbly/warmbly/internal/client/goog"
 	"github.com/warmbly/warmbly/internal/config"
+	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"golang.org/x/oauth2"
 )
 
-func TestWakeRunsTheNextPassEarlyOnlyAfterACleanPass(t *testing.T) {
+// waitLegacy waits for a mailbox with a live signal, so only wakes and the full pass matter.
+func waitLegacy(t *testing.T, w *WMail, due, notBefore time.Time, wakeable bool) (narrow, ok bool) {
+	t.Helper()
+	step := w.waitForPass(t.Context(), syncPlan{due: due, notBefore: notBefore, wakeable: wakeable})
+	return step == stepNarrow, step != stepStop
+}
+
+func TestWakeRunsANarrowCheckOnlyAfterACleanPass(t *testing.T) {
 	w := &WMail{wake: make(chan struct{}, 1)}
 	w.Wake(false)
 	started := time.Now()
-	if !w.waitForPass(t.Context(), time.Hour, true) {
-		t.Fatal("wait ended without a pass")
+	narrow, ok := waitLegacy(t, w, time.Now().Add(time.Hour), time.Time{}, true)
+	if !ok || !narrow {
+		t.Fatalf("a wake after a clean pass ran narrow=%v ok=%v, want a narrow check", narrow, ok)
 	}
-	if waited := time.Since(started); waited > config.SyncWakeMinGap+time.Second {
-		t.Fatalf("a wake waited %v, not the merge gap", waited)
+	if waited := time.Since(started); waited > config.SyncWakeSettle+time.Second {
+		t.Fatalf("a wake waited %v, not the settle delay", waited)
 	}
 
 	w.Wake(false)
 	started = time.Now()
-	if !w.waitForPass(t.Context(), 50*time.Millisecond, false) {
-		t.Fatal("wait ended without a pass")
+	narrow, ok = waitLegacy(t, w, time.Now().Add(50*time.Millisecond), time.Time{}, false)
+	if !ok || narrow {
+		t.Fatalf("a wake during a backoff ran narrow=%v ok=%v, want the full pass", narrow, ok)
 	}
 	if time.Since(started) < 50*time.Millisecond {
 		t.Fatal("a wake cut short the backoff after a failed pass")
 	}
 	if len(w.wake) != 0 {
 		t.Fatal("a wake the timed pass covers was left for another pass")
+	}
+}
+
+// A wake inside the gap waits for it, and one whose check would start after the full pass is folded into it.
+func TestWakeKeepsTheGapBetweenChecks(t *testing.T) {
+	w := &WMail{wake: make(chan struct{}, 1)}
+	w.Wake(false)
+	started := time.Now()
+	narrow, ok := waitLegacy(t, w, time.Now().Add(time.Hour), time.Now().Add(config.SyncWakeSettle+300*time.Millisecond), true)
+	if !ok || !narrow || time.Since(started) < config.SyncWakeSettle+300*time.Millisecond {
+		t.Fatalf("a wake inside the gap ran early: narrow=%v ok=%v after %v", narrow, ok, time.Since(started))
+	}
+
+	w.Wake(false)
+	started = time.Now()
+	narrow, ok = waitLegacy(t, w, time.Now().Add(100*time.Millisecond), time.Now().Add(config.SyncWakeMinGap), true)
+	if !ok || narrow {
+		t.Fatalf("a wake held past the full pass ran narrow=%v ok=%v, want the full pass", narrow, ok)
+	}
+	if waited := time.Since(started); waited > time.Second {
+		t.Fatalf("the full pass waited %v for a held wake", waited)
+	}
+	if len(w.wake) != 0 {
+		t.Fatal("a wake the full pass covers was left for another check")
 	}
 }
 
@@ -43,23 +81,28 @@ func TestWakesCoalesce(t *testing.T) {
 	}
 }
 
-func TestPollIntervalFollowsThePushChannel(t *testing.T) {
+// The full check interval is the control plane's for every mailbox, push or IDLE alike.
+func TestFullCheckIntervalComesFromThePolicy(t *testing.T) {
 	w := &WMail{wake: make(chan struct{}, 1)}
-	if got := w.pollInterval(); got != ImapCheckInterval {
-		t.Fatalf("no push: %v", got)
+	if got := w.fullCheckInterval(); got != config.SyncFullCheckDefault {
+		t.Fatalf("no policy: %v", got)
 	}
-	w.ApplyPush(&models.AddWorkerEmailPushData{GraphNotificationURL: "https://x", GraphClientState: "s",
-		State: &models.MailboxPushState{Provider: models.MailboxPushGraph, SubscriptionID: "sub", ExpiresAt: time.Now().Add(time.Hour)}})
-	if got := w.pollInterval(); got != config.SyncPushFallbackInterval() {
-		t.Fatalf("live subscription: %v", got)
-	}
-	w.push.state.ExpiresAt = time.Now().Add(-time.Minute)
-	if got := w.pollInterval(); got != ImapCheckInterval {
-		t.Fatalf("an expired subscription must fall back to the normal poll, got %v", got)
-	}
-	w.push.imapIdle.Store(true)
-	if got := w.pollInterval(); got != config.SyncImapWatchedInterval {
-		t.Fatalf("IMAP in IDLE: %v", got)
+	for _, tc := range []struct {
+		seconds int
+		want    time.Duration
+	}{
+		{0, config.SyncFullCheckDefault},
+		{1800, 30 * time.Minute},
+		{60, time.Minute},
+		{5, config.SyncFullCheckFloor},
+	} {
+		w.gov = newGovernor(uuid.New(), nil, nil, models.SyncPolicy{FullCheckSeconds: tc.seconds})
+		w.ApplyPush(&models.AddWorkerEmailPushData{GraphNotificationURL: "https://x", GraphClientState: "s",
+			State: &models.MailboxPushState{Provider: models.MailboxPushGraph, SubscriptionID: "sub", ExpiresAt: time.Now().Add(time.Hour)}})
+		w.push.imapIdle.Store(true)
+		if got := w.fullCheckInterval(); got != tc.want {
+			t.Fatalf("%d seconds: interval %v, want %v", tc.seconds, got, tc.want)
+		}
 	}
 }
 
@@ -135,7 +178,9 @@ func TestAPendingReportIsResentDuringTheRetryBackoff(t *testing.T) {
 		return nil
 	}}
 	// A channel was closed, its report refused, and the provider is in backoff.
-	w.push.retryAt = time.Now().Add(time.Hour)
+	w.ID = uuid.New()
+	pushRefusals.Store(w.ID, pushRefusal{retryAt: time.Now().Add(time.Hour), reported: time.Now()})
+	t.Cleanup(func() { pushRefusals.Delete(w.ID) })
 	w.push.unsent.Store(true)
 	w.maintainPush(t.Context())
 	if reports != 1 || sent[0] != nil || w.push.unsent.Load() {
@@ -144,5 +189,78 @@ func TestAPendingReportIsResentDuringTheRetryBackoff(t *testing.T) {
 	w.maintainPush(t.Context())
 	if reports != 1 {
 		t.Fatalf("a report already taken was sent again: %d", reports)
+	}
+}
+
+func TestPushRetryWaitsLongerOnARefusalAndHonoursRetryAfter(t *testing.T) {
+	now := time.Now()
+	fail := func(f errx.SendFailure) error {
+		return errx.ProviderCall("op", "", errx.WithSendFailure(errx.ErrMailSendRejected("x"), f))
+	}
+	if got := pushRetryAt(errors.New("dial tcp: timeout"), now); !got.Equal(now.Add(pushRetryAfter)) {
+		t.Fatalf("transport failure retries at %v", got.Sub(now))
+	}
+	if got := pushRetryAt(fail(errx.SendFailure{Status: 400, Disposition: errx.SendPermanent}), now); !got.Equal(now.Add(pushRefusedRetryAfter)) {
+		t.Fatalf("a refused topic retries at %v", got.Sub(now))
+	}
+	if got := pushRetryAt(fail(errx.SendFailure{Status: 503, Disposition: errx.SendRetry}), now); !got.Equal(now.Add(pushRetryAfter)) {
+		t.Fatalf("an outage retries at %v", got.Sub(now))
+	}
+	later := now.Add(2 * time.Hour)
+	if got := pushRetryAt(fail(errx.SendFailure{Status: 429, Disposition: errx.SendThrottle, RetryAt: &later}), now); !got.Equal(later) {
+		t.Fatalf("Retry-After cut short: %v", got.Sub(now))
+	}
+	far := now.Add(30 * 24 * time.Hour)
+	if got := pushRetryAt(fail(errx.SendFailure{Status: 429, Disposition: errx.SendThrottle, RetryAt: &far}), now); !got.Equal(now.Add(pushRetryAfterMax)) {
+		t.Fatalf("Retry-After not bounded: %v", got.Sub(now))
+	}
+}
+
+func TestARebuiltMailboxKeepsItsPushBackoff(t *testing.T) {
+	id := uuid.New()
+	t.Cleanup(func() { pushRefusals.Delete(id) })
+	want := &models.AddWorkerEmailPushData{GmailTopic: "projects/p/topics/t"}
+	pushRefusals.Store(id, pushRefusal{target: pushTarget(want), retryAt: time.Now().Add(time.Hour), reported: time.Now()})
+	// A fresh WMail with no Google client: it must not reach the provider while the backoff holds.
+	w := &WMail{ID: id, EmailType: models.InboxProviderGoogle, GoogleData: &GoogleData{}, wake: make(chan struct{}, 1)}
+	w.ApplyPush(want)
+	w.maintainPush(t.Context())
+
+	other := &models.AddWorkerEmailPushData{GmailTopic: "projects/p/topics/other"}
+	if pushTarget(other) == pushTarget(want) {
+		t.Fatal("a changed topic is not a new target")
+	}
+}
+
+func TestAStoppedMailboxRecordsNoRefusal(t *testing.T) {
+	id := uuid.New()
+	t.Cleanup(func() { pushRefusals.Delete(id) })
+	client := &goog.Client{OnTokenRefresh: func(context.Context, *oauth2.Token) error { return nil }}
+	if merr := client.Init(t.Context(), &oauth2.Token{AccessToken: "live", Expiry: time.Now().Add(time.Hour)}, oauth2.Config{}); merr != nil {
+		t.Fatalf("client init: %v", merr.Message)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	w := &WMail{ID: id, EmailType: models.InboxProviderGoogle, wake: make(chan struct{}, 1),
+		GoogleData: &GoogleData{Client: client}, onEvent: func(models.JobEventType, any) error { return nil }}
+	w.ApplyPush(&models.AddWorkerEmailPushData{GmailTopic: "projects/p/topics/t"})
+	w.maintainPush(ctx)
+	if _, ok := pushRefusals.Load(id); ok {
+		t.Fatal("a cancelled call was recorded as a refusal")
+	}
+}
+
+func TestANoOpPassKeepsTheRefusal(t *testing.T) {
+	id := uuid.New()
+	t.Cleanup(func() { pushRefusals.Delete(id) })
+	want := &models.AddWorkerEmailPushData{GmailTopic: "projects/p/topics/t",
+		State: &models.MailboxPushState{Provider: models.MailboxPushGmail, ExpiresAt: time.Now().Add(7 * 24 * time.Hour), Credential: credentialPrint("projects/p/topics/t")}}
+	// The backoff is over, but the watch has days left, so no provider call is made.
+	pushRefusals.Store(id, pushRefusal{target: pushTarget(want), retryAt: time.Now().Add(-time.Minute), reported: time.Now()})
+	w := &WMail{ID: id, EmailType: models.InboxProviderGoogle, GoogleData: &GoogleData{}, wake: make(chan struct{}, 1)}
+	w.ApplyPush(want)
+	w.maintainPush(t.Context())
+	if _, ok := pushRefusals.Load(id); !ok {
+		t.Fatal("a pass that asked the provider nothing cleared the refusal")
 	}
 }

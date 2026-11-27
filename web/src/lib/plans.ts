@@ -80,7 +80,13 @@ export const PLAN_CATALOG: Record<PlanID, PlanDef> = {
         priceMonthly: 29,
         priceAnnual: 23,
         sendsPerDay: 150,
-        bullets: ["Unlimited warmup", "Unlimited mailboxes", "150 emails / day"],
+        bullets: [
+            "Unlimited warmup",
+            "Unlimited mailboxes",
+            "Unified inbox with reply detection",
+            "Sequences that stop on reply",
+            "Inbox placement monitoring",
+        ],
         accent: "green",
         isolatedSending: false,
     },
@@ -91,7 +97,7 @@ export const PLAN_CATALOG: Record<PlanID, PlanDef> = {
         priceMonthly: 89,
         priceAnnual: 71,
         sendsPerDay: 3_000,
-        bullets: ["Unlimited warmup", "Unlimited mailboxes", "3,000 emails / day"],
+        bullets: ["Everything in Starter", "CRM with pipelines, deals and tasks", "API and signed webhooks"],
         accent: "orange",
         isolatedSending: false,
     },
@@ -103,10 +109,10 @@ export const PLAN_CATALOG: Record<PlanID, PlanDef> = {
         priceAnnual: 263,
         sendsPerDay: 15_000,
         bullets: [
-            "Unlimited warmup",
-            "Unlimited mailboxes",
-            "15,000 emails / day",
+            "Everything in Grow",
             "Sending kept apart from other customers",
+            "Team roles and audit log",
+            "Priority support",
         ],
         accent: "sky",
         isolatedSending: true,
@@ -119,13 +125,7 @@ export const PLAN_CATALOG: Record<PlanID, PlanDef> = {
         priceMonthly: null,
         priceAnnual: null,
         sendsPerDay: Number.POSITIVE_INFINITY,
-        bullets: [
-            "Unlimited warmup",
-            "Unlimited mailboxes",
-            "15,000+ emails / day",
-            "Sending kept apart from other customers",
-            "Dedicated support",
-        ],
+        bullets: ["Everything in Business", "Custom volume and contract", "Single sign-on", "Dedicated support"],
         accent: "ink",
         isolatedSending: true,
     },
@@ -135,6 +135,15 @@ export const PLAN_CATALOG: Record<PlanID, PlanDef> = {
 export const WARMUP_PLAN_ID = "00000000-0000-0000-0000-000000000002";
 // The Partnership plan's server id (models.PartnershipPlanID); warming only, like the Warmup plan.
 export const PARTNERSHIP_PLAN_ID = "00000000-0000-0000-0000-000000000003";
+/** The private plan every workspace a reseller manages runs on: every feature, billed by the reseller. */
+export const MANAGED_PLAN_ID = "00000000-0000-0000-0000-0000000000c1";
+
+// Agency plans reach a client workspace as a managed grant. Neither is sold from the plans grid, so each
+// borrows the tier it matches for the dashboard's gates and keeps its own name on the plan pill.
+export const AGENCY_PLAN_TIERS: Record<string, { tier: PlanID; label: string }> = {
+    "00000000-0000-0000-0000-0000000000a1": { tier: "grow", label: "Agency" },
+    "00000000-0000-0000-0000-0000000000a2": { tier: "business", label: "Agency Pro" },
+};
 
 /** Plans that pay for warming only; the server refuses sending to them like a free workspace. */
 export function isWarmupOnlyPlan(id: PlanID): boolean {

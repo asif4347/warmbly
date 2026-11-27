@@ -4,7 +4,7 @@ import Icon from '../components/Icon.astro';
 import CTA from '../components/CTA.astro';
 import TopicFigure from '../components/scenes/faq/TopicFigure.astro';
 
-// Product answers follow CLAUDE.md and the docs; residency, SOC 2, DPA and
+// Product answers follow CLAUDE.md and the docs; residency, SOC 2 and
 // billing answers are the company's own statements.
 const groups = [
   {
@@ -13,7 +13,7 @@ const groups = [
       ['How long does warmup take?', 'Most new mailboxes need three to six weeks. Warmup starts at 10 emails a day and adds one a day up to 40, and inbox placement usually settles over the same stretch.'],
       ['Should warmup keep running once I start sending campaigns?', 'Yes. Warmup runs alongside cold sending, so a dip in reputation shows up and gets corrected before your campaigns feel it.'],
       ['What takes a mailbox out of the warmup pool?', 'A complaint rate of 0.10% or more, a bounce rate of 5% or more, or deleting and junking warmup mail it received. Landing in spam alone only slows warmup down until placement recovers.'],
-      ['Do the free and premium pools mix?', 'Only on proven terms. The free pool holds the mailboxes of workspaces that kept the free plan after it closed to new workspaces. A paying mailbox can borrow those that have been healthy members for at least three days, and a free mailbox only writes back to a paying inbox that wrote to it first.'],
+      ['Do the free and premium pools mix?', 'Only on proven terms. The free pool holds the mailboxes of workspaces in their free trial and of workspaces that kept the free plan after it closed to new workspaces. A paying mailbox can borrow those that have been healthy members for at least three days, and a free mailbox only writes back to a paying inbox that wrote to it first.'],
       ['Is self-hosting free?', 'Yes. Warmbly is Apache 2.0 and free to run, with unlimited mailboxes. Its warmup only pairs the mailboxes on your instance, with no shared pool, so it does far less for deliverability; self-hosted instances do not link to the Warmbly Cloud pool. If deliverability is what you need, use Warmbly Cloud. Self-hosting suits teams that want to own the whole stack. Warmbly does not support self-hosted instances; the community helps on Discord.'],
     ],
   },
@@ -37,19 +37,17 @@ const groups = [
   {
     id: 'security', title: 'Security and data',
     items: [
-      ['Where is my data stored?', 'In AWS, in us-east-1 by default and eu-west-1 on Grow and Business. Enterprise can choose its own residency. A self-hosted instance stores everything on your own servers.'],
+      ['Where is my data stored?', 'In AWS, in us-east-1. A self-hosted instance stores everything on your own servers.'],
       ['How are mailbox credentials stored?', 'Encrypted at rest with a dedicated credentials key, kept separate from the data key your workspace uses for message content and integration tokens. Plain keys are only ever held briefly in memory.'],
       ['Do you have SOC 2?', 'A SOC 2 Type II audit is in progress. We can share a bridge letter once the report is issued.'],
-      ['Do you sign DPAs?', 'Yes. Email team@warmbly.com and we turn it around within 48 hours.'],
     ],
   },
   {
     id: 'billing', title: 'Billing',
     items: [
-      ['Is there a free plan?', 'Not for new workspaces. Signing up and looking around is free, and connecting and warming mailboxes needs a paid plan, from $29 a month with unlimited mailboxes and warmup. Workspaces that already had the free plan keep it.'],
+      ['Is there a free trial?', 'Yes. The first workspace an owner creates gets 14 days free with no card: two mailboxes warming, 20 cold emails a day and the unified inbox. After it, mailboxes and warmup need a paid plan, from $29 a month with unlimited mailboxes and warmup. Workspaces that already had the free plan keep it.'],
       ['Do you charge per email?', 'No. Each plan includes a daily send budget. Unused volume doesn’t carry over.'],
       ['What is your refund policy?', 'A full refund within 14 days of a paid purchase if Warmbly didn’t work for you.'],
-      ['Do you have startup pricing?', '50% off Grow for a year for pre-seed and seed companies from YC, Antler, EF, Techstars and similar programmes.'],
     ],
   },
 ] as const;

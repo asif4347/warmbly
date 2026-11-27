@@ -12,6 +12,8 @@ export default interface Organization {
     permissions?: number
     // "restricted" reaches only the campaigns and mailboxes granted to the caller.
     access_scope?: "workspace" | "restricted"
+    // What a restricted caller may act with inside their grants (roles that act in scope); 0 is read-only.
+    scope_actions?: number
     created_at: Date
     // Org-wide team presence privacy (admin-controlled). When false, the
     // realtime service stops broadcasting that signal to teammates.
@@ -32,4 +34,18 @@ export default interface Organization {
     // New campaigns start their schedule in it; a mailbox with no timezone of
     // its own keeps its warmup hours and working hours in it.
     timezone?: string
+    // The agency this workspace is a client of, when it is one. can_leave is
+    // false when the workspace's owner also owns the agency.
+    agency?: { id: string; name: string; can_leave?: boolean }
+    // The reseller that manages and bills this workspace, when one does (GET /organization/current only).
+    partner?: PartnerManaged
+}
+
+export interface PartnerManaged {
+    // Shown as "Billed through <display_name>".
+    display_name: string
+    // suspended and cancelled leave the workspace read-only with sending and warmup paused.
+    state: "active" | "suspended" | "cancelled"
+    suspended_reason?: "billing" | "admin" | "reseller"
+    deletes_at?: string
 }

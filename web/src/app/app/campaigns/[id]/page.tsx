@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import useBrowseState from "@/hooks/useBrowseState";
 import { useAccessRestricted } from "@/hooks/usePermission";
 import { campaignPeriodSchema, hiddenMetricsSchema } from "@/lib/browse-contacts-campaigns";
@@ -13,13 +13,18 @@ import {
 } from "lucide-react";
 import { useCampaign } from "@/hooks/context/campaign";
 import useCampaignAnalytics from "@/lib/api/hooks/app/analytics/useCampaignAnalytics";
-import type { CampaignEngagementBreakdown, CampaignSummary, EngagementBucket } from "@/lib/api/models/app/analytics/CampaignAnalytics";
+import type { CampaignEngagementBreakdown, CampaignSocialStats, CampaignSummary, EngagementBucket } from "@/lib/api/models/app/analytics/CampaignAnalytics";
+import ChannelMark from "@/components/app/social/ChannelMark";
+import { CHANNELS, channelLabel } from "@/lib/social/channels";
 import useCampaignDailyStats from "@/lib/api/hooks/app/analytics/useCampaignDailyStats";
-import { SectionBar, Stat, StatStrip } from "@/components/layout/Page";
+import { SectionBar, StatStrip } from "@/components/layout/Page";
+import { TrendStat } from "@/components/ui/TrendStat";
+import { dailyPoints, utcDayRange } from "@/lib/trendPoints";
 import { MultiTrend, type TrendSeries } from "@/components/ui/charts";
 import { TONE_DOT } from "@/components/ui/tones";
 import type { DitherTone } from "@/components/ui/dither";
 import AnalyticsShareButton from "@/components/app/analytics/AnalyticsShareButton";
+import ShareCampaignReportButton from "@/components/app/reports/ShareCampaignReportButton";
 import TaskPreview from "@/components/app/campaigns/TaskPreview";
 import SendPlanCard from "@/components/app/campaigns/SendPlanCard";
 import DraftSetupCard from "@/components/app/campaigns/DraftSetupCard";
@@ -27,6 +32,7 @@ import CampaignFormsPanel from "@/components/app/campaigns/CampaignFormsPanel";
 import AnimatedNumber from "@/components/ui/AnimatedNumber";
 import AdvisorStrip from "@/components/app/advisor/AdvisorStrip";
 import CampaignPeriodPicker from "@/components/app/campaigns/CampaignPeriodPicker";
+import { trackedRate, trackedUnit } from "@/lib/trackedRate";
 import { formatWindow, loadCampaignPeriod, periodWindow, utcDay, utcToday, type CampaignPeriod, type DayWindow } from "@/lib/campaignPeriod";
 
 const AUTO_OPENS_TIP = "Auto-opens: pixel fetches from privacy proxies (e.g. Apple Mail) or within seconds of sending, not a person reading. Logged as delivery proof, not counted as opens";
@@ -106,6 +112,21 @@ export default function CampaignOverview() {
         return { labels: rows.map((d) => d.date), series };
     }, [daily.data, hiddenMetrics]);
 
+    // The strip's lines span the same days as the chart, quiet days included.
+    const chartFrom = chartWindow?.from;
+    const chartTo = chartWindow?.to;
+    const dayPoints = useMemo(() => {
+        const days = chartFrom && chartTo ? utcDayRange(chartFrom, chartTo) : [];
+        const rows = daily.data;
+        return {
+            sent: dailyPoints(days, rows, (d) => d.sent),
+            opens: dailyPoints(days, rows, (d) => d.opens),
+            clicks: dailyPoints(days, rows, (d) => d.clicks),
+            replies: dailyPoints(days, rows, (d) => d.replies),
+            positive: dailyPoints(days, rows, (d) => d.positive_replies),
+        };
+    }, [chartFrom, chartTo, daily.data]);
+
     // A previous period's figures kept on screen while the new one loads must
     // not sit under the new period's label or reach a share export.
     const loading =
@@ -117,12 +138,17 @@ export default function CampaignOverview() {
     const periodLabel = covered ? formatWindow(covered) : null;
 
     const shared = loading ? undefined : summary;
+    const openRate = trackedRate(summary?.open_rate, summary?.open_tracked_sent, summary?.emails_sent);
+    const clickRate = trackedRate(summary?.click_rate, summary?.click_tracked_sent, summary?.emails_sent);
     const shareData = {
         title: campaign?.name ?? "Campaign",
         subtitle: periodLabel ? `${allTime ? "All time, " : ""}${periodLabel}` : "Campaign",
         metrics: [
             { label: "Sent", value: shared ? num(shared.emails_sent) : "—", sub: "emails" },
-            { label: "Open rate", value: pct(shared?.open_rate) },
+            {
+                label: "Open rate",
+                value: shared && trackedRate(shared.open_rate, shared.open_tracked_sent, shared.emails_sent) == null ? "Off" : pct(shared?.open_rate),
+            },
             { label: "Reply rate", value: pct(shared?.reply_rate) },
             {
                 label: "Positive rate",
@@ -193,38 +219,62 @@ export default function CampaignOverview() {
                                 data={shareData}
                                 filename={`warmbly-${campaign.id}.png`}
                             />
+                            {!restricted && <ShareCampaignReportButton campaignId={campaign.id} campaignName={campaign.name} />}
                         </SectionBar>
                         <StatStrip cols={6}>
-                            <Stat
+                            <TrendStat
                                 label="Sent"
                                 value={loading ? "—" : <AnimatedNumber value={summary?.emails_sent ?? 0} />}
-                                sub="emails"
-                                accent={hasSends}
+                                unit="emails"
+                                points={loading ? undefined : dayPoints.sent}
+                                pending={loading}
+                                kind="area"
+                                tone="sky"
+                                format={(v) => `${v.toLocaleString()} sent`}
                             />
-                            <Stat
+                            <TrendStat
                                 label="Open rate"
-                                value={loading ? "—" : <AnimatedNumber value={summary?.open_rate ?? 0} format={pctFmt} />}
-                                sub="after delivery"
+                                value={loading ? "—" : openRate == null ? "Off" : <AnimatedNumber value={openRate} format={pctFmt} />}
+                                unit={trackedUnit(summary?.open_tracked_sent, summary?.emails_sent, "after delivery")}
+                                points={loading ? undefined : dayPoints.opens}
+                                pending={loading}
+                                tone="slate"
+                                format={(v) => `${v.toLocaleString()} opens`}
                             />
-                            <Stat
+                            <TrendStat
                                 label="Click rate"
-                                value={loading ? "—" : <AnimatedNumber value={summary?.click_rate ?? 0} format={pctFmt} />}
-                                sub="of delivered"
+                                value={loading ? "—" : clickRate == null ? "Off" : <AnimatedNumber value={clickRate} format={pctFmt} />}
+                                unit={trackedUnit(summary?.click_tracked_sent, summary?.emails_sent, "of delivered")}
+                                points={loading ? undefined : dayPoints.clicks}
+                                pending={loading}
+                                tone="slate"
+                                format={(v) => `${v.toLocaleString()} clicks`}
                             />
-                            <Stat
+                            <TrendStat
                                 label="Reply rate"
                                 value={loading ? "—" : <AnimatedNumber value={summary?.reply_rate ?? 0} format={pctFmt} />}
-                                sub="human replies"
+                                unit="human replies"
+                                points={loading ? undefined : dayPoints.replies}
+                                pending={loading}
+                                kind="bars"
+                                tone="slate"
+                                format={(v) => `${v.toLocaleString()} ${v === 1 ? "reply" : "replies"}`}
                             />
-                            <Stat
+                            <TrendStat
                                 label="Positive rate"
                                 value={loading ? "—" : <AnimatedNumber value={summary?.positive_reply_rate ?? 0} format={pctFmt} />}
-                                sub={loading ? undefined : `${num(summary?.interested_leads)} interested`}
+                                unit={loading ? undefined : `${num(summary?.interested_leads)} interested`}
+                                points={loading ? undefined : dayPoints.positive}
+                                pending={loading}
+                                kind="bars"
+                                tone="emerald"
+                                format={(v) => `${v.toLocaleString()} positive`}
                             />
-                            <Stat
+                            <TrendStat
                                 label="Bounce rate"
                                 value={loading ? "—" : <AnimatedNumber value={summary?.bounce_rate ?? 0} format={pctFmt} />}
-                                sub="hard + soft"
+                                unit="hard + soft"
+                                note={!loading && (summary?.bounce_rate ?? 0) >= 5 ? <span className="text-amber-700">high</span> : undefined}
                                 last
                             />
                         </StatStrip>
@@ -335,6 +385,7 @@ export default function CampaignOverview() {
                                             count={s.opens ?? 0}
                                             rate={s.open_rate}
                                             sent={s.emails_sent ?? 0}
+                                            tracked={s.open_tracked_sent}
                                             tone="text-emerald-600"
                                             auto={s.machine_opens}
                                             autoTip={AUTO_OPENS_TIP}
@@ -344,6 +395,7 @@ export default function CampaignOverview() {
                                             count={s.clicks ?? 0}
                                             rate={s.click_rate}
                                             sent={s.emails_sent ?? 0}
+                                            tracked={s.click_tracked_sent}
                                             tone="text-violet-600"
                                             auto={s.machine_clicks}
                                             autoTip={AUTO_CLICKS_TIP}
@@ -376,6 +428,8 @@ export default function CampaignOverview() {
                             </div>
                         )}
                     </div>
+
+                    {analytics.data?.social && <SocialResults stats={analytics.data.social} />}
 
                     <EngagementAudience breakdown={analytics.data?.engagement ?? null} loading={loading} scoped={!allTime} />
 
@@ -442,6 +496,54 @@ export default function CampaignOverview() {
     );
 }
 
+function SocialResults({ stats }: { stats: CampaignSocialStats }) {
+    // Taken from the counts, so the rate always agrees with the numbers beside it.
+    const rate = stats.invites_sent > 0 ? (stats.invites_accepted / stats.invites_sent) * 100 : null;
+    const cells: { label: string; value: ReactNode }[] = [
+        { label: "Invites sent", value: <AnimatedNumber value={stats.invites_sent} /> },
+        { label: "Accepted", value: <AnimatedNumber value={stats.invites_accepted} /> },
+        { label: "Acceptance", value: rate == null ? "-" : <AnimatedNumber value={rate} format={pctFmt} /> },
+        { label: "Messages", value: <AnimatedNumber value={stats.messages_sent} /> },
+        { label: "InMails", value: <AnimatedNumber value={stats.inmails_sent} /> },
+        { label: "Replies", value: <AnimatedNumber value={stats.replies} /> },
+    ];
+    if (stats.voice_notes_sent) cells.splice(5, 0, { label: "Voice notes", value: <AnimatedNumber value={stats.voice_notes_sent} /> });
+    const byChannel = stats.by_channel ?? {};
+    const channels = [...CHANNELS.filter((c) => byChannel[c]), ...Object.keys(byChannel).filter((c) => !(CHANNELS as readonly string[]).includes(c))];
+    return (
+        <div className="rounded-md border border-slate-200 overflow-hidden bg-white">
+            <SectionBar label="Social">
+                <span className="ml-auto inline-flex items-center gap-1">
+                    {channels.map((c) => (
+                        <ChannelMark key={c} channel={c} className="size-3.5" />
+                    ))}
+                </span>
+            </SectionBar>
+            <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-px bg-slate-200/60">
+                {cells.map((c) => (
+                    <div key={c.label} className="bg-white px-5 py-3">
+                        <dt className="text-[10px] uppercase tracking-[0.12em] text-slate-400 font-medium">{c.label}</dt>
+                        <dd className="mt-0.5 font-mono text-[15px] text-slate-900 tabular-nums">{c.value}</dd>
+                    </div>
+                ))}
+            </dl>
+            {channels.length > 1 && (
+                <ul className="divide-y divide-slate-100 border-t border-slate-200">
+                    {channels.map((c) => (
+                        <li key={c} className="flex items-center gap-2 px-5 py-2 text-[12px]">
+                            <ChannelMark channel={c} className="size-3.5" />
+                            <span className="text-slate-700">{channelLabel(c)}</span>
+                            <span className="ml-auto font-mono tabular-nums text-slate-500">
+                                {byChannel[c].actions_sent.toLocaleString()} sent · {byChannel[c].replies.toLocaleString()} {byChannel[c].replies === 1 ? "reply" : "replies"}
+                            </span>
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+}
+
 // One step-performance cell: the count, and under it the same number as a
 // share of that step's own sends, which is what makes two steps comparable
 // when a follow-up reached far fewer contacts than the first touch.
@@ -450,6 +552,7 @@ function StepMetric({
     count,
     rate,
     sent,
+    tracked,
     tone,
     auto,
     autoTip,
@@ -459,17 +562,26 @@ function StepMetric({
     count: number;
     rate: number | undefined;
     sent: number;
+    // The sends that could register this metric, when it needs tracking.
+    tracked?: number;
     tone: string;
     auto?: number;
     autoTip?: string;
     desktopOnly?: boolean;
 }) {
-    // A step that has not sent has no rate, and 0.0% would read as a result.
-    const share = sent > 0 ? `${(rate ?? 0).toFixed(1)}%` : "—";
+    // A step that has not sent has no rate, and neither has one sent with
+    // tracking off: 0.0% would read as a result.
+    const off = sent > 0 && tracked === 0;
+    const base = tracked ?? sent;
+    const share = off ? "off" : sent > 0 ? `${(rate ?? 0).toFixed(1)}%` : "—";
     const flagged = !!auto && !!autoTip;
     const title = [
         `${label}: ${count.toLocaleString()}`,
-        sent > 0 ? `${share} of ${sent.toLocaleString()} sent` : "nothing sent yet",
+        off
+            ? "not tracked: tracking was off for this step's sends"
+            : sent > 0
+              ? `${share} of ${base.toLocaleString()} ${base < sent ? "tracked sends" : "sent"}`
+              : "nothing sent yet",
         flagged ? `${auto} automated. ${autoTip}` : null,
     ]
         .filter(Boolean)

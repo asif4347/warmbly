@@ -2,21 +2,55 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	"github.com/warmbly/warmbly/internal/app/idempotency"
 	"github.com/warmbly/warmbly/internal/errx"
+	"github.com/warmbly/warmbly/internal/models"
 )
 
 const (
 	IdempotencyKeyHeader      = "Idempotency-Key"
 	IdempotencyReplayedHeader = "X-Idempotent-Replayed"
 )
+
+// routeAgencyID is the agency an agency route names; the handler behind it still checks the caller belongs to it.
+func routeAgencyID(c *gin.Context) *uuid.UUID {
+	id, err := uuid.Parse(c.Param("agencyId"))
+	if err != nil {
+		return nil
+	}
+	return &id
+}
+
+// AgencyMembers reads one staff row; satisfied by repository.AgencyRepository.
+type AgencyMembers interface {
+	GetMember(ctx context.Context, agencyID, userID uuid.UUID) (*models.AgencyMember, error)
+}
+
+// onAgencyStaff reports whether a session caller is on the staff of the agency its route names.
+// Routes that name no agency, and agency keys (held to their agency elsewhere), pass.
+func (h *Handler) onAgencyStaff(c *gin.Context) (bool, error) {
+	agencyID := routeAgencyID(c)
+	if agencyID == nil || h.AgencyMembers == nil || GetAgencyKeyAgencyID(c) != nil {
+		return true, nil
+	}
+	userID, err := GetUserUUID(c)
+	if err != nil {
+		return false, nil
+	}
+	m, err := h.AgencyMembers.GetMember(c.Request.Context(), *agencyID, userID)
+	return m != nil, err
+}
 
 // IdempotencyMiddleware implements Stripe-style retry safety for mutating API
 // requests. It is opt-in per request via Idempotency-Key and scoped by
@@ -39,8 +73,27 @@ func (h *Handler) IdempotencyMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		orgID := GetOrganizationID(c)
-		if orgID == nil {
+		// An agency's recorded answers are for its staff: checked before a key is claimed or replayed.
+		if staff, err := h.onAgencyStaff(c); err != nil {
+			errx.Handle(c, errx.InternalError())
+			c.Abort()
+			return
+		} else if !staff {
+			errx.Handle(c, errx.NewWithIdentifier(errx.NotFound, "agency_not_found", "That agency does not exist or you are not part of it."))
+			c.Abort()
+			return
+		}
+
+		var scope idempotency.Scope
+		switch orgID, agencyID := GetOrganizationID(c), GetAgencyKeyAgencyID(c); {
+		case orgID != nil:
+			scope = idempotency.OrgScope(*orgID)
+		case agencyID != nil:
+			scope = idempotency.AgencyScope(*agencyID)
+		case routeAgencyID(c) != nil:
+			// Agency staff with no workspace selected: the agency the route names is the scope.
+			scope = idempotency.AgencyScope(*routeAgencyID(c))
+		default:
 			errx.Handle(c, errx.New(errx.BadRequest, "Idempotency-Key requires an organization context"))
 			c.Abort()
 			return
@@ -53,12 +106,10 @@ func (h *Handler) IdempotencyMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		path := c.FullPath()
-		if path == "" {
-			path = c.Request.URL.Path
-		}
-		requestHash := hashRequest(c.Request.Method, path, c.Request.URL.RawQuery, body)
-		record, state, xerr := h.IdempotencyService.Begin(c.Request.Context(), *orgID, key, c.Request.Method, path, requestHash)
+		// A key belongs to one concrete resource, so identity uses the request path.
+		path := c.Request.URL.Path
+		requestHash := hashRequest(idempotencyPrincipal(c), c.Request.Method, path, c.Request.URL.RawQuery, body)
+		record, state, xerr := h.IdempotencyService.Begin(c.Request.Context(), scope, key, c.Request.Method, path, requestHash)
 		if xerr != nil {
 			errx.Handle(c, xerr)
 			c.Abort()
@@ -82,19 +133,97 @@ func (h *Handler) IdempotencyMiddleware() gin.HandlerFunc {
 			errx.Handle(c, errx.New(errx.Conflict, "Idempotency-Key was already used with a different request"))
 			c.Abort()
 			return
+		case idempotency.StateUncertain:
+			errx.Handle(c, errx.NewWithIdentifier(errx.Conflict, "idempotency_outcome_unknown",
+				"The request with this Idempotency-Key ended without a definite outcome. Retry with a new key only once you know the change did not happen."))
+			c.Abort()
+			return
 		}
 
 		capture := &captureResponseWriter{ResponseWriter: c.Writer}
 		c.Writer = capture
+		finished := false
+		defer func() {
+			if finished {
+				return
+			}
+			// A panic unwinds past the handler with its side effect unknown.
+			p := recover()
+			h.finishIdempotent(c, record.ID, outcomeUncertain, http.StatusInternalServerError, capture)
+			if p != nil {
+				panic(p)
+			}
+		}()
 		c.Next()
+		finished = true
 
 		status := capture.Status()
-		if status == 0 {
-			status = http.StatusOK
-		}
-		contentType := capture.Header().Get("Content-Type")
-		_ = h.IdempotencyService.Complete(c.Request.Context(), record.ID, status, capture.body.Bytes(), contentType)
+		h.finishIdempotent(c, record.ID, classifyOutcome(status), status, capture)
 	}
+}
+
+type idempotentOutcome int
+
+const (
+	outcomeDefinite idempotentOutcome = iota
+	outcomeRefused
+	outcomeUncertain
+)
+
+// classifyOutcome sorts a finished request: refused before it ran frees the key,
+// a server error or an abandoned request is uncertain, anything else is replayed.
+func classifyOutcome(status int) idempotentOutcome {
+	switch {
+	case status == http.StatusUnauthorized, status == http.StatusForbidden, status == http.StatusTooManyRequests:
+		return outcomeRefused
+	case status >= http.StatusInternalServerError, status == errx.StatusClientClosedRequest:
+		return outcomeUncertain
+	default:
+		return outcomeDefinite
+	}
+}
+
+// idempotencyFinishTimeout bounds the write that records how a request ended.
+const idempotencyFinishTimeout = 5 * time.Second
+
+// finishIdempotent records the outcome on a context detached from the request,
+// so a client that hangs up after the side effect still leaves it recorded.
+func (h *Handler) finishIdempotent(c *gin.Context, recordID uuid.UUID, outcome idempotentOutcome, status int, capture *captureResponseWriter) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), idempotencyFinishTimeout)
+	defer cancel()
+	var xerr *errx.Error
+	switch outcome {
+	case outcomeRefused:
+		xerr = h.IdempotencyService.Release(ctx, recordID)
+	case outcomeUncertain:
+		xerr = h.IdempotencyService.MarkUncertain(ctx, recordID, status)
+	default:
+		xerr = h.IdempotencyService.Complete(ctx, recordID, status, capture.body.Bytes(), capture.Header().Get("Content-Type"))
+	}
+	if xerr != nil {
+		log.Error().Str("request_id", c.GetString(RequestIDContextKey)).Str("idempotency_record", recordID.String()).
+			Msg("idempotency: could not record how the request ended; a retry with the same key reports it as still processing")
+	}
+}
+
+// idempotencyPrincipal names the credential a key belongs to, so one caller
+// never receives another's stored answer.
+func idempotencyPrincipal(c *gin.Context) string {
+	switch GetAuthType(c) {
+	case AuthTypeAPIKey:
+		if id := GetAPIKeyID(c); id != nil {
+			return "api_key:" + id.String()
+		}
+	case AuthTypeOAuth:
+		// A grant keeps its id across refreshes, and each grant holds its own scopes.
+		if grant := GetOAuthGrantID(c); grant != nil {
+			return "oauth_grant:" + grant.String()
+		}
+		if app := GetOAuthApplicationID(c); app != nil {
+			return "oauth:" + app.String() + ":" + GetUserID(c)
+		}
+	}
+	return "user:" + GetUserID(c)
 }
 
 func isIdempotentMethod(method string) bool {
@@ -130,8 +259,16 @@ func readAndRestoreBody(c *gin.Context) ([]byte, error) {
 	return body, nil
 }
 
-func hashRequest(method, path, rawQuery string, body []byte) string {
+// idempotencyHashVersion keeps every hash distinct from those written without a
+// principal, so an older record can only ever read as a different request.
+const idempotencyHashVersion = "v2"
+
+func hashRequest(principal, method, path, rawQuery string, body []byte) string {
 	h := sha256.New()
+	h.Write([]byte(idempotencyHashVersion))
+	h.Write([]byte{0})
+	h.Write([]byte(principal))
+	h.Write([]byte{0})
 	h.Write([]byte(method))
 	h.Write([]byte{0})
 	h.Write([]byte(path))

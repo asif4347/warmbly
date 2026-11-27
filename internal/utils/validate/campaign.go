@@ -104,6 +104,14 @@ func CampaignRotationMode(s string) *errx.Error {
 	return errx.ErrInvalid
 }
 
+// CampaignFollowUpSender validates which mailbox a lead's follow-ups use.
+func CampaignFollowUpSender(s string) *errx.Error {
+	if !models.FollowUpSender(s).Valid() {
+		return errx.New(errx.BadRequest, "follow_up_sender must be one of same, same_domain, rotate")
+	}
+	return nil
+}
+
 func CampaignSenderWeight(w int) *errx.Error {
 	if w < 1 || w > 100 {
 		return errx.New(errx.BadRequest, "sender weight must be between 1 and 100")
@@ -184,6 +192,13 @@ func CampaignUTMValue(v string) *errx.Error {
 		if r < 0x20 || r == 0x7f {
 			return errx.New(errx.BadRequest, "utm values cannot contain control characters")
 		}
+	}
+	return nil
+}
+
+func CampaignTimezoneMode(s string) *errx.Error {
+	if !models.TimezoneMode(s).Valid() {
+		return errx.New(errx.BadRequest, "timezone_mode must be one of campaign, recipient")
 	}
 	return nil
 }

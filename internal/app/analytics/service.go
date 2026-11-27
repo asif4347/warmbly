@@ -52,6 +52,8 @@ type AnalyticsService interface {
 	GetDirectMailAnalytics(ctx context.Context, orgID uuid.UUID, period string) (*models.DirectMailAnalytics, *errx.Error)
 	GetCampaignHourlyStats(ctx context.Context, orgID, campaignID uuid.UUID, date time.Time) ([]models.CampaignHourlyStats, *errx.Error)
 	CompareCampaigns(ctx context.Context, orgID uuid.UUID, campaignIDs []uuid.UUID, from, to time.Time) (*models.CampaignComparison, *errx.Error)
+	// GetClientReportAnalytics reads a client report's numbers with the dashboard's queries, reading only the sections q asks for.
+	GetClientReportAnalytics(ctx context.Context, orgID uuid.UUID, q models.ClientReportQuery) (*models.ClientReportAnalytics, *errx.Error)
 }
 
 type analyticsService struct {
@@ -105,12 +107,16 @@ func (s *analyticsService) GetWarmupAnalytics(ctx context.Context, orgID uuid.UU
 	}
 
 	// Calculate summary
-	var totalSent, totalReplied, totalReceived, totalTarget, daysActive int
+	var totalSent, totalReplied, totalReceived, totalTarget, plannedSent, daysActive int
 	for _, day := range dailyStats {
 		totalSent += day.EmailsSent
 		totalReplied += day.EmailsReplied
 		totalReceived += day.EmailsReceived
 		totalTarget += day.TargetVolume
+		// A day with no recorded plan says nothing about meeting one.
+		if day.TargetVolume > 0 {
+			plannedSent += day.EmailsSent
+		}
 		if day.Active {
 			daysActive++
 		}
@@ -123,7 +129,7 @@ func (s *analyticsService) GetWarmupAnalytics(ctx context.Context, orgID uuid.UU
 		replyRate = float64(totalReplied) / float64(totalSent) * 100
 	}
 	if totalTarget > 0 {
-		targetProgress = float64(totalSent) / float64(totalTarget) * 100
+		targetProgress = float64(plannedSent) / float64(totalTarget) * 100
 	}
 
 	analytics := &models.WarmupAnalytics{
@@ -401,7 +407,7 @@ func (s *analyticsService) assembleAccountStatus(ctx context.Context, email *mod
 			if errs[i].Operation == models.MailTransportSync || (errs[i].ErrorCode != string(errx.MailErrorCodeServerUnreachable) && errs[i].ErrorCode != string(errx.MailErrorCodeConnectionLost)) {
 				continue
 			}
-			action := sendRecoveryHoldMessage(hold)
+			action := sendRecoveryHoldMessage(hold, models.InboxProvider(email.Provider))
 			errs[i].ActionRequired = &action
 		}
 	}
@@ -420,11 +426,11 @@ func (s *analyticsService) assembleAccountStatus(ctx context.Context, email *mod
 		if health.Status == "healthy" {
 			health.Status = "warning"
 		}
-		health.Issues = append(health.Issues, sendRecoveryHoldMessage(hold))
+		health.Issues = append(health.Issues, sendRecoveryHoldMessage(hold, models.InboxProvider(email.Provider)))
 	} else if held {
 		health.Status = "error"
 		health.Score = min(health.Score, 50)
-		health.Issues = append(health.Issues, sendRecoveryHoldMessage(hold))
+		health.Issues = append(health.Issues, sendRecoveryHoldMessage(hold, models.InboxProvider(email.Provider)))
 	} else if reads.sendHoldsUnavailable {
 		if health.Status == "healthy" {
 			health.Status = "warning"
@@ -469,6 +475,10 @@ func (s *analyticsService) assembleAccountStatus(ctx context.Context, email *mod
 		holdReason = hold.Reason
 	}
 	lifecycle := sendLifecycleNotice(reads.lifecycles, email.ID)
+	var sendPause *models.SendPauseInfo
+	if p, ok := reads.sendPauses[email.ID]; ok {
+		sendPause = &p
+	}
 
 	return &models.EmailAccountStatus{
 		ID:                 email.ID,
@@ -486,10 +496,11 @@ func (s *analyticsService) assembleAccountStatus(ctx context.Context, email *mod
 		ColdRamp:           coldRamp,
 		SendLifecycle:      lifecycle,
 		SendRecoveryReason: holdReason,
+		SendPause:          sendPause,
 	}
 }
 
-func sendRecoveryHoldMessage(hold repository.SendRecoveryHold) string {
+func sendRecoveryHoldMessage(hold repository.SendRecoveryHold, provider models.InboxProvider) string {
 	switch hold.Reason {
 	case "unknown":
 		if hold.Campaign {
@@ -501,6 +512,13 @@ func sendRecoveryHoldMessage(hold repository.SendRecoveryHold) string {
 		return "Sending is briefly paused because Warmbly cannot yet tell whether an earlier email went out. That email is never retried, so nothing is sent twice. The pause clears on its own, usually within 30 minutes, even if that email's outcome stays unknown. No action is needed."
 	case "authentication":
 		return "Sending is paused because the mail server refused this mailbox's login when it last sent. Reconnect the mailbox (re-authorize it, or enter its current password or app password); once the server accepts the login, sending resumes unless another send safety hold is still pending."
+	case "permanent":
+		if provider == models.InboxProviderGoogle || provider == models.InboxProviderOutlook {
+			return "Sending is paused because the provider refused this mailbox when it last sent, for example while the account or workspace was suspended. Once the mailbox syncs again, Warmbly resumes sending on its own, usually within minutes. If the provider refused the last attempt to resume, the next one waits up to 6 hours. Reconnecting the mailbox resumes sending sooner. The refused email was not sent, so nothing is sent twice."
+		}
+		return "Sending is paused because the mail server refused this mailbox when it last sent. Fix the account with your mail provider, then choose Resume sending (or reconnect the mailbox). Warmbly also tries one send on its own after 3 hours, then waits longer after each refusal, up to a day. The refused email was not sent, so nothing is sent twice."
+	case "domain_auth":
+		return "Sending is paused because a receiving mail server refused this mailbox's mail: the sending domain failed its SPF, DKIM or DMARC check. Fix the domain's DNS records, then choose Resume sending; a domain whose check was failing also resumes on its own once it passes. Reconnecting the mailbox does not fix this. The refused email was not sent, so nothing is sent twice."
 	default:
 		return "Sending is paused by a send safety hold. Resolve the held send before this mailbox can send again."
 	}

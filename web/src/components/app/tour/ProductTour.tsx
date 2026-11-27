@@ -67,9 +67,9 @@ export default function ProductTour() {
     const preview = useMemo(billingPreview, []);
     const access =
         preview === "free"
-            ? { ...real, billing: true, paid: false, warmupOnly: false, locked: true, isOwner: true }
+            ? { ...real, billing: true, paid: false, warmupOnly: false, partnership: false, locked: true, isOwner: true }
             : preview === "paid"
-              ? { ...real, billing: true, paid: true, warmupOnly: false, locked: false, isOwner: true, plan: "grow" as const }
+              ? { ...real, billing: true, paid: true, warmupOnly: false, partnership: false, locked: false, isOwner: true, plan: "grow" as const }
               : real;
     const upgrade = useUpgradeDialog();
     const flow = useUpgradeFlow();
@@ -235,7 +235,7 @@ export default function ProductTour() {
               lead: jumped ? "Before you go." : "Your plan.",
               title: `You're on ${planName}.`,
               body: productPaid
-                  ? "Everything in this tour is already on for your workspace. Need more sending or AI credits? Change plan any time, and the difference is prorated."
+                  ? "Everything in this tour is already on for your workspace. Need more sending or AI usage? Change plan any time, and the difference is prorated."
                   : "Your mailboxes warm in the premium pool. Choose a plan to start sending and to turn on the inbox, the CRM, automations and Remie.",
           };
     const choosePlan = async (id: PlanID) => {
@@ -244,12 +244,12 @@ export default function ProductTour() {
             return;
         }
         if (id === "enterprise") {
-            act("choose_plan", () => upgrade.open({ feature: "Enterprise", minPlan: "enterprise" }));
+            act("choose_plan", () => upgrade.open({ feature: "Enterprise", title: "Choose a plan", minPlan: "enterprise" }));
             return;
         }
         const outcome = await flow.upgrade(id, { interval: billingInterval, returnTo: window.location.pathname + window.location.search });
         if (outcome === "redirect" || outcome === "changed" || outcome === "portal") finish("choose_plan");
-        else if (outcome === "contact") act("choose_plan", () => upgrade.open({ feature: "Enterprise", minPlan: "enterprise" }));
+        else if (outcome === "contact") act("choose_plan", () => upgrade.open({ feature: "Enterprise", title: "Choose a plan", minPlan: "enterprise" }));
     };
     const mailboxAction = canMailboxes
         ? { label: "Connect a mailbox", outcome: "add_mailbox" as Outcome, run: () => profile.setAddEmail(true) }
@@ -414,6 +414,8 @@ export default function ProductTour() {
                                                 note={
                                                     access.paid
                                                         ? undefined
+                                                        : access.trial
+                                                        ? "Your trial warms up to 2 mailboxes in the free pool and sends 20 a day. Every paid plan warms them in the premium pool."
                                                         : access.keptFreeWarmup
                                                         ? "Only warming for now? Your free plan keeps up to 10 mailboxes warming. Every paid plan puts them in the premium pool."
                                                         : "Mailboxes and warmup start with a plan. Every paid plan warms them in the premium pool."

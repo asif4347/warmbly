@@ -32,12 +32,13 @@ func withPaging(extra ...flagSpec) []flagSpec {
 
 func resourceSpecs() []resource {
 	out := []resource{}
-	out = append(out, campaignSpec(), contactSpec(), suppressionSpec(), mailboxSpec(), inboxSpec())
+	out = append(out, campaignSpec(), contactSpec(), suppressionSpec(), mailboxSpec(), inboxSpec(), storeSpec())
 	out = append(out, segmentSpec(), templateSpec(), automationSpec(), formSpec())
 	out = append(out, dealSpec(), pipelineSpec(), taskSpec())
 	out = append(out, analyticsSpec(), placementSpec(), auditSpec(), advisorSpec())
 	out = append(out, webhookSpec(), keySpec(), oauthAppSpec(), toolSpec())
 	out = append(out, orgSpec(), teamSpec(), settingsSpec(), warmupRoutingSpec(), integrationSpec())
+	out = append(out, migrationSpec(), agencySpec())
 	return out
 }
 
@@ -245,6 +246,14 @@ ask before they do it.`,
 				Long: `Work out how many emails the campaign sends today through the
 scheduler's own gates, and list every limit that took the number below what the
 mailbox caps add up to. Nothing is sent or written.`,
+			},
+			{
+				Name: "timezones", Aliases: []string{"lead-timezones"}, Short: "Where the campaign's leads are, by timezone",
+				Method: http.MethodGet, Path: "/campaigns/{id}/lead-timezones",
+				Args: []argSpec{{Name: "id", Help: "The campaign's id"}},
+				Long: `Count the campaign's leads by the timezone their records resolve to, with
+the leads nothing places, so a schedule read in each lead's own time can be
+checked before launch. Nothing is sent or written.`,
 			},
 			{
 				Name: "preflight", Short: "Run the pre-send checks without sending",
@@ -1587,7 +1596,8 @@ func placementSpec() resource {
 		{Name: "seed", Help: "Only this seed inbox's id, with --panel workspace (repeatable)", Kind: flagStrings, Key: "seed_ids"},
 		{Name: "provider", Help: "Only seeds at this provider, e.g. gmail or outlook (repeatable)", Kind: flagStrings, Key: "families"},
 		{Name: "on-unavailable", Help: "defer (retry a mailbox that cannot send yet, the default) or skip", Key: "on_unavailable"},
-		{Name: "max-credits", Help: "Pay up to this many credits in total for tests past this month's free ones", Kind: flagInt, Key: "max_credits"},
+		{Name: "max-usd", Help: "Pay up to this many dollars in total for tests past this month's free ones", Kind: flagFloat, Key: "max_usd"},
+		{Name: "max-credits", Help: "Older form of --max-usd, counted in credits", Kind: flagInt, Key: "max_credits"},
 	}
 	return resource{
 		Name:    "placement",
@@ -1631,7 +1641,8 @@ mailboxes, a few at a time.`,
 					{Name: "seed", Help: "Only this seed inbox's id, with --panel workspace (repeatable)", Kind: flagStrings, Key: "seed_ids"},
 					{Name: "provider", Help: "Only seeds at this provider, e.g. gmail or outlook (repeatable)", Kind: flagStrings, Key: "families"},
 					{Name: "pace", Help: "spaced (about a minute apart) or quick (a few seconds apart)", Key: "pace"},
-					{Name: "max-credits", Help: "Pay up to this many credits when this month's free tests are used up", Kind: flagInt, Key: "max_credits"},
+					{Name: "max-usd", Help: "Pay up to this many dollars when this month's free tests are used up", Kind: flagFloat, Key: "max_usd"},
+					{Name: "max-credits", Help: "Older form of --max-usd, counted in credits", Kind: flagInt, Key: "max_credits"},
 				},
 				Table: testTable,
 			},
@@ -2360,5 +2371,473 @@ connection stays in the dashboard. Everything after that is here.`,
 				Success: "Integration disconnected.",
 			},
 		},
+	}
+}
+
+// migrationEndpoints is the migration command set; base is /migrations or an
+// agency's, and lead is the positional arguments the base needs.
+func migrationEndpoints(base string, lead []argSpec, agency bool) []endpoint {
+	withLead := func(extra ...argSpec) []argSpec { return append(append([]argSpec{}, lead...), extra...) }
+	id := argSpec{Name: "id", Help: "The migration's id"}
+	show := output.Table{Columns: []output.Column{
+		col("ID", "id"), col("PROVIDER", "provider"), colt("LABEL", "label", 30), col("STATUS", "status"),
+		colf("STARTED", "started_at", "time"), colf("FINISHED", "finished_at", "time"),
+	}}
+	createExample := "  $ printf '{\"provider\":\"smartlead\",\"credentials\":[{\"api_key\":\"%s\"}]}' \"$SMARTLEAD_API_KEY\" \\\n      | warmbly migration create --input -\n  $ warmbly migration create --input @smartlead.json"
+	startExample := "  $ warmbly migration start MIG --kinds blocklist,campaigns,leads --in-flight continue"
+	startLong := `Start a scanned migration (status ready). Choose what to bring over and how
+leads part way through a sequence are treated.
+
+Imported campaigns arrive as drafts and are never launched.`
+	if agency {
+		createExample = "  $ warmbly agency migration create AGENCY --input @smartlead.json"
+		startExample = "  $ warmbly agency migration start AGENCY MIG --input @targets.json"
+		startLong += `
+
+An agency maps every scanned source workspace onto a client in "targets":
+{"options":{...},"targets":[{"workspace_id":"...","key":0,"organization_id":"..."},
+{"workspace_id":"...","key":0,"create_name":"Acme"},{"workspace_id":"...","skip":true}]}.
+Creating a client needs AGENCY_MANAGE_CLIENTS as well as AGENCY_MIGRATE.`
+	}
+	return []endpoint{
+		{
+			Name: "providers", Short: "List the tools Warmbly migrates from and the credentials each needs",
+			Method: http.MethodGet, Path: base + "/providers", Args: withLead(),
+			Table: output.Table{Root: "data", Columns: []output.Column{
+				col("ID", "id"), col("NAME", "label"), col("WORKSPACES", "workspaces"), col("KEY PER WORKSPACE", "multi_key"), col("MAILBOX PASSWORDS", "mailbox_secrets"),
+			}},
+		},
+		{
+			Name: "list", Aliases: []string{"ls"}, Short: "List migrations, newest first",
+			Method: http.MethodGet, Path: base, Args: withLead(), Paginate: true, Flag: withPaging(),
+			Table: output.Table{Root: "data", Columns: []output.Column{
+				col("ID", "id"), col("PROVIDER", "provider"), colt("LABEL", "label", 30), col("STATUS", "status"), colf("CREATED", "created_at", "time"),
+			}, Empty: "No migrations yet."},
+		},
+		{
+			Name: "view", Aliases: []string{"get", "show"}, Short: "Show a migration: inventory, progress and follow-up",
+			Method: http.MethodGet, Path: base + "/{id}", Args: withLead(id), Table: show,
+		},
+		{
+			Name: "create", Short: "Connect another tool by its API key and scan what it holds",
+			Long: `Check the key and scan the source account. Nothing is imported until
+` + "`start`" + `.
+
+The body is {"provider":"smartlead","label":"...","credentials":[{"api_key":"..."}]},
+one credentials object per key, keyed by the fields ` + "`providers`" + ` lists. Pipe
+it in or read it from a file so the key stays out of your shell history. The
+server seals it and never returns it.`,
+			Method: http.MethodPost, Path: base, Args: withLead(), Body: bodyRequired, Idempotent: true,
+			Example: createExample,
+			Table:   show,
+		},
+		{
+			Name: "start", Short: "Start a scanned migration",
+			Long:   startLong,
+			Method: http.MethodPost, Path: base + "/{id}/start", Args: withLead(id), Body: bodyOptional,
+			Example: startExample,
+			Flag: []flagSpec{
+				{Name: "kinds", Help: "What to bring over: blocklist, mailboxes, campaigns, leads", Kind: flagStrings, Key: "options[kinds]"},
+				{Name: "campaign-ids", Help: "Only these source campaign ids", Kind: flagStrings, Key: "options[campaign_ids]"},
+				{Name: "in-flight", Help: "Leads mid-sequence: skip (default) or restart", Key: "options[in_flight]"},
+				{Name: "skip-finished", Help: "Leave out completed or archived campaigns", Kind: flagBool, Key: "options[skip_finished]"},
+				{Name: "warmup", Help: "Start warmup on mailboxes that connect", Kind: flagBool, Key: "options[warmup]"},
+			},
+			Table: show,
+		},
+		{
+			Name: "cancel", Short: "Cancel a migration and wipe its stored keys",
+			Method: http.MethodPost, Path: base + "/{id}/cancel", Args: withLead(id), Table: show,
+		},
+		{
+			Name: "link-senders", Short: "Link draft campaigns to sender mailboxes connected since",
+			Method: http.MethodPost, Path: base + "/{id}/link-senders", Args: withLead(id), Table: show,
+		},
+		{
+			Name: "delete", Aliases: []string{"rm", "dismiss"}, Short: "Remove a finished migration from the list",
+			Method: http.MethodDelete, Path: base + "/{id}", Args: withLead(id),
+			Success: "Migration removed.",
+		},
+	}
+}
+
+func migrationSpec() resource {
+	return resource{
+		Name:    "migration",
+		Aliases: []string{"migrations", "migrate"},
+		Short:   "Migrate in from another outreach tool",
+		Group:   groupData,
+		Long: `Bring a workspace over from Smartlead, Instantly, lemlist and other tools:
+the blocklist, mailboxes, campaigns and leads.
+
+Create a migration with the tool's API key, look at what the scan found, then
+start it. Imported campaigns arrive as drafts and are never launched.`,
+		Endpoints: migrationEndpoints("/migrations", nil, false),
+	}
+}
+
+func agencySpec() resource {
+	agencyArg := []argSpec{{Name: "agency", Help: "The agency's id, from `warmbly agency list`"}}
+	return resource{
+		Name:    "agency",
+		Aliases: []string{"agencies"},
+		Short:   "Agencies: clients, the agency home and migrations into clients",
+		Group:   groupData,
+		Long: `Work across an agency's client workspaces with an agency API key
+(wmagency_...) in WARMBLY_TOKEN, or a signed-in session.
+
+To run any other command inside one client, add --organization <client id>
+(or set WARMBLY_ORGANIZATION).`,
+		Endpoints: []endpoint{
+			{
+				Name: "list", Aliases: []string{"ls"}, Short: "List your agencies",
+				Method: http.MethodGet, Path: "/agency",
+				Table: output.Table{Root: "data", Columns: []output.Column{col("ID", "id"), colt("NAME", "name", 40), col("STATUS", "status")}, Empty: "You are not part of an agency."},
+			},
+			{
+				Name: "view", Aliases: []string{"get", "show"}, Short: "Show one agency",
+				Method: http.MethodGet, Path: "/agency/{agency}", Args: agencyArg,
+			},
+			{
+				Name: "overview", Short: "Every client at a glance, problems first",
+				Method: http.MethodGet, Path: "/agency/{agency}/overview", Args: agencyArg,
+			},
+			{
+				Name: "usage", Short: "The shared send pool and what each client used",
+				Method: http.MethodGet, Path: "/agency/{agency}/usage", Args: agencyArg,
+			},
+			{
+				Name: "mailboxes", Short: "Mailboxes across client workspaces",
+				Method: http.MethodGet, Path: "/agency/{agency}/mailboxes", Args: agencyArg,
+				Flag: withPaging(
+					flagSpec{Name: "client", Help: "Only these client workspace ids", Kind: flagStrings, Query: true},
+					flagSpec{Name: "query", Short: "q", Help: "Search addresses", Query: true, Key: "q"},
+					flagSpec{Name: "attention", Help: "Only mailboxes that need attention", Kind: flagBool, Query: true},
+				),
+			},
+		},
+		Children: []resource{
+			{
+				Name:    "clients",
+				Aliases: []string{"client"},
+				Short:   "The agency's client workspaces",
+				Endpoints: []endpoint{
+					{
+						Name: "list", Aliases: []string{"ls"}, Short: "List client workspaces",
+						Method: http.MethodGet, Path: "/agency/{agency}/clients", Args: agencyArg,
+						Table: output.Table{Root: "data", Columns: []output.Column{
+							col("ID", "organization_id"), colt("NAME", "name", 40), colf("ADDED", "added_at", "time"),
+						}, Empty: "No client workspaces yet."},
+					},
+					{
+						Name: "create", Short: "Create a client workspace",
+						Method: http.MethodPost, Path: "/agency/{agency}/clients", Args: agencyArg, Body: bodyRequired, Idempotent: true,
+						Example: "  $ warmbly agency clients create AGENCY --name \"Acme\" --timezone Europe/London",
+						Flag: []flagSpec{
+							{Name: "name", Help: "The client workspace's name"},
+							{Name: "timezone", Help: "IANA timezone, e.g. Europe/London"},
+						},
+					},
+				},
+			},
+			{
+				Name:    "migration",
+				Aliases: []string{"migrations", "migrate"},
+				Short:   "Migrate client accounts in from another outreach tool",
+				Long: `One source account, its workspaces mapped onto client workspaces.
+An agency key needs AGENCY_MIGRATE.`,
+				Endpoints: migrationEndpoints("/agency/{agency}/migrations", agencyArg, true),
+			},
+		},
+	}
+}
+
+func storeSpec() resource {
+	idArg := func(what string) []argSpec { return []argSpec{{Name: "id", Help: "The " + what + "'s id"}} }
+	orderColumns := []output.Column{
+		col("ID", "id"), col("STATUS", "status"), colf("DUE", "due_now_micros", "micros"),
+		colf("CHARGED", "charged_micros", "micros"), colf("REFUNDED", "refunded_micros", "micros"),
+		colf("CREATED", "created_at", "time"), colf("COMPLETED", "completed_at", "time"),
+	}
+	domainColumns := []output.Column{
+		col("ID", "id"), colt("DOMAIN", "name", 34), col("SOURCE", "source"), col("STATUS", "status"),
+		colf("EXPIRES", "expires_at", "date"), colf("AUTO-RENEW", "auto_renew", "bool"),
+		colf("RENEWS AT", "renew_micros", "micros"), col("MAILBOXES", "mailbox_count"),
+	}
+	dnsColumns := []output.Column{
+		col("ID", "id"), col("TYPE", "type"), colt("NAME", "name", 30), colt("CONTENT", "content", 44),
+		col("TTL", "ttl"), col("PRIORITY", "priority"), colf("MANAGED", "managed", "bool"), col("PURPOSE", "purpose"),
+	}
+	mailboxColumns := []output.Column{
+		col("ID", "id"), colt("MAILBOX", "email", 34), col("PROVIDER", "provider"), col("STATUS", "status"),
+		col("CONNECTED", "connect_state"), colf("MONTHLY", "monthly_micros", "micros"),
+		colf("PAID THROUGH", "paid_through", "date"), colf("CANCELS", "cancels_at", "date"),
+	}
+	return resource{
+		Name:    "store",
+		Aliases: []string{"shop"},
+		Short:   "Buy domains and mailboxes, and manage what you bought",
+		Group:   groupWork,
+		Long: `Buy sending domains and mailboxes for this workspace, and look after them:
+orders, renewals, DNS records, forwarding and mailbox sign-ins.
+
+Reading needs a key with READ_STORE; changing anything needs MANAGE_STORE.
+Buying, renewing, auto-renew, cancelling or resuming a mailbox, a transfer
+code and the registrant also need the member behind the key to hold
+manage_billing. Buying spends the workspace balance, so ` + "`store buy`" + ` and every
+other command that charges ask first; --yes skips the question.`,
+		Commands: storeCommands,
+		Endpoints: []endpoint{
+			{
+				Name: "status", Short: "Whether the store is open here, prices, limits and the balance",
+				Method: http.MethodGet, Path: "/store/status",
+				Table: output.Table{Columns: []output.Column{
+					colf("ENABLED", "enabled", "bool"), colf("PLAN", "plan_active", "bool"),
+					colf("BALANCE", "balance.balance_micros", "micros"), colf("MAILBOX / MONTH", "mailbox_monthly_micros", "micros"),
+					col("PROVIDERS", "providers"), col("PER DOMAIN", "limits.mailboxes_per_domain_recommended"),
+				}},
+			},
+			{
+				Name: "search", Short: "Search for domains to register, with prices",
+				Method: http.MethodGet, Path: "/store/domains/search",
+				Args:    []argSpec{{Name: "query", Help: "A name or keyword, such as getacme", Field: "q"}},
+				Example: "  $ warmbly store search getacme\n  $ warmbly store search getacme --tlds com,io",
+				Flag:    []flagSpec{{Name: "tlds", Help: "Only these endings, comma separated (com,io)", Kind: flagStrings, Query: true}},
+				Table: output.Table{Root: "data", Columns: []output.Column{
+					col("DOMAIN", "domain"), colf("AVAILABLE", "available", "bool"), col("YEARS", "years"),
+					colf("PRICE", "price_micros", "micros"), colf("RENEWS / YEAR", "renew_micros", "micros"), col("WHY NOT", "reason"),
+				}, Empty: "Nothing matched. Try another name."},
+			},
+			{
+				Name: "orders", Short: "List orders, newest first",
+				Method: http.MethodGet, Path: "/store/orders", Paginate: true, Flag: withPaging(),
+				Table: output.Table{Root: "data", Columns: orderColumns, Empty: "No orders yet. `warmbly store buy --help` shows how to place one."},
+			},
+		},
+		Children: []resource{
+			{
+				Name:     "order",
+				Short:    "One order and its progress",
+				Commands: storeOrderCommands,
+				Endpoints: []endpoint{
+					{
+						Name: "view", Aliases: []string{"get", "show"}, Short: "Show one order, its steps, domains and mailboxes",
+						Method: http.MethodGet, Path: "/store/orders/{id}", Args: idArg("order"),
+						Table: output.Table{Columns: orderColumns},
+					},
+				},
+			},
+			{
+				Name:    "domains",
+				Aliases: []string{"domain"},
+				Short:   "Domains bought here or connected from another registrar",
+				Endpoints: []endpoint{
+					{
+						Name: "list", Aliases: []string{"ls"}, Short: "List the workspace's domains",
+						Method: http.MethodGet, Path: "/store/domains", Paginate: true, Flag: withPaging(),
+						Table: output.Table{Root: "data", Columns: domainColumns, Empty: "No domains yet."},
+					},
+					{
+						Name: "view", Aliases: []string{"get", "show"}, Short: "Show one domain, its mail records and DNS",
+						Method: http.MethodGet, Path: "/store/domains/{id}", Args: idArg("domain"),
+						Table: output.Table{Columns: domainColumns},
+					},
+					{
+						Name: "renew", Short: "Renew a purchased domain for another year now",
+						Method: http.MethodPost, Path: "/store/domains/{id}/renew", Args: idArg("domain"), Idempotent: true,
+						Confirm: "charges the workspace balance for a year of the domain",
+						Table:   output.Table{Columns: domainColumns},
+					},
+					{
+						Name: "auto-renew", Short: "Turn a purchased domain's automatic renewal on or off",
+						Method: http.MethodPatch, Path: "/store/domains/{id}", Idempotent: true,
+						Args: []argSpec{
+							{Name: "id", Help: "The domain's id"},
+							{Name: "state", Help: "on or off", Field: "auto_renew", Toggle: true},
+						},
+						Example: "  $ warmbly store domains auto-renew DOMAIN_ID on",
+						Success: "Auto-renew updated.",
+					},
+					{
+						Name: "forwarding", Short: "Send the domain's website visitors to a URL",
+						Long: `Forward visitors of the domain's website to an https URL.
+An empty URL ("") turns forwarding off.`,
+						Method: http.MethodPatch, Path: "/store/domains/{id}", Idempotent: true,
+						Args: []argSpec{
+							{Name: "id", Help: "The domain's id"},
+							{Name: "url", Help: "An https URL, or \"\" to stop forwarding", Field: "forwarding_url"},
+						},
+						Example: "  $ warmbly store domains forwarding DOMAIN_ID https://acme.com",
+						Success: "Forwarding updated.",
+					},
+					{
+						Name: "transfer-out", Short: "Get the transfer code to move a purchased domain to another registrar",
+						Method: http.MethodPost, Path: "/store/domains/{id}/transfer-out", Args: idArg("domain"), Idempotent: true,
+						Confirm: "unlocks the domain for transfer and prints its transfer code",
+						Table:   output.Table{Columns: []output.Column{col("TRANSFER CODE", "auth_code")}},
+					},
+					{
+						Name: "connect", Short: "Connect a domain registered elsewhere",
+						Long: `Connect a domain the workspace already owns at another registrar, so
+mailboxes can be bought on it. --method nameservers moves its DNS here;
+--method manual lists records to add at its current DNS provider.`,
+						Method: http.MethodPost, Path: "/store/domains/connect", Idempotent: true,
+						Args:    []argSpec{{Name: "domain", Help: "The domain name, such as acme.com", Field: "domain"}},
+						Flag:    []flagSpec{{Name: "method", Help: "nameservers or manual"}},
+						Example: "  $ warmbly store domains connect acme.com --method nameservers",
+						Table:   output.Table{Columns: domainColumns},
+					},
+					{
+						Name: "check-connection", Short: "Check a connected domain's nameservers or records now",
+						Method: http.MethodPost, Path: "/store/domains/{id}/connection/check", Args: idArg("domain"), Idempotent: true,
+						Table: output.Table{Columns: domainColumns},
+					},
+					{
+						Name: "regenerate-connection", Short: "Start a lapsed domain connection again",
+						Method: http.MethodPost, Path: "/store/domains/{id}/connection/regenerate", Args: idArg("domain"), Idempotent: true,
+						Table: output.Table{Columns: domainColumns},
+					},
+					{
+						Name: "remove", Aliases: []string{"rm"}, Short: "Remove a connected domain from the workspace",
+						Method: http.MethodDelete, Path: "/store/domains/{id}", Args: idArg("domain"), Idempotent: true,
+						Success: "Domain removed.",
+					},
+				},
+				Children: []resource{
+					{
+						Name:  "dns",
+						Short: "DNS records on a store domain",
+						Endpoints: []endpoint{
+							{
+								Name: "list", Aliases: []string{"ls"}, Short: "List the domain's DNS records",
+								Long:   "List the domain's DNS records. With --json this prints the whole domain, its records under dns.",
+								Method: http.MethodGet, Path: "/store/domains/{id}", Args: idArg("domain"),
+								Table: output.Table{Root: "dns", Columns: dnsColumns, Empty: "No DNS records on this domain."},
+							},
+							{
+								Name: "add", Short: "Add a DNS record",
+								Method: http.MethodPost, Path: "/store/domains/{id}/dns", Args: idArg("domain"), Body: bodyRequired, Idempotent: true,
+								Example: "  $ warmbly store domains dns add DOMAIN_ID --type TXT --name @ --content \"v=spf1 -all\"\n  $ warmbly store domains dns add DOMAIN_ID --type MX --name @ --content mx.acme.com --priority 10",
+								Flag: []flagSpec{
+									{Name: "type", Help: "Record type: A, AAAA, CNAME, MX, TXT, ..."},
+									{Name: "name", Help: "Host name, @ for the domain itself"},
+									{Name: "content", Help: "The record's value"},
+									{Name: "ttl", Help: "Time to live in seconds", Kind: flagInt},
+									{Name: "priority", Help: "Priority, for MX and SRV", Kind: flagInt},
+								},
+								Table: output.Table{Columns: dnsColumns},
+							},
+							{
+								Name: "edit", Aliases: []string{"update"}, Short: "Change a DNS record",
+								Method: http.MethodPatch, Path: "/store/domains/{id}/dns/{record}", Body: bodyRequired, Idempotent: true,
+								Args: []argSpec{{Name: "id", Help: "The domain's id"}, {Name: "record", Help: "The record's id"}},
+								Flag: []flagSpec{
+									{Name: "name", Help: "Host name, @ for the domain itself"},
+									{Name: "content", Help: "The record's value"},
+									{Name: "ttl", Help: "Time to live in seconds", Kind: flagInt},
+									{Name: "priority", Help: "Priority, for MX and SRV", Kind: flagInt},
+								},
+								Table: output.Table{Columns: dnsColumns},
+							},
+							{
+								Name: "delete", Aliases: []string{"rm"}, Short: "Delete a DNS record",
+								Method: http.MethodDelete, Path: "/store/domains/{id}/dns/{record}", Idempotent: true,
+								Args:    []argSpec{{Name: "id", Help: "The domain's id"}, {Name: "record", Help: "The record's id"}},
+								Success: "DNS record deleted.",
+							},
+							{
+								Name: "check", Short: "Look the domain's records up in public DNS",
+								Method: http.MethodPost, Path: "/store/domains/{id}/dns/check", Args: idArg("domain"),
+								Table: output.Table{Root: "records", Columns: []output.Column{
+									col("TYPE", "type"), colt("NAME", "name", 30), colt("CONTENT", "content", 44), col("STATUS", "status"),
+								}, Empty: "No records to check."},
+							},
+						},
+					},
+				},
+			},
+			{
+				Name:    "mailboxes",
+				Aliases: []string{"mailbox"},
+				Short:   "Mailboxes bought here, billed monthly",
+				Endpoints: []endpoint{
+					{
+						Name: "list", Aliases: []string{"ls"}, Short: "List purchased mailboxes",
+						Method: http.MethodGet, Path: "/store/mailboxes", Paginate: true, Flag: withPaging(),
+						Table: output.Table{Root: "data", Columns: mailboxColumns, Empty: "No purchased mailboxes yet."},
+					},
+					{
+						Name: "rename", Short: "Change the name a purchased mailbox sends as",
+						Method: http.MethodPatch, Path: "/store/mailboxes/{id}", Args: idArg("mailbox"), Body: bodyRequired, Idempotent: true,
+						Example: "  $ warmbly store mailboxes rename MAILBOX_ID --first Ada --last Lovelace",
+						Flag: []flagSpec{
+							{Name: "first", Help: "First name", Key: "first_name"},
+							{Name: "last", Help: "Last name", Key: "last_name"},
+						},
+						Table: output.Table{Columns: mailboxColumns},
+					},
+					{
+						Name: "cancel", Short: "Cancel a mailbox at the end of the month it is paid for",
+						Method: http.MethodDelete, Path: "/store/mailboxes/{id}", Args: idArg("mailbox"), Idempotent: true,
+						Confirm: "cancels the mailbox, which stops working when its paid month ends",
+						Table:   output.Table{Columns: mailboxColumns},
+					},
+					{
+						Name: "resume", Short: "Keep a cancelled mailbox, billing it monthly again",
+						Method: http.MethodPost, Path: "/store/mailboxes/{id}/resume", Args: idArg("mailbox"), Idempotent: true,
+						Confirm: "bills the mailbox every month again",
+						Table:   output.Table{Columns: mailboxColumns},
+					},
+					{
+						Name: "sign-in", Short: "Show a purchased mailbox's username and password",
+						Method: http.MethodPost, Path: "/store/mailboxes/{id}/sign-in", Args: idArg("mailbox"),
+						Confirm: "prints the mailbox's password",
+						Table: output.Table{Columns: []output.Column{
+							col("EMAIL", "email"), col("USERNAME", "username"), col("PASSWORD", "password"), col("SIGN IN AT", "login_url"),
+						}},
+					},
+				},
+			},
+			{
+				Name:  "registrant",
+				Short: "The domain owner's contact details, which registering a domain needs",
+				Endpoints: []endpoint{
+					{
+						Name: "view", Aliases: []string{"get", "show"}, Short: "Show the saved registrant",
+						Method: http.MethodGet, Path: "/store/status",
+						Table: output.Table{Root: "registrant", Columns: registrantColumns(), Empty: "No registrant saved. Set one with `warmbly store registrant set`."},
+					},
+					{
+						Name: "set", Short: "Save the registrant for domains bought from now on",
+						Long: `Save the domain owner's contact details. The whole record is replaced, so
+pass every field (or a JSON body with --input). --phone is +<country code>.<number>,
+such as +44.2071234567, and --country is a two-letter code.`,
+						Method: http.MethodPut, Path: "/store/registrant", Body: bodyRequired, Idempotent: true,
+						Example: "  $ warmbly store registrant set --first-name Ada --last-name Lovelace --email ada@acme.com \\\n      --phone +44.2071234567 --address1 \"1 Main St\" --city London --postal-code N1 --country GB",
+						Flag: []flagSpec{
+							{Name: "first-name", Help: "First name"},
+							{Name: "last-name", Help: "Last name"},
+							{Name: "organization", Help: "Company, if the domain belongs to one"},
+							{Name: "email", Help: "Email address"},
+							{Name: "phone", Help: "Phone as +<country code>.<number>"},
+							{Name: "address1", Help: "Street address"},
+							{Name: "address2", Help: "Second address line"},
+							{Name: "city", Help: "City"},
+							{Name: "state", Help: "State or region"},
+							{Name: "postal-code", Help: "Postal code"},
+							{Name: "country", Help: "Two-letter country code, such as GB"},
+						},
+						Table: output.Table{Columns: registrantColumns()},
+					},
+				},
+			},
+		},
+	}
+}
+
+func registrantColumns() []output.Column {
+	return []output.Column{
+		col("FIRST", "first_name"), col("LAST", "last_name"), col("ORGANIZATION", "organization"),
+		col("EMAIL", "email"), col("PHONE", "phone"), col("CITY", "city"), col("COUNTRY", "country"),
 	}
 }

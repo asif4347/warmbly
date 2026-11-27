@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/warmbly/warmbly/internal/errx"
@@ -23,6 +25,9 @@ var organizationPolicyRoutes = map[string]bool{
 	"GET /v1/organization/:orgId/limit-requests":  true,
 	"DELETE /v1/limit-requests/:id":               true,
 }
+
+// agencyRoutePrefix is the agency surface: it authorizes agency staff and each client membership on its own.
+const agencyRoutePrefix = "/v1/agency"
 
 // scopeAwareRoutes is every route a restricted member may call; each one filters to the member's grants.
 var scopeAwareRoutes = map[string]bool{
@@ -67,22 +72,78 @@ var scopeAwareRoutes = map[string]bool{
 	"GET /v1/unibox/:id":                     true,
 }
 
+// ScopeCheck names how a scope action route holds its target to the member's grants.
+type ScopeCheck string
+
+const (
+	// ScopeCheckCampaignParam is RequireCampaignParam("id") on the campaigns group.
+	ScopeCheckCampaignParam ScopeCheck = "campaign_param"
+	// ScopeCheckMailbox is the handler refusing any message, thread or sender outside AllowedEmailAccounts.
+	ScopeCheckMailbox ScopeCheck = "mailbox"
+	// ScopeCheckOwnRows is a write to the caller's own rows only.
+	ScopeCheckOwnRows ScopeCheck = "own_rows"
+)
+
+// ScopeAction is what a scope action route needs: a role acting in scope with Perm, and the grant check it runs.
+type ScopeAction struct {
+	Perm  models.OrganizationPermission
+	Check ScopeCheck
+}
+
+// scopeActionRoutes are the writes a restricted member may make through a role that acts in scope.
+var scopeActionRoutes = map[string]ScopeAction{
+	"PUT /v1/unibox/thread/labels":         {models.PermAccessUnibox, ScopeCheckMailbox},
+	"PATCH /v1/unibox/seen":                {models.PermAccessUnibox, ScopeCheckMailbox},
+	"PATCH /v1/unibox/folder":              {models.PermAccessUnibox, ScopeCheckMailbox},
+	"POST /v1/unibox/reply":                {models.PermAccessUnibox, ScopeCheckMailbox},
+	"POST /v1/unibox/snooze":               {models.PermAccessUnibox, ScopeCheckMailbox},
+	"DELETE /v1/unibox/snooze":             {models.PermAccessUnibox, ScopeCheckOwnRows},
+	"DELETE /v1/unibox/scheduled/:task_id": {models.PermAccessUnibox, ScopeCheckMailbox},
+	"PATCH /v1/campaigns/:id":              {models.PermManageCampaigns, ScopeCheckCampaignParam},
+	"POST /v1/campaigns/:id/steps":         {models.PermManageCampaigns, ScopeCheckCampaignParam},
+	"PATCH /v1/campaigns/:id/steps/:sid":   {models.PermManageCampaigns, ScopeCheckCampaignParam},
+	"DELETE /v1/campaigns/:id/steps/:sid":  {models.PermManageCampaigns, ScopeCheckCampaignParam},
+	"PATCH /v1/campaigns/:id/step-layout":  {models.PermManageCampaigns, ScopeCheckCampaignParam},
+	"POST /v1/campaigns/:id/start":         {models.PermSendCampaigns, ScopeCheckCampaignParam},
+	"POST /v1/campaigns/:id/stop":          {models.PermSendCampaigns, ScopeCheckCampaignParam},
+}
+
 // ScopeAwareRoutes lists grant-aware and target-authorized routes for the route-table test.
 func ScopeAwareRoutes() []string {
-	out := make([]string, 0, len(scopeAwareRoutes)+len(organizationPolicyRoutes))
+	out := make([]string, 0, len(scopeAwareRoutes)+len(organizationPolicyRoutes)+len(scopeActionRoutes))
 	for r := range scopeAwareRoutes {
 		out = append(out, r)
 	}
 	for r := range organizationPolicyRoutes {
 		out = append(out, r)
 	}
+	for r := range scopeActionRoutes {
+		out = append(out, r)
+	}
 	return out
 }
+
+func isAgencyRoute(path string) bool {
+	return path == agencyRoutePrefix || strings.HasPrefix(path, agencyRoutePrefix+"/")
+}
+
+// ScopeActionRoutes is scopeActionRoutes for the route-table test.
+func ScopeActionRoutes() map[string]ScopeAction {
+	out := make(map[string]ScopeAction, len(scopeActionRoutes))
+	for r, a := range scopeActionRoutes {
+		out[r] = a
+	}
+	return out
+}
+
+// errScopeActionRefused is a restricted member writing without a role that acts in scope.
+var errScopeActionRefused = errx.NewWithIdentifier(errx.Forbidden, MemberAccessRestricted,
+	"Your roles let you view the campaigns and mailboxes shared with you, not change them.")
 
 // ResourceScopeGate holds a restricted member, and any key or app acting for one, to scope-aware routes and their grants.
 func (h *Handler) ResourceScopeGate() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if organizationPolicyRoutes[c.Request.Method+" "+c.FullPath()] {
+		if organizationPolicyRoutes[c.Request.Method+" "+c.FullPath()] || isAgencyRoute(c.FullPath()) {
 			c.Next()
 			return
 		}
@@ -91,7 +152,9 @@ func (h *Handler) ResourceScopeGate() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if !scopeAwareRoutes[c.Request.Method+" "+c.FullPath()] {
+		route := c.Request.Method + " " + c.FullPath()
+		action, acts := scopeActionRoutes[route]
+		if !acts && !scopeAwareRoutes[route] {
 			errx.JSON(c, errMemberAccessRestricted)
 			c.Abort()
 			return
@@ -109,6 +172,11 @@ func (h *Handler) ResourceScopeGate() gin.HandlerFunc {
 		}
 		if scope == nil {
 			errx.JSON(c, errx.InternalError())
+			c.Abort()
+			return
+		}
+		if acts && !scope.CanAct(action.Perm) {
+			errx.JSON(c, errScopeActionRefused)
 			c.Abort()
 			return
 		}
@@ -133,6 +201,12 @@ func GetResourceScope(c *gin.Context) *models.ResourceScope {
 		}
 	}
 	return nil
+}
+
+// ScopeCanAct reports whether a restricted caller may act with perm inside their grants; unrestricted callers report false.
+func ScopeCanAct(c *gin.Context, perm models.OrganizationPermission) bool {
+	s := GetResourceScope(c)
+	return s != nil && s.CanAct(perm)
 }
 
 // IsScopeRestricted reports whether the caller acts for a restricted member.

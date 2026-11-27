@@ -10,6 +10,7 @@
 //     parent passes `current_campaign` and the topbar collapses to a
 //     section header so it nests cleanly under the campaign view.
 
+import { useQueryClient } from "@tanstack/react-query";
 import React from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useSearchParams } from "@/hooks/useSearchParams";
@@ -43,7 +44,9 @@ import {
 } from "lucide-react";
 
 import { useConfirm } from "@/hooks/context/confirm";
-import { useWriteGuard } from "@/hooks/usePermission";
+import { usePermission, useWriteGuard } from "@/hooks/usePermission";
+import { approveCampaignLeads } from "@/lib/api/client/app/campaigns/review";
+import { refreshReview } from "@/lib/api/hooks/app/campaigns/useCampaignReview";
 import useSearchContacts from "@/lib/api/hooks/app/contacts/useSearchContacts";
 import type SearchContacts from "@/lib/api/models/app/contacts/SearchContacts";
 import useDeleteContacts from "@/lib/api/hooks/app/contacts/useDeleteContacts";
@@ -95,6 +98,8 @@ import { useAddSegmentToCampaign, useCampaignSegments, useSetSegmentMembers } fr
 import type { ExportScopeContext } from "./ExportDialog";
 import useUpdateContactsBulk from "@/lib/api/hooks/app/contacts/useUpdateContactsBulk";
 import useAiMetered from "@/hooks/useAiMetered";
+import { fmtUsdAbout } from "@/lib/money";
+import { AI_ESTIMATE_USD } from "@/lib/aiEstimates";
 import SyncSourcesPanel from "./SyncSourcesPanel";
 import { columnClass, emptyColumnIds, sortOptions, type ContactColumn, type ContactRow } from "./columns";
 import { ColumnChooser, SortMenu, type ViewSortState } from "./ViewControls";
@@ -577,7 +582,7 @@ export default function ContactsTable({
         }
     }
 
-    // Bulk AI research. Confirms the credit cost (2 per contact) before queuing;
+    // Bulk AI research. Confirms the estimated cost before queuing;
     // runs drain in the background and the tab refreshes live via realtime.
     const batchResearch = useBatchResearch();
     const metered = useAiMetered();
@@ -590,7 +595,7 @@ export default function ContactsTable({
         confirm?.show(
             `Research ${selectionCount.toLocaleString()} ${selectionCount === 1 ? "contact" : "contacts"}? ${
                 metered
-                    ? `This uses up to ${(selectionCount * 2).toLocaleString()} AI credits and runs`
+                    ? `This costs ${fmtUsdAbout(selectionCount * AI_ESTIMATE_USD.researchRun)} from the workspace balance and runs`
                     : "This runs"
             } in the background.`,
             async () => {
@@ -637,16 +642,34 @@ export default function ContactsTable({
     // resuming is one call, so the row acts straight away.
     const [pauseTarget, setPauseTarget] = React.useState<{ id: string; name: string } | null>(null);
     const resumeLead = useResumeLead();
+    const canSend = usePermission("SEND_CAMPAIGNS");
+    // An approval needs the send permission; lifting any other hold needs campaign write access.
+    const canLiftHold = React.useCallback((source?: string) => (source === "review" ? canSend : campaignWrite.allowed), [canSend, campaignWrite.allowed]);
+    const queryClient = useQueryClient();
     const resumeOne = React.useCallback(
-        (contactId: string, copied?: boolean) => {
+        (contactId: string, source?: string) => {
             if (!current_campaign) return;
+            // A lead waiting for review is released by an approval, which needs the send permission.
+            if (source === "review" && !canSend) {
+                toast.error("Approving a lead needs the Send campaigns permission.");
+                return;
+            }
             const run = async () => {
                 try {
                     await toast.promise(
-                        resumeLead.mutateAsync({ campaignId: current_campaign.id, contactId }),
+                        (async () => {
+                            if (source === "review") {
+                                const res = await approveCampaignLeads(current_campaign.id, { contact_ids: [contactId] });
+                                refreshReview(queryClient, current_campaign.id);
+                                return res.released;
+                            }
+                            await resumeLead.mutateAsync({ campaignId: current_campaign.id, contactId });
+                            return 1;
+                        })(),
                         {
-                            loading: "Resuming lead…",
-                            success: "Lead resumed",
+                            loading: source === "review" ? "Approving lead…" : "Resuming lead…",
+                            success: (released) =>
+                                source !== "review" ? "Lead resumed" : released > 0 ? "Approved" : "This lead was no longer waiting for approval.",
                             error: (err: AppError) => buildError(err),
                         },
                     );
@@ -654,10 +677,10 @@ export default function ContactsTable({
                     /* toast.promise already surfaced it */
                 }
             };
-            if (copied) confirm.show(CC_RESUME_CONFIRM, run);
+            if (source === "cc") confirm.show(CC_RESUME_CONFIRM, run);
             else void run();
         },
-        [current_campaign, resumeLead, confirm],
+        [current_campaign, resumeLead, confirm, canSend, queryClient],
     );
 
     // Leads-view scope chips write straight into the search request, so the
@@ -727,7 +750,8 @@ export default function ContactsTable({
                     : undefined
             }
             onPauseLead={embedded && campaignWrite.allowed ? (id, name) => setPauseTarget({ id, name }) : undefined}
-            onResumeLead={embedded && campaignWrite.allowed ? resumeOne : undefined}
+            onResumeLead={embedded && (campaignWrite.allowed || canSend) ? resumeOne : undefined}
+            canLiftHold={canLiftHold}
             emptyTitle={
                 subFilter !== "all"
                     ? `No ${subFilter} contacts`
@@ -783,6 +807,7 @@ export default function ContactsTable({
                             </TopbarAction>
                         )}
                         <TopbarAction
+                            writes
                             variant={canReenrol ? "ghost" : "primary"}
                             icon={<UsersIcon className="w-3 h-3" />}
                             onClick={() => setFromContactsOpen(true)}
@@ -797,6 +822,7 @@ export default function ContactsTable({
                             {linkedSegments.length > 0 || campaignSegments.isError ? "Manage segments" : "Link a segment"}
                         </TopbarAction>
                         <TopbarAction
+                            writes
                             variant="ghost"
                             icon={<UploadIcon className="w-3 h-3" />}
                             onClick={() => setImportOpen(true)}
@@ -807,12 +833,14 @@ export default function ContactsTable({
                 ) : segment ? (
                     <div className="flex flex-wrap items-center justify-center gap-1.5">
                         <TopbarAction
+                            writes
                             icon={<UsersIcon className="w-3 h-3" />}
                             onClick={() => setFromContactsOpen(true)}
                         >
                             Add contacts
                         </TopbarAction>
                         <TopbarAction
+                            writes
                             variant="ghost"
                             icon={<UploadIcon className="w-3 h-3" />}
                             onClick={() => setImportOpen(true)}
@@ -820,6 +848,7 @@ export default function ContactsTable({
                             Import file
                         </TopbarAction>
                         <TopbarAction
+                            writes
                             variant="ghost"
                             icon={<UserPlusIcon className="w-3 h-3" />}
                             onClick={() => setNewOpen(true)}
@@ -829,6 +858,7 @@ export default function ContactsTable({
                     </div>
                 ) : (
                     <TopbarAction
+                        writes
                         icon={<UserPlusIcon className="w-3 h-3" />}
                         onClick={() => setNewOpen(true)}
                     >
@@ -865,6 +895,7 @@ export default function ContactsTable({
                         {(campaignSegments.data?.length ?? 0) > 0 ? ` (${campaignSegments.data?.length})` : ""}
                     </TopbarAction>
                     <TopbarAction
+                        writes
                         variant="ghost"
                         icon={<UsersIcon className="w-3 h-3" />}
                         onClick={() => setFromContactsOpen(true)}
@@ -872,6 +903,7 @@ export default function ContactsTable({
                         From contacts
                     </TopbarAction>
                     <TopbarAction
+                        writes
                         variant="ghost"
                         icon={<UploadIcon className="w-3 h-3" />}
                         onClick={() => setImportOpen(true)}
@@ -902,6 +934,7 @@ export default function ContactsTable({
                         Export
                     </TopbarAction>
                     <TopbarAction
+                        writes
                         icon={<UserPlusIcon className="w-3 h-3" />}
                         onClick={() => setNewOpen(true)}
                     >
@@ -1053,6 +1086,7 @@ export default function ContactsTable({
             >
                 {segment && (
                     <TopbarAction
+                        writes
                         variant="ghost"
                         icon={<UsersIcon className="w-3 h-3" />}
                         onClick={() => setFromContactsOpen(true)}
@@ -1068,6 +1102,7 @@ export default function ContactsTable({
                 />
                 <div className="hidden md:contents">
                     <TopbarAction
+                        writes
                         variant="ghost"
                         icon={<UploadIcon className="w-3 h-3" />}
                         onClick={() => setImportOpen(true)}
@@ -1128,6 +1163,7 @@ export default function ContactsTable({
                     </PopoverMenu>
                 </div>
                 <TopbarAction
+                    writes
                     icon={<UserPlusIcon className="w-3 h-3" />}
                     onClick={() => setNewOpen(true)}
                 >
@@ -1292,6 +1328,7 @@ function ContactsTableBody({
     onRemoveFromCampaign,
     onPauseLead,
     onResumeLead,
+    canLiftHold,
     emptyTitle,
     emptyBody,
     emptyCta,
@@ -1328,7 +1365,8 @@ function ContactsTableBody({
     // member without campaign write access, which takes the control off the
     // row rather than offering one that fails.
     onPauseLead?: (id: string, name: string) => void;
-    onResumeLead?: (id: string, copied?: boolean) => void;
+    onResumeLead?: (id: string, source?: string) => void;
+    canLiftHold: (source?: string) => boolean;
     emptyTitle: string;
     emptyBody: string;
     emptyCta: React.ReactNode;
@@ -1543,16 +1581,19 @@ function ContactsTableBody({
                                 <td className="px-3" onClick={(e) => e.stopPropagation()}>
                                     {/* Touch-safe: always visible on mobile, hover-reveal on desktop. */}
                                     <div className="flex items-center gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                                        {lead?.hold && onResumeLead ? (
-                                            <button
-                                                type="button"
-                                                aria-label="Resume lead"
-                                                title={`${holdSummary(lead.hold)}. Resume now`}
-                                                onClick={() => onResumeLead(c.id, lead.hold?.source === "cc")}
-                                                className="size-6 rounded text-violet-500 hover:text-violet-700 hover:bg-violet-50 flex items-center justify-center transition-colors"
-                                            >
-                                                <PlayIcon className="w-3 h-3" />
-                                            </button>
+                                        {lead?.hold ? (
+                                            onResumeLead &&
+                                            canLiftHold(lead.hold.source) && (
+                                                <button
+                                                    type="button"
+                                                    aria-label={lead.hold.source === "review" ? "Approve lead" : "Resume lead"}
+                                                    title={`${holdSummary(lead.hold)}. ${lead.hold.source === "review" ? "Approve now" : "Resume now"}`}
+                                                    onClick={() => onResumeLead(c.id, lead.hold?.source)}
+                                                    className="size-6 rounded text-violet-500 hover:text-violet-700 hover:bg-violet-50 flex items-center justify-center transition-colors"
+                                                >
+                                                    <PlayIcon className="w-3 h-3" />
+                                                </button>
+                                            )
                                         ) : onPauseLead && !terminal ? (
                                             <button
                                                 type="button"

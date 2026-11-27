@@ -89,7 +89,7 @@ type OrganizationRepository interface {
 	DeleteExpiredInvitations(ctx context.Context) error
 
 	// Ownership transfer
-	TransferOwnership(ctx context.Context, orgID, newOwnerUserID uuid.UUID) error
+	TransferOwnership(ctx context.Context, orgID, currentOwnerUserID, newOwnerUserID uuid.UUID) error
 
 	// Resource counts
 	GetCampaignCounts(ctx context.Context, orgID uuid.UUID) (total int, active int, err error)
@@ -237,12 +237,27 @@ func (r *organizationRepository) UpdateAvatar(ctx context.Context, orgID uuid.UU
 var ErrOrganizationCloudLinked = errors.New("disconnect workspace Cloud link before deleting")
 
 func (r *organizationRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM organizations WHERE id = $1`, id)
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// The row lock holds off new store rows until the delete commits.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM organizations WHERE id = $1 FOR UPDATE`, id); err != nil {
+		return err
+	}
+	if err := storePurchasesEnded(ctx, tx, []uuid.UUID{id}); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM organizations WHERE id = $1`, id)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.ConstraintName == "cloud_link_organization_id_fkey" {
 		return ErrOrganizationCloudLinked
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // GetUserOrganizations retrieves all organizations a user is a member of
@@ -251,10 +266,16 @@ func (r *organizationRepository) GetUserOrganizations(ctx context.Context, userI
 		SELECT
 			om.id, om.organization_id, om.user_id, om.role, om.permissions,
 			om.invited_by, om.invited_at, om.accepted_at, om.access_scope,
+			COALESCE((SELECT bit_or(r.permissions)::int FROM organization_member_roles mr
+				JOIN organization_roles r ON r.id = mr.role_id AND r.organization_id = om.organization_id
+				WHERE mr.organization_id = om.organization_id AND mr.user_id = om.user_id AND r.acts_in_scope), 0) & om.permissions::int,
 			o.id, o.name, o.slug, o.avatar_url, o.owner_user_id, o.created_at, o.updated_at,
-			o.deletion_scheduled_at, o.deletion_scheduled_for, o.category
+			o.deletion_scheduled_at, o.deletion_scheduled_for, o.category,
+			ag.id, ag.name, COALESCE(ag.owner_user_id <> o.owner_user_id, false)
 		FROM organization_members om
 		JOIN organizations o ON o.id = om.organization_id
+		LEFT JOIN agency_clients ac ON ac.organization_id = o.id
+		LEFT JOIN agencies ag ON ag.id = ac.agency_id
 		WHERE om.user_id = $1
 		ORDER BY om.invited_at DESC
 	`
@@ -268,16 +289,26 @@ func (r *organizationRepository) GetUserOrganizations(ctx context.Context, userI
 	for rows.Next() {
 		var m models.OrganizationMember
 		var org models.Organization
+		var agencyID *uuid.UUID
+		var agencyName *string
+		var canLeave bool
 		err := rows.Scan(
 			&m.ID, &m.OrganizationID, &m.UserID, &m.Role, &m.Permissions,
-			&m.InvitedBy, &m.InvitedAt, &m.AcceptedAt, &m.AccessScope,
+			&m.InvitedBy, &m.InvitedAt, &m.AcceptedAt, &m.AccessScope, &m.ScopeActions,
 			&org.ID, &org.Name, &org.Slug, &org.AvatarURL, &org.OwnerUserID, &org.CreatedAt, &org.UpdatedAt,
 			&org.DeletionScheduledAt, &org.DeletionScheduledFor, &org.Category,
+			&agencyID, &agencyName, &canLeave,
 		)
 		if err != nil {
 			return nil, err
 		}
 		m.Organization = &org
+		if agencyID != nil && agencyName != nil {
+			m.Agency = &models.AgencyRef{ID: *agencyID, Name: *agencyName, CanLeave: canLeave}
+		}
+		if !m.IsRestricted() {
+			m.ScopeActions = 0
+		}
 		members = append(members, m)
 	}
 	return members, rows.Err()
@@ -303,7 +334,7 @@ func (r *organizationRepository) GetMembers(ctx context.Context, orgID uuid.UUID
 		SELECT
 			om.id, om.organization_id, om.user_id, om.role, om.role_id, om.permissions,
 			om.invited_by, om.invited_at, om.accepted_at, om.access_scope,
-			u.id, u.first_name, u.last_name, u.email, u.created_at, u.updated_at
+			u.id, u.first_name, u.last_name, u.email, COALESCE(u.contact_email, ''), u.created_at, u.updated_at
 		FROM organization_members om
 		JOIN users u ON u.id = om.user_id
 		WHERE om.organization_id = $1
@@ -322,13 +353,13 @@ func (r *organizationRepository) GetMembers(ctx context.Context, orgID uuid.UUID
 		err := rows.Scan(
 			&m.ID, &m.OrganizationID, &m.UserID, &m.Role, &m.RoleID, &m.Permissions,
 			&m.InvitedBy, &m.InvitedAt, &m.AcceptedAt, &m.AccessScope,
-			&u.ID, &u.FirstName, &u.LastName, &u.Email, &u.CreatedAt, &u.UpdatedAt,
+			&u.ID, &u.FirstName, &u.LastName, &u.Email, &u.ContactEmail, &u.CreatedAt, &u.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
 		m.User = &u
-		m.Email = u.Email
+		m.Email = u.VisibleEmail()
 		m.Name = strings.TrimSpace(u.FirstName + " " + u.LastName)
 		members = append(members, m)
 	}
@@ -636,24 +667,69 @@ func (r *organizationRepository) DeleteExpiredInvitations(ctx context.Context) e
 	return err
 }
 
-// TransferOwnership transfers organization ownership to a new user
-func (r *organizationRepository) TransferOwnership(ctx context.Context, orgID, newOwnerUserID uuid.UUID) error {
+// ErrOwnershipNotHeld means the caller does not own the workspace when the transfer is written.
+var ErrOwnershipNotHeld = errors.New("caller does not own the workspace")
+
+// ErrNewOwnerNotMember means the proposed owner has no membership in the workspace.
+var ErrNewOwnerNotMember = errors.New("new owner is not a member of the workspace")
+
+// ErrNewOwnerUnavailable means the proposed owner's account cannot take a workspace.
+var ErrNewOwnerUnavailable = errors.New("new owner's account cannot take a workspace")
+
+// TransferOwnership moves ownership from currentOwnerUserID to another member
+// in one transaction, decided against the locked organization row.
+func (r *organizationRepository) TransferOwnership(ctx context.Context, orgID, currentOwnerUserID, newOwnerUserID uuid.UUID) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck
 
-	// Get current owner
-	var currentOwnerID uuid.UUID
-	err = tx.QueryRow(ctx, `SELECT owner_user_id FROM organizations WHERE id = $1`, orgID).Scan(&currentOwnerID)
+	var owner uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT owner_user_id FROM organizations WHERE id = $1 FOR UPDATE`, orgID).Scan(&owner)
 	if err != nil {
 		return err
 	}
+	if owner != currentOwnerUserID {
+		return ErrOwnershipNotHeld
+	}
+	if newOwnerUserID == owner {
+		return ErrNewOwnerUnavailable
+	}
 
-	// Update organization owner
-	_, err = tx.Exec(ctx, `UPDATE organizations SET owner_user_id = $2, updated_at = $3 WHERE id = $1`, orgID, newOwnerUserID, time.Now())
+	// An account deletion takes the workspaces it owns with it, and a banned account cannot run one.
+	var available bool
+	err = tx.QueryRow(ctx, `SELECT banned_at IS NULL AND deletion_scheduled_for IS NULL FROM users WHERE id = $1 FOR SHARE`, newOwnerUserID).Scan(&available)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNewOwnerNotMember
+	}
 	if err != nil {
+		return err
+	}
+	if !available {
+		return ErrNewOwnerUnavailable
+	}
+
+	// Owner is a membership status, not a role: role_id must be NULL so role
+	// edits can never write through onto the owner row, and it is never scoped.
+	tag, err := tx.Exec(ctx, `
+		UPDATE organization_members SET role = 'owner', role_id = NULL, permissions = $3, access_scope = $4
+		WHERE organization_id = $1 AND user_id = $2`,
+		orgID, newOwnerUserID, models.RolePermissions[models.RoleOwner], models.AccessScopeWorkspace)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNewOwnerNotMember
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM organization_member_roles WHERE organization_id = $1 AND user_id = $2`, orgID, newOwnerUserID); err != nil {
+		return err
+	}
+	if err = writeMemberGrants(ctx, tx, orgID, newOwnerUserID, &models.MemberAccess{Scope: models.AccessScopeWorkspace}, uuid.Nil); err != nil {
+		return err
+	}
+
+	if _, err = tx.Exec(ctx, `UPDATE organizations SET owner_user_id = $2, updated_at = NOW() WHERE id = $1`, orgID, newOwnerUserID); err != nil {
 		return err
 	}
 
@@ -667,15 +743,16 @@ func (r *organizationRepository) TransferOwnership(ctx context.Context, orgID, n
 		FROM (SELECT 1) one
 		LEFT JOIN organization_roles r ON r.organization_id = $1 AND r.name = 'Admin'
 		WHERE om.organization_id = $1 AND om.user_id = $2`,
-		orgID, currentOwnerID, models.RolePermissions[models.RoleAdmin])
+		orgID, owner, models.RolePermissions[models.RoleAdmin])
 	if err != nil {
 		return err
 	}
-
-	// Owner is a membership status, not a role: role_id must be NULL so role
-	// edits can never write through onto the owner row.
-	_, err = tx.Exec(ctx, `UPDATE organization_members SET role = 'owner', role_id = NULL, permissions = $3 WHERE organization_id = $1 AND user_id = $2`,
-		orgID, newOwnerUserID, models.RolePermissions[models.RoleOwner])
+	// The assignment row keeps the snapshot above true through a later recompute.
+	_, err = tx.Exec(ctx, `
+		INSERT INTO organization_member_roles (organization_id, user_id, role_id)
+		SELECT om.organization_id, om.user_id, om.role_id FROM organization_members om
+		WHERE om.organization_id = $1 AND om.user_id = $2 AND om.role_id IS NOT NULL
+		ON CONFLICT DO NOTHING`, orgID, owner)
 	if err != nil {
 		return err
 	}
@@ -1475,10 +1552,11 @@ func (r *organizationRepository) ListLimitRequestsForAdmin(ctx context.Context, 
 			lr.reason, lr.status, lr.submitted_by, lr.submitted_at,
 			lr.reviewed_by, lr.reviewed_at, lr.review_notes,
 			o.id, o.name, o.slug, o.owner_user_id, o.created_at, o.updated_at,
-			u.id, u.first_name, u.last_name, u.email, u.created_at, u.updated_at
+			COALESCE(u.id, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(u.first_name, ''), COALESCE(u.last_name, ''), COALESCE(u.email, ''),
+			COALESCE(u.created_at, lr.submitted_at), COALESCE(u.updated_at, lr.submitted_at)
 		FROM limit_increase_requests lr
 		JOIN organizations o ON o.id = lr.organization_id
-		JOIN users u ON u.id = lr.submitted_by
+		LEFT JOIN users u ON u.id = lr.submitted_by
 		` + where + `
 		` + orderBy + `
 		` + adminLimitOffset("$"+itoa(argNum), offset)
@@ -1503,7 +1581,10 @@ func (r *organizationRepository) ListLimitRequestsForAdmin(ctx context.Context, 
 			return nil, err
 		}
 		lr.Organization = &org
-		lr.SubmittedByUser = &user
+		// A submitter whose account was deleted has no summary.
+		if user.ID != uuid.Nil {
+			lr.SubmittedByUser = &user
+		}
 		items = append(items, lr)
 	}
 
@@ -1517,7 +1598,7 @@ func (r *organizationRepository) ListLimitRequestsForAdmin(ctx context.Context, 
 	}
 
 	// Total count for the same filter — drop the trailing LIMIT arg.
-	countQuery := `SELECT COUNT(*) FROM limit_increase_requests lr JOIN organizations o ON o.id = lr.organization_id JOIN users u ON u.id = lr.submitted_by ` + where
+	countQuery := `SELECT COUNT(*) FROM limit_increase_requests lr JOIN organizations o ON o.id = lr.organization_id LEFT JOIN users u ON u.id = lr.submitted_by ` + where
 	var total int64
 	if err := r.db.QueryRow(ctx, countQuery, args[:len(args)-1]...).Scan(&total); err == nil {
 		result.Pagination.Total = &total
@@ -1541,7 +1622,7 @@ func (r *organizationRepository) RecordOrganizationAcquisition(ctx context.Conte
 	if acq == nil {
 		return nil
 	}
-	n := acq.Normalize()
+	n := acq.Normalize().Channel()
 	if n.Empty() {
 		return nil
 	}

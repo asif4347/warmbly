@@ -59,7 +59,7 @@ defmodule RealtimeWeb.OrgChannel do
 
     case user_id
          |> Auth.check_org_membership(org_id)
-         |> Auth.confine(socket.assigns[:credential]) do
+         |> Auth.confine_socket(socket.assigns) do
       {:ok, member} ->
         Logger.debug("User #{user_id} joined org channel #{org_id}")
 
@@ -99,6 +99,9 @@ defmodule RealtimeWeb.OrgChannel do
 
       {:error, :not_a_member} ->
         ChannelGuard.join_error("not_a_member")
+
+      {:error, :portal_session_restricted} ->
+        ChannelGuard.join_error("portal_session_restricted")
 
       {:error, reason} ->
         Logger.warning("Failed to join org channel: #{inspect(reason)}")
@@ -284,7 +287,7 @@ defmodule RealtimeWeb.OrgChannel do
            fn ->
              socket.assigns.user_id
              |> Auth.check_org_membership(socket.assigns.org_id)
-             |> Auth.confine(socket.assigns[:credential])
+             |> Auth.confine_socket(socket.assigns)
            end,
            force
          ) do
@@ -576,6 +579,26 @@ defmodule RealtimeWeb.OrgChannel do
     has = fn perm -> Auth.has_permission?(%{permissions: permissions}, Auth.permission(perm)) end
 
     cond do
+      # Domains and mailboxes bought in the store: the inventory sits behind manage_emails.
+      String.starts_with?(event_type, "STORE_") ->
+        has.(:manage_emails)
+
+      # Social conversations are inbox content; accounts, connects and the GraphKit link sit with the mailboxes.
+      String.starts_with?(event_type, "SOCIAL_MESSAGE") ->
+        has.(:access_unibox)
+
+      String.starts_with?(event_type, "SOCIAL_ACCOUNT") or
+        String.starts_with?(event_type, "SOCIAL_CONNECTION") or
+          String.starts_with?(event_type, "SOCIAL_LINK") ->
+        has.(:manage_emails)
+
+      # A background LinkedIn import writes contacts; a social step's outcome is campaign activity.
+      String.starts_with?(event_type, "SOCIAL_IMPORT") ->
+        has.(:view_contacts)
+
+      String.starts_with?(event_type, "SOCIAL_ACTION") ->
+        has.(:view_campaigns)
+
       # Billing
       String.contains?(event_type, "SUBSCRIPTION") or String.contains?(event_type, "BILLING") ->
         has.(:manage_billing)

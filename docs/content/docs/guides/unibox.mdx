@@ -55,6 +55,15 @@ One inbox for every connected mailbox. Read, sort, and reply from a single scree
 
 Verified [warmup mail](/guides/warmup/) stays out of Unibox, including your mailbox's Sent copies and warmup run by [Warmbly Cloud](/guides/warmbly-cloud/). It does not create inbox notifications, raise the unread count or trigger reply classification. The consumer also checks existing messages in batches (once a day and after every restart) and removes confirmed warmup from Unibox, and any reply notification it had raised goes with it. This leaves the messages in your email provider and keeps ordinary conversations intact.
 
+### Warmup from other services
+
+Warmup sent by anything other than this workspace arrives as ordinary mail: another warmup tool warming the same mailboxes, or [Warmbly Cloud](/guides/warmbly-cloud/) warming a mailbox in a separate workspace without a link to this one. To keep it out, open **Settings > Sending > Warmup from other services**:
+
+- **Hide warmup from another Warmbly** hides mail carrying a Warmbly warmup marker that this workspace did not send. Warmup sent from an Outlook or Microsoft 365 mailbox loses that marker in transit, so it still needs a tag.
+- **Warmup tags** hides mail containing any of the codes you add, anywhere in its subject or text, in any case. Most warmup tools give each account one, usually as the filter tag in their warmup settings. A tag needs at least 4 characters, and up to 20 can be added.
+
+Hidden mail is never stored in Unibox. Mail already there is removed within a few minutes of saving, for every mailbox in the workspace, and the check runs again daily. The messages stay in the mailbox at your provider, untouched, so the other service can still find them. Removal is permanent in Unibox: turning a rule off later does not bring removed mail back, so pick tags that only appear in warmup.
+
 </Fold>
 
 <Fold>
@@ -172,6 +181,14 @@ Participant substring matching starts once the query contains at least three con
 It searches the scope you are in. When that finds nothing, the empty state offers **Search all mail**, which widens to every folder and keeps what you typed. Changing view yourself clears the box, so a query typed for one scope never silently filters the next.
 
 The filter button next to the title opens a small panel that narrows the list on the spot: read state, a date range (today, the last 7 or 30 days, or two dates), sender, labels, mailboxes (or a whole tag of them), and sort order. Anything you add shows as a chip under the search box, and each chip removes itself with one click. A view that already fixes one of these, such as Unread or a single mailbox, does not offer that control again.
+
+</Fold>
+
+<Fold>
+
+## Social
+
+With [social accounts](/guides/social/) connected, the rail gains a **Social** scope holding the conversations of your LinkedIn, Instagram, WhatsApp, Telegram and Facebook accounts, with how many have unread messages, live. Filter it by channel with the chips above the list; each conversation shows its channel. Replies are sent as text from the account the conversation belongs to. A social reply from a campaign contact sends the same reply notification as an email reply and stops their sequence on every channel. See [social conversations](/guides/social/#conversations).
 
 </Fold>
 
@@ -329,9 +346,9 @@ These reply drafts are personal to your signed-in user and workspace in this bro
 
 AI lives at your cursor, not in the toolbar. With the cursor in the body, click the sparkle (or press **⌘J**) for three options: write something inline, **Draft a reply from this thread**, or **Continue writing**.
 
-A thread draft is grounded in the whole conversation, the contact's record and campaign membership, and your workspace **voice profile**. Grounding reads the messages themselves, not their preview lines, with quoted history stripped and the most recent messages given the most room, so the draft answers what was actually asked rather than the opening sentence. While it writes, a review bar offers **Keep**, **Retry**, **Adjust** (steer with an instruction like "shorter"), or **Discard**. Nothing sends until you press Send. Each draft costs [AI credits](/guides/ai-credits/).
+A thread draft is grounded in the whole conversation, the contact's record and campaign membership, and your workspace **voice profile**. Grounding reads the messages themselves, not their preview lines, with quoted history stripped and the most recent messages given the most room, so the draft answers what was actually asked rather than the opening sentence. While it writes, a review bar offers **Keep**, **Retry**, **Adjust** (steer with an instruction like "shorter"), or **Discard**. Nothing sends until you press Send. Each draft is charged to the [workspace balance](/guides/ai-credits/) for what it uses, typically $0.02 to $0.03.
 
-Select any text for a floating **Edit with AI** pill: quick actions (improve, shorten, expand, fix grammar, friendlier, more formal) or a free instruction, rewriting just the selection with **Undo** and **Again** one click away. One credit per rewrite. The same control works in the campaign step editor.
+Select any text for a floating **Edit with AI** pill: quick actions (improve, shorten, expand, fix grammar, friendlier, more formal) or a free instruction, rewriting just the selection with **Undo** and **Again** one click away. Each rewrite is charged for what it uses, typically about $0.01. The same control works in the campaign step editor.
 
 An edit applies your instruction and leaves everything else alone: it does not rewrite the passage into a fresh email, and "fix the grammar" changes the grammar and nothing more. Personalization tokens, conditions, spintax, AI blocks, form links and links (their destinations included) are carried through unchanged, so rewriting copy never drops a `{{.FirstName}}` or an opt-out link. Bold, italic and headings inside the rewritten selection are not preserved, so select around them when the styling matters. When the model decides the passage already satisfies the instruction, the review row says **No change** rather than claiming a rewrite you cannot see.
 
@@ -383,7 +400,7 @@ With a recipient set, **History** slides out every conversation you have had wit
 | **Schedule** | Queue a send for later. It appears inline in the thread as a dashed card and in the **Scheduled** view, where anyone in the workspace with Unibox access can cancel it. A usage meter warns as the workspace approaches its queued-send cap. |
 | **Snooze** | Clears a conversation until a time you pick, up to 90 days out, with presets or a custom time. **Un-snooze now** brings it back immediately. |
 
-Scheduled and smart-queued sends skip the undo window, since they already wait. Cancel them from the **Scheduled** view, or via `DELETE /unibox/scheduled/:task_id`.
+Scheduled and smart-queued sends skip the undo window, since they already wait. Cancel them from the **Scheduled** view, or via `DELETE /unibox/scheduled/:task_id`. A send can be cancelled until it starts sending; a cancelled send never goes out, and one that has already started answers that it is no longer pending.
 
 Replies, forwards and new emails from the unibox are conversations, not outreach, so they never count toward a mailbox's daily campaign limit or its warmup volume, and a mailbox that has sent its campaign emails for the day can still answer a lead. They are held to fair use instead, counted in recipients (every To, Cc and Bcc address).
 
@@ -414,7 +431,9 @@ A mailbox that is paused or reconnecting, held after a send problem, or cooling 
 
 A new email or a reply to an address on your [suppression list](/guides/unsubscribe/#the-suppression-list), directly or through its domain, is refused before it is queued, with a message naming the address and the entry that matched it. A forward is not: it passes on mail you already received to people you picked by hand, so you can forward a lead to a client or colleague whose domain you keep out of campaigns. Fair use still counts a forward's recipients.
 
-When a send is refused for one of those reasons, it is not sent and the mailbox owner sees an error naming the cause and the limit it reached, so they can send it later or from another mailbox. If Warmbly cannot confirm the email reached the mailbox's sending worker, the error says so; check **Sent** before sending it again.
+When a send is refused for one of those reasons, it is not sent and the mailbox owner sees an error naming the cause and the limit it reached, so they can send it later or from another mailbox. If Warmbly cannot confirm the email reached the mailbox's sending worker, the error says so; check **Sent** before sending it again. Warmbly never sends that email a second time on its own. If no worker started it within about 30 minutes, it never will: the owner is told it was not sent, and the mailbox sends again.
+
+A send that was interrupted before it was handed to a worker, for example by a restart, is picked up again within a few minutes and goes out once. One that cannot go out within an hour of being sent fails instead, and the owner is told to send it again.
 
 </Fold>
 

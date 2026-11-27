@@ -168,6 +168,57 @@ Run `QA_FLEET_FIXTURES=1 pnpm proof fleet-telemetry` in `qa/`. Stop the addition
 admin server as well as the stack afterward. This proof does not validate real
 worker sampling, network egress, mail delivery or inbox placement.
 
+## Billing plans proof
+
+`flows/billing-agency-plans.flow.ts` records the agency plans on a workspace's Plans tab. The default stack
+runs with billing off, where the billing page has no Plans tab, so the flow is opt-in: start the stack with
+`QA_STRIPE_SECRET_KEY` set to a Stripe test-mode key (nothing is charged; the flow only reads plans). The
+seeded account must be staff of no agency and its workspace attached to none, which a fresh seed is: the link
+the flow looks for reads "Set up an agency" only then. Run `QA_BILLING=1 pnpm proof billing-agency-plans`.
+
+`flows/plans-popup.flow.ts` records the plan chooser popup, opened from **Settings > Billing**, and the Plans
+tab's cards, on the same stack: `QA_BILLING=1 pnpm proof plans-popup`.
+
+## Admin agency proof fixtures
+
+`flows/admin-agencies.flow.ts` records an operator giving an agency a plan, a pool of its own and extra sends
+in the admin panel. Start the lite stack with `QA_STRIPE_SECRET_KEY` set (with billing off every agency already
+holds everything, so a given plan changes nothing), then serve `admin/` separately with `VITE_API_URL` pointing
+to the stack's API and set `QA_WEB_URL` to that localhost admin origin. Sign the seeded account in once so its
+session exists, apply `fixtures/admin-agencies.sql`, and clear the stack's own Redis so the new permissions
+and session state are read. The fixture grants every admin permission and marks the session as having passed
+a second factor: local authentication fixtures, not MFA proof.
+
+Run `QA_ADMIN_AGENCY_FIXTURES=1 pnpm proof admin-agencies` in `qa/`. The flow asserts through the API that the
+client workspace receives the plan and that the pool totals are what the page shows. Then, without `QA_WEB_URL`,
+`QA_ADMIN_AGENCY_FIXTURES=1 pnpm proof agency-arranged-plan` records the agency's own billing page for the plan
+just given. Stop the admin server and the stack afterward.
+
+`flows/agency-branding-look.flow.ts` uses the same fixture, which leaves the agency without a brand: it records
+**Agency > Branding** from nothing set to a finished look, picking a colour, font, corners and a sign-in layout
+and watching the preview follow. Run it against the dashboard, without `QA_WEB_URL`:
+`QA_ADMIN_AGENCY_FIXTURES=1 pnpm proof agency-branding-look`.
+
+`flows/agency-extra-sends.flow.ts` records **Agency > Billing**: the pack price, the automatic top-ups of sends
+and of the AI balance with what each charges, and what happens when sends run out. It needs the same fixture with Agency Pro in force on the
+agency (set `plan_id` to the Agency Pro plan, `status = 'active'` and a current period on its row; the flow expects
+that plan's $60 pack). No step charges a card:
+`QA_ADMIN_AGENCY_FIXTURES=1 pnpm proof agency-extra-sends`.
+
+`flows/agency-mailboxes.flow.ts` records **Agency > Mailboxes**: every client's mailboxes, a vendor account the agency
+connects once, and that account opened in a client's import. It needs the same fixture (apply it again before each
+recording: it removes the vendor account the flow connects) and the mock inbox vendors, which the `lite` stack runs
+beside itself when started with `QA_VENDOR_MOCK=1 pnpm stack up lite`. Then:
+`QA_ADMIN_AGENCY_FIXTURES=1 pnpm proof agency-mailboxes`.
+
+`flows/client-connect-vendor.flow.ts` records a client connecting many mailboxes from its own vendor account through
+a connect link: the link is made in the dashboard, opened on the portal, and the mock vendor's mailboxes are picked
+and imported. It needs the same fixture (it marks the product tour as seen), the mock inbox vendors
+(`QA_VENDOR_MOCK=1 pnpm stack up lite`) and the portal service in front of this stack, started as described under
+[agency clients and the portal domain](#agency-clients-and-the-portal-domain); the dashboard build and preview there
+are not needed for this flow. Then: `QA_PORTAL_URL=http://localhost:8095 pnpm proof client-connect-vendor`. Stop the
+portal process afterwards along with the stack.
+
 ## Member access proof fixtures
 
 `flows/member-access.flow.ts` is opt-in: apply `fixtures/member-access.sql` to
@@ -318,3 +369,127 @@ The harness refuses to record anything but localhost (or a host named in
 production or a customer workspace, and never attach media to a PR any other
 way: no image hosts, no commits of screenshots, no other repositories.
 Everything the harness writes stays under the ignored `.artifacts/`.
+
+## Warmup placement proof fixtures
+
+`flows/warmup-placement.flow.ts` is opt-in: apply `fixtures/warmup-placement.sql`
+to this worktree's rich-seed database. It adds an A/B arm to the entry step of the
+seeded **RevOps outreach - July** campaign, two pool peers (Google Workspace and
+Microsoft 365, on the reserved `.example` TLD) and synthetic warmup openings of that
+step with the receipts they filed, and marks the owner's product tour finished. It
+is re-runnable. Clear the stack's private Redis afterwards.
+
+```bash
+docker exec -i warmbly-postgres-1 psql -U warmbly -d warmbly_qa_<worktree> < fixtures/warmup-placement.sql
+docker exec wqa-<worktree>-redis redis-cli FLUSHDB
+QA_WARMUP_PLACEMENT_FIXTURES=1 pnpm proof warmup-placement
+```
+
+The placement numbers are fixture data, not a measurement of real delivery.
+
+## Warmup filtering proof fixtures
+
+`flows/warmup-filtering.flow.ts` is opt-in: apply `fixtures/warmup-filtering.sql`
+to this worktree's rich-seed database. It marks the owner's product tour
+finished, clears the workspace's `external_warmup` settings and the seeded
+`dev.outbound@warmbly.test` filter tag, so the walkthrough starts from the
+defaults. It is re-runnable. Clear the stack's private Redis afterwards.
+
+```bash
+docker exec -i warmbly-postgres-1 psql -U warmbly -d warmbly_qa_<worktree> < fixtures/warmup-filtering.sql
+docker exec wqa-<worktree>-redis redis-cli FLUSHDB
+QA_WARMUP_FILTERING_FIXTURES=1 pnpm proof warmup-filtering
+```
+
+## Regions and timezones proof fixtures
+
+`flows/regions-and-timezones.flow.ts` is opt-in: apply `fixtures/regions-and-timezones.sql`
+to this worktree's rich-seed database. It adds 120 leads on the reserved `.example` TLD
+whose custom fields carry a country, state, city, location or timezone in the shapes
+exports use (a tenth carry none), a **Prospects worldwide** segment holding them, and a
+draft **Worldwide outreach** campaign on New York time with the same leads. It is
+re-runnable: it removes the region segments a previous run created and resets the
+campaign to its own timezone. The stack's backend works the locations out within a minute.
+
+```bash
+docker exec -i warmbly-postgres-1 psql -U warmbly -d warmbly_qa_<worktree> < fixtures/regions-and-timezones.sql
+docker exec wqa-<worktree>-redis redis-cli FLUSHDB
+QA_REGIONS_FIXTURES=1 pnpm proof regions-and-timezones
+```
+
+## Agency proof fixtures
+
+`flows/agency.flow.ts` is opt-in: apply `fixtures/agency.sql` to this worktree's rich-seed
+database. It makes the seeded owner the owner of a **Northwind Growth** agency on Agency Pro, with
+the seeded workspace as its first client and this month's sends in the shared pool. The flow adds two
+more client workspaces (**Bluebird Dental**, **Acme Robotics**) through the API and copies a campaign
+into one, so the account then belongs to several workspaces and every test opens the seeded one from
+the workspace picker. It is re-runnable. A self-host has no pool cap, so start the stack with billing on to show the
+pool meter; no step calls Stripe, so a placeholder test key is enough.
+
+```bash
+QA_STRIPE_SECRET_KEY=sk_test_placeholder pnpm stack restart
+docker exec -i warmbly-postgres-1 psql -U warmbly -d warmbly_qa_<worktree> < fixtures/agency.sql
+docker exec wqa-<worktree>-redis redis-cli FLUSHDB
+QA_AGENCY_FIXTURES=1 pnpm proof agency
+```
+
+### Agency clients and the portal domain
+
+`flows/agency-portal.flow.ts` records what an agency's clients see. Apply `fixtures/agency-clients.sql`
+after `fixtures/agency.sql`: it gives Northwind Growth a brand, a portal theme and a verified portal at `portal.localhost`,
+and adds Casey Client (`casey@client.example`, `password123`), the client's own teammate in Dev's
+Organization. The first test needs nothing more.
+
+The portal tests need the portal service in front of a built dashboard, the way an agency's domain is
+served. The stack's backend expects the portal at `localhost:8095` with the dev portal token (see
+`.artifacts/stack/backend.sh`). Build the dashboard into a scratch directory (the dev server's module paths
+are not proxied), serve it, and run the portal Worker against this stack (ports from `.artifacts/stack/ports`):
+
+```bash
+(cd ../portal && pnpm build)
+(cd ../web && VITE_APP_URL=http://localhost:<WEB> VITE_API_URL=http://localhost:<API> \
+  pnpm exec vite build --outDir /tmp/wqa-portal/web-dist --emptyOutDir)
+(cd ../web && VITE_APP_URL=http://localhost:<WEB> VITE_API_URL=http://localhost:<API> \
+  pnpm exec vite preview --outDir /tmp/wqa-portal/web-dist --port 15291 --host 127.0.0.1) &
+(cd .. && pnpm dlx wrangler@4.45.0 dev --config deploy/cloudflare/portal/wrangler.jsonc --ip 127.0.0.1 --port 8095 \
+  --show-interactive-dev-session=false --var API_ORIGIN:http://localhost:<API> --var PORTAL_DOMAIN:localhost:8095 \
+  --var PORTAL_EDGE_TOKEN:<token from backend.sh> --var DASHBOARD_ORIGIN:http://127.0.0.1:15291) &
+```
+
+Create a connect link (`POST /v1/emails/client-links`) and a report link (`POST /v1/reports/:id/link`) in
+Dev's Organization (both are built on `portal.localhost`), then record with their tokens:
+
+```bash
+QA_AGENCY_FIXTURES=1 QA_PORTAL_URL=http://portal.localhost:8095 QA_PORTAL_CONNECT=<token> \
+  QA_PORTAL_REPORT=<token> pnpm proof agency
+```
+
+Stop the preview and portal processes afterwards along with the stack.
+
+## Marketing site agency pages
+
+`flows/site-agencies.flow.ts` records the agency sections of the marketing site (pricing cards, cost per
+client, what every agency plan includes, the agencies page). Run `pnpm dev --host 127.0.0.1 --port <port>` in
+`site/`, keep this worktree's stack up (the harness checks the backend), then:
+
+```bash
+QA_WEB_URL=http://127.0.0.1:<port> QA_API_URL=http://localhost:<API> QA_MAILPIT_URL=http://localhost:<MAILPIT> \
+  QA_SITE=1 pnpm proof site-agencies
+```
+
+## Agency client view proof fixtures
+
+`flows/agency-client-view.flow.ts` and `flows/agency-branding-tour.flow.ts` record an agency opening a client's
+workspace as that client's members see it, and branding the portal before opening the real dashboard in it.
+Apply `fixtures/agency.sql`, then `fixtures/agency-client-view.sql` (two roles in the client workspace, so the
+view has roles to be drawn for), to this worktree's isolated rich-seed database. Run
+`QA_AGENCY_FIXTURES=1 pnpm proof agency-client-view` and `QA_AGENCY_FIXTURES=1 pnpm proof agency-branding-tour`.
+The branding tour saves a look on the seeded agency, so the client view flow records in that brand afterwards.
+
+## Campaign review proof fixtures
+
+`flows/campaign-review.flow.ts` is opt-in: apply `fixtures/campaign-review.sql` to this worktree's isolated
+rich-seed database before each recording. It moves one seeded campaign into the dev workspace as a draft with
+synthetic leads (two without a first name), an AI block and one personalized email, and resets review mode to
+off so the flow can turn it on. Run `QA_CAMPAIGN_REVIEW_FIXTURES=1 pnpm proof campaign-review`.

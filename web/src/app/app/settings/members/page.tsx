@@ -11,6 +11,7 @@ import { AnimatePresence } from "framer-motion";
 import {
     CheckIcon,
     CopyIcon,
+    KeyRoundIcon,
     Loader2Icon,
     MailIcon,
     SendIcon,
@@ -28,6 +29,7 @@ import useInviteMember from "@/lib/api/hooks/app/organizations/useInviteMember";
 import useRemoveMember from "@/lib/api/hooks/app/organizations/useRemoveMember";
 import useCancelInvitation from "@/lib/api/hooks/app/organizations/useCancelInvitation";
 import useUpdateMemberRole from "@/lib/api/hooks/app/organizations/useUpdateMemberRole";
+import useTransferOwnership from "@/lib/api/hooks/app/organizations/useTransferOwnership";
 import useRoles from "@/lib/api/hooks/app/organizations/useRoles";
 import useAuthConfig from "@/lib/api/hooks/auth/useAuthConfig";
 import type OrganizationRole from "@/lib/api/models/app/organizations/OrganizationRole";
@@ -37,6 +39,7 @@ import type { AppError } from "@/lib/api/client/normalizeError";
 import buildError from "@/lib/helper/buildError";
 import getInvitationLink from "@/lib/api/client/app/organizations/getInvitationLink";
 import { useSetMemberAccess } from "@/lib/api/hooks/app/organizations/useMemberAccess";
+import useEnsureClientRole from "@/lib/api/hooks/app/organizations/useEnsureClientRole";
 import type MemberAccess from "@/lib/api/models/app/organizations/MemberAccess";
 import { WORKSPACE_ACCESS } from "@/lib/api/models/app/organizations/MemberAccess";
 import type OrganizationMember from "@/lib/api/models/app/organizations/OrganizationMember";
@@ -64,14 +67,18 @@ export default function MembersSettingsPage() {
     const removeMember = useRemoveMember();
     const cancelInvite = useCancelInvitation();
     const updateRole = useUpdateMemberRole();
+    const transferOwnership = useTransferOwnership();
     const setAccess = useSetMemberAccess();
     const [editingAccess, setEditingAccess] = React.useState<OrganizationMember | null>(null);
     const customRoles = useRoles();
+    const clientRoles = useEnsureClientRole();
     const { config: authConfig, ready: authConfigReady } = useAuthConfig();
     const currentUserId = useAppStore((s) => s.user?.id);
     const currentOrg = useAppStore((s) => s.currentOrganization);
 
     const memberList = members.data ?? [];
+    // Only the owner can hand the workspace over, whatever a custom role holds.
+    const ownsWorkspace = currentOrg?.role === "owner";
     const inviteList = invites.data ?? [];
     const expiredCount = inviteList.filter((i) => i.expired).length;
 
@@ -87,6 +94,25 @@ export default function MembersSettingsPage() {
                 /* surfaced */
             }
         });
+    }
+    // Ownership is the server's to move, so the roster waits for its answer.
+    function doTransfer(id: string, label: string) {
+        confirm?.show(
+            `Make ${label} the owner of ${currentOrg?.name || "this workspace"}? They get full control, including billing, ownership and deleting the workspace. You stay a member as an Admin, and only they can hand ownership back.`,
+            async () => {
+                try {
+                    await toast.promise(transferOwnership.mutateAsync(id), {
+                        loading: "Transferring ownership…",
+                        success: "Ownership transferred",
+                        error: (e: AppError) => buildError(e),
+                    });
+                } catch {
+                    /* surfaced */
+                }
+            },
+            undefined,
+            { title: "Transfer ownership?", confirmLabel: "Transfer ownership" },
+        );
     }
     function doCancelInvite(id: string) {
         confirm?.show(`Cancel this invitation?`, async () => {
@@ -171,7 +197,7 @@ export default function MembersSettingsPage() {
             {access.canManage && (
                 <Section
                     eyebrow="Invite teammates"
-                    description="Paste any number of emails — we'll separate them automatically. Pick a role; you can change it later."
+                    description="Paste any number of emails and they are separated automatically. Pick a role, or under Access make them a client with a client role; you can change either later."
                 >
                     <InviteFlow
                         pending={invite.isPending}
@@ -202,9 +228,18 @@ export default function MembersSettingsPage() {
                         title="Member access"
                         subject={safeEmail(editingAccess.email) || editingAccess.user_id}
                         initial={editingAccess.access}
+                        currentRoles={editingAccess.roles}
                         onClose={() => setEditingAccess(null)}
-                        onSave={async (next) => {
-                            await toast.promise(setAccess.mutateAsync({ userId: editingAccess.user_id, access: next }), {
+                        onSave={async (next, preset) => {
+                            // Scope first, then the client role, so the member never holds more than either allows.
+                            const save = async () => {
+                                await setAccess.mutateAsync({ userId: editingAccess.user_id, access: next });
+                                if (preset) {
+                                    const roleId = await clientRoles.ensure(preset);
+                                    await updateRole.mutateAsync({ id: editingAccess.user_id, data: { role_ids: [roleId] } });
+                                }
+                            };
+                            await toast.promise(save(), {
                                 loading: "Saving…",
                                 success: "Access updated",
                                 error: (e: AppError) => buildError(e),
@@ -232,12 +267,13 @@ export default function MembersSettingsPage() {
                                     <Th className="md:w-44">Role</Th>
                                     <Th className="md:w-48">Access</Th>
                                     <Th className="w-40 hidden md:table-cell">Joined</Th>
-                                    <th className="w-12 px-3 py-2"></th>
+                                    <th className={`${ownsWorkspace ? "w-20" : "w-12"} px-3 py-2`}></th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {memberList.map((m) => {
-                                    const email = safeEmail(m.email) || `(user ${m.user_id.slice(0, 8)})`;
+                                    // The visible address, or the name for someone shown without one (a reseller's people and its account).
+                                    const email = safeEmail(m.email) || m.name?.trim() || `(user ${m.user_id.slice(0, 8)})`;
                                     const isSelf = m.user_id === currentUserId;
                                     const isOwner = m.role === "owner";
                                     return (
@@ -249,7 +285,7 @@ export default function MembersSettingsPage() {
                                                 <div className="flex items-center gap-2.5">
                                                     <div className="size-7 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
                                                         <span className="text-[10px] font-semibold text-slate-600">
-                                                            {initials(m.email, m.user_id)}
+                                                            {initials(m.email || m.name, m.user_id)}
                                                         </span>
                                                     </div>
                                                     <div className="min-w-0">
@@ -296,16 +332,30 @@ export default function MembersSettingsPage() {
                                                     : "—"}
                                             </td>
                                             <td className="px-3">
-                                                {access.canManage && !isOwner && !isSelf && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => doRemove(m.user_id, email)}
-                                                        aria-label="Remove member"
-                                                        className="size-6 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 inline-flex items-center justify-center transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100"
-                                                    >
-                                                        <TrashIcon className="w-3 h-3" />
-                                                    </button>
-                                                )}
+                                                <div className="flex items-center justify-end gap-1">
+                                                    {ownsWorkspace && !isOwner && !isSelf && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => doTransfer(m.user_id, email)}
+                                                            disabled={transferOwnership.isPending}
+                                                            aria-label="Transfer ownership"
+                                                            title="Transfer ownership"
+                                                            className="size-6 rounded text-slate-400 hover:text-sky-700 hover:bg-sky-50 inline-flex items-center justify-center transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 disabled:opacity-50"
+                                                        >
+                                                            <KeyRoundIcon className="w-3 h-3" />
+                                                        </button>
+                                                    )}
+                                                    {access.canManage && !isOwner && !isSelf && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => doRemove(m.user_id, email)}
+                                                            aria-label="Remove member"
+                                                            className="size-6 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 inline-flex items-center justify-center transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                                                        >
+                                                            <TrashIcon className="w-3 h-3" />
+                                                        </button>
+                                                    )}
+                                                </div>
                                             </td>
                                         </tr>
                                     );
@@ -468,6 +518,7 @@ function InviteFlow({
     const [roleIds, setRoleIds] = React.useState<string[]>([]);
     const [inviteAccess, setInviteAccess] = React.useState<MemberAccess>(WORKSPACE_ACCESS);
     const [editingAccess, setEditingAccess] = React.useState(false);
+    const clientRoles = useEnsureClientRole();
     // Default to the seeded Viewer (least privilege), else the first role.
     const defaultRole = customRoles.find((r) => r.name === "Viewer") ?? customRoles[0];
     const effectiveRoleIds = roleIds.length > 0 ? roleIds : defaultRole ? [defaultRole.id] : [];
@@ -644,7 +695,17 @@ function InviteFlow({
                             initial={inviteAccess}
                             saveLabel="Use this access"
                             onClose={() => setEditingAccess(false)}
-                            onSave={async (next) => setInviteAccess(next)}
+                            onSave={async (next, preset) => {
+                                if (preset) {
+                                    try {
+                                        setRoleIds([await clientRoles.ensure(preset)]);
+                                    } catch (e) {
+                                        toast.error(buildError(e as AppError));
+                                        throw e;
+                                    }
+                                }
+                                setInviteAccess(next);
+                            }}
                         />
                     )}
                 </AnimatePresence>

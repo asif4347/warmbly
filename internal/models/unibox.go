@@ -378,10 +378,11 @@ type MailSearchParams struct {
 	// contact, or, without CampaignID, exchanged with the contact's address.
 	ContactID *uuid.UUID
 	// EmailAccountIDs restricts results to messages received by one of
-	// these mailboxes. Empty = no account filter. The frontend tag
-	// filter resolves client-side to the matching account IDs and
-	// passes them here.
+	// these mailboxes. Empty = no account filter.
 	EmailAccountIDs []uuid.UUID
+	// TagIDs restricts results to mailboxes carrying any of these workspace
+	// mailbox tags, resolved in SQL. Combined with EmailAccountIDs it is the intersection.
+	TagIDs []uuid.UUID
 	// Snoozed scopes the result set:
 	//   nil   → exclude snoozed threads (default inbox behaviour)
 	//   true  → only snoozed threads
@@ -517,14 +518,16 @@ type UniboxOverview struct {
 	// ScheduledPendingMax is the hard cap on pending scheduled email
 	// tasks per workspace. The dashboard shows current/max so the user
 	// sees how close they are to the limit before hitting it.
-	ScheduledPendingMax int64                    `json:"scheduled_pending_max"`
-	Folders             []UniboxFolderOverview   `json:"folders"`
-	Mailboxes           []UniboxMailboxOverview  `json:"mailboxes"`
-	Tags                []UniboxTagOverview      `json:"tags"`
-	Categories          []UniboxCategoryOverview `json:"categories"`
-	GeneratedAt         time.Time                `json:"generated_at"`
-	WindowTodayStart    time.Time                `json:"window_today_start"`
-	WindowWeekStart     time.Time                `json:"window_week_start"`
+	ScheduledPendingMax int64 `json:"scheduled_pending_max"`
+	// SocialUnread counts social conversations with unread messages; absent without the add-on.
+	SocialUnread     *int64                   `json:"social_unread,omitempty"`
+	Folders          []UniboxFolderOverview   `json:"folders"`
+	Mailboxes        []UniboxMailboxOverview  `json:"mailboxes"`
+	Tags             []UniboxTagOverview      `json:"tags"`
+	Categories       []UniboxCategoryOverview `json:"categories"`
+	GeneratedAt      time.Time                `json:"generated_at"`
+	WindowTodayStart time.Time                `json:"window_today_start"`
+	WindowWeekStart  time.Time                `json:"window_week_start"`
 }
 
 // UniboxThreadLabels is the assign/replace payload for a conversation's

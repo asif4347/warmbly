@@ -109,6 +109,9 @@ type WorkerRepository interface {
 	// counts the placement score needs, resolved in one round trip.
 	ListPlacementCandidates(ctx context.Context, orgID uuid.UUID, provider string, allowedStates []models.WorkerHealthState) ([]PlacementCandidateRow, error)
 	CountOrgMailboxes(ctx context.Context, orgID uuid.UUID) (int, error)
+	// AgencyEgressSlot reports whether the workspace is among the agency's
+	// first limit clients with a mailbox, oldest attached first.
+	AgencyEgressSlot(ctx context.Context, agencyID, orgID uuid.UUID, limit int) (bool, error)
 	ListRotationCandidates(ctx context.Context, hotUtilization float64, limit int) ([]MailboxPlacementState, error)
 	GetCapacityRow(ctx context.Context, workerID uuid.UUID) (*WorkerCapacityRowDB, error)
 	AddLoadScore(ctx context.Context, workerID uuid.UUID, delta float64) error
@@ -608,6 +611,8 @@ func GetExpiredTrialsWithoutPayment(ctx context.Context, db *pgxpool.Pool) ([]mo
 		WHERE s.free_trial_ends_at IS NOT NULL
 		  AND s.free_trial_ends_at < NOW()
 		  AND s.stripe_subscription_id IS NULL
+		  -- An operator-granted plan in force is paid without Stripe; its trial has nothing to expire.
+		  AND NOT (s.managed_at IS NOT NULL AND (s.managed_until IS NULL OR s.managed_until > NOW()))
 		  AND s.status NOT IN ('canceled', 'incomplete_expired')
 	`
 
@@ -642,10 +647,10 @@ func PauseCampaignsByOrganizationID(ctx context.Context, db *pgxpool.Pool, orgID
 	return err
 }
 
-// DisableWarmupByOrganizationID disables warmup for all email accounts belonging to an organization
-func DisableWarmupByOrganizationID(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID) error {
-	query := `UPDATE email_accounts SET warmup = NULL, updated_at = NOW() WHERE organization_id = $1`
-	_, err := db.Exec(ctx, query, orgID)
+// PauseTrialWarmup pauses the organization's warming mailboxes at the trial end, which ResumeTrialWarmup matches on.
+func PauseTrialWarmup(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID, trialEndsAt time.Time) error {
+	query := `UPDATE email_accounts SET warmup_paused_at = $2, updated_at = NOW() WHERE organization_id = $1 AND warmup IS NOT NULL AND warmup_paused_at IS NULL`
+	_, err := db.Exec(ctx, query, orgID, trialEndsAt)
 	return err
 }
 

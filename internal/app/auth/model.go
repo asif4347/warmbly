@@ -13,9 +13,6 @@ type AuthData struct {
 	Turnstile string `json:"turnstile"`
 	// AppAttest is the native app's proof, sent instead of Turnstile.
 	AppAttest *appattest.Proof `json:"app_attest,omitempty"`
-	// ReferralCode is the optional ?ref= code the signup arrived with. Carried
-	// to RegistrationConfirm so the new org can be attributed to its referrer.
-	ReferralCode string `json:"referral_code"`
 	// Invite is the team-invitation token the signup arrived with. It is what
 	// lets an invited person create an account under DISABLE_REGISTRATION=invite_only.
 	Invite string `json:"invite"`
@@ -26,6 +23,8 @@ type AuthData struct {
 	// DeviceToken is what LoginConfirm returned when the user asked to
 	// remember this browser. Login only: it skips the emailed code.
 	DeviceToken string `json:"device_token"`
+	// SupportsPasswordChange says the native app can take a password_change_required answer. Login only.
+	SupportsPasswordChange bool `json:"supports_password_change,omitempty"`
 }
 
 type ConfirmData struct {

@@ -30,7 +30,7 @@ type FormRepository interface {
 	RecordView(ctx context.Context, formID uuid.UUID) *errx.Error
 	// CreateSubmission stores the answers and bumps the form's counters.
 	CreateSubmission(ctx context.Context, sub *models.FormSubmission) (*models.FormSubmission, *errx.Error)
-	ListSubmissions(ctx context.Context, orgID, formID uuid.UUID, limit int, before *time.Time) ([]models.FormSubmission, bool, *errx.Error)
+	ListSubmissions(ctx context.Context, orgID, formID uuid.UUID, limit int, after *models.FormSubmissionPosition) ([]models.FormSubmission, bool, *errx.Error)
 	// LogSubmissionActivity adds the form_submitted event to the contact
 	// timeline; best-effort, called after the submission is stored.
 	LogSubmissionActivity(ctx context.Context, orgID, contactID, formID uuid.UUID, formName string, submissionID uuid.UUID) *errx.Error
@@ -50,6 +50,7 @@ const formColumns = `f.id, f.organization_id, f.created_by, f.public_id, f.name,
 	f.logo_url, f.cover_url, f.background_url,
 	f.views_count, f.submissions_count, f.last_submission_at, f.published_at,
 	(SELECT COALESCE(array_agg(fc.category_id), ARRAY[]::uuid[]) FROM form_categories fc WHERE fc.form_id = f.id),
+	(SELECT COALESCE(array_agg(fs.segment_id), ARRAY[]::uuid[]) FROM form_segments fs WHERE fs.form_id = f.id),
 	f.created_at, f.updated_at`
 
 func scanForm(row pgx.Row) (*models.Form, error) {
@@ -59,7 +60,7 @@ func scanForm(row pgx.Row) (*models.Form, error) {
 		&f.SuccessMessage, &f.RedirectURL, &f.CampaignID, &f.AllowedDomains, &f.CaptchaEnabled, &f.TriageEnabled,
 		&f.LogoURL, &f.CoverURL, &f.BackgroundURL,
 		&f.ViewsCount, &f.SubmissionsCount, &f.LastSubmissionAt, &f.PublishedAt,
-		&f.CategoryIDs, &f.CreatedAt, &f.UpdatedAt); err != nil {
+		&f.CategoryIDs, &f.SegmentIDs, &f.CreatedAt, &f.UpdatedAt); err != nil {
 		return nil, err
 	}
 	f.Fields = []models.FormField{}
@@ -78,6 +79,9 @@ func scanForm(row pgx.Row) (*models.Form, error) {
 	}
 	if f.CategoryIDs == nil {
 		f.CategoryIDs = []uuid.UUID{}
+	}
+	if f.SegmentIDs == nil {
+		f.SegmentIDs = []uuid.UUID{}
 	}
 	return &f, nil
 }
@@ -181,6 +185,9 @@ func (r *formRepository) Create(ctx context.Context, orgID uuid.UUID, createdBy 
 	if xerr := setFormCategories(ctx, tx, orgID, id, f.CategoryIDs); xerr != nil {
 		return nil, xerr
 	}
+	if xerr := setFormSegments(ctx, tx, orgID, id, f.SegmentIDs); xerr != nil {
+		return nil, xerr
+	}
 	if err := tx.Commit(ctx); err != nil {
 		db.CaptureError(err, "forms create", nil, "commit")
 		return nil, errx.InternalError()
@@ -223,6 +230,13 @@ func (r *formRepository) Update(ctx context.Context, orgID uuid.UUID, f *models.
 	if xerr := setFormCategories(ctx, tx, orgID, f.ID, f.CategoryIDs); xerr != nil {
 		return nil, xerr
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM form_segments WHERE form_id = $1`, f.ID); err != nil {
+		db.CaptureError(err, "forms update", nil, "segments clear")
+		return nil, errx.InternalError()
+	}
+	if xerr := setFormSegments(ctx, tx, orgID, f.ID, f.SegmentIDs); xerr != nil {
+		return nil, xerr
+	}
 	if err := tx.Commit(ctx); err != nil {
 		db.CaptureError(err, "forms update", nil, "commit")
 		return nil, errx.InternalError()
@@ -247,6 +261,26 @@ func setFormCategories(ctx context.Context, tx pgx.Tx, orgID, formID uuid.UUID, 
 	`, formID, categoryIDs, orgID)
 	if err != nil {
 		db.CaptureError(err, "forms categories", nil, "insert")
+		return errx.InternalError()
+	}
+	return nil
+}
+
+// setFormSegments links the picked segments under setFormCategories' rules.
+func setFormSegments(ctx context.Context, tx pgx.Tx, orgID, formID uuid.UUID, segmentIDs []uuid.UUID) *errx.Error {
+	if len(segmentIDs) == 0 {
+		return nil
+	}
+	if len(segmentIDs) > models.FormMaxSegments {
+		return errx.New(errx.BadRequest, fmt.Sprintf("at most %d segments per form", models.FormMaxSegments))
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO form_segments (form_id, segment_id)
+		SELECT $1, s.id FROM segments s WHERE s.id = ANY($2) AND s.organization_id = $3
+		ON CONFLICT (form_id, segment_id) DO NOTHING
+	`, formID, segmentIDs, orgID)
+	if err != nil {
+		db.CaptureError(err, "forms segments", nil, "insert")
 		return errx.InternalError()
 	}
 	return nil
@@ -326,9 +360,17 @@ func (r *formRepository) CreateSubmission(ctx context.Context, sub *models.FormS
 	return sub, nil
 }
 
-func (r *formRepository) ListSubmissions(ctx context.Context, orgID, formID uuid.UUID, limit int, before *time.Time) ([]models.FormSubmission, bool, *errx.Error) {
+func (r *formRepository) ListSubmissions(ctx context.Context, orgID, formID uuid.UUID, limit int, after *models.FormSubmissionPosition) ([]models.FormSubmission, bool, *errx.Error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
+	}
+	var at *time.Time
+	var afterID *uuid.UUID
+	if after != nil {
+		at = &after.At
+		if after.ID != uuid.Nil {
+			afterID = &after.ID
+		}
 	}
 	rows, err := r.DB.Query(ctx, `
 		SELECT s.id, s.form_id, s.organization_id, s.contact_id, s.campaign_id, s.data, s.source_url, s.triage, s.triage_confidence, s.created_at,
@@ -336,10 +378,10 @@ func (r *formRepository) ListSubmissions(ctx context.Context, orgID, formID uuid
 		FROM form_submissions s
 		LEFT JOIN contacts c ON c.id = s.contact_id
 		LEFT JOIN campaigns cp ON cp.id = s.campaign_id
-		WHERE s.organization_id = $1 AND s.form_id = $2 AND ($3::timestamptz IS NULL OR s.created_at < $3)
-		ORDER BY s.created_at DESC
-		LIMIT $4
-	`, orgID, formID, before, limit+1)
+		WHERE s.organization_id = $1 AND s.form_id = $2 AND ($3::timestamptz IS NULL OR s.created_at < $3 OR (s.created_at = $3 AND s.id < $4::uuid))
+		ORDER BY s.created_at DESC, s.id DESC
+		LIMIT $5
+	`, orgID, formID, at, afterID, limit+1)
 	if err != nil {
 		db.CaptureError(err, "form submissions list", nil, "query")
 		return nil, false, errx.InternalError()

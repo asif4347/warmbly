@@ -54,9 +54,9 @@ override_data {
         repository_urls     = { for name in ["backend", "consumer", "forms", "realtime", "tracking"] : name => "123456789012.dkr.ecr.us-east-1.amazonaws.com/warmbly/${name}" }
       }
       configuration_parameter_arns = {
-        "backend/KAFKA_BOOTSTRAP_SERVERS" = "arn:aws:ssm:us-east-1:123456789012:parameter/a"
-        "backend/SCHEMA_REGISTRY_URL"     = "arn:aws:ssm:us-east-1:123456789012:parameter/b"
-        "backend/BLOB_BUCKET"             = "arn:aws:ssm:us-east-1:123456789012:parameter/c"
+        "backend/EVENTBUS_PROVIDER" = "arn:aws:ssm:us-east-1:123456789012:parameter/a"
+        "backend/CODEC_PROVIDER"    = "arn:aws:ssm:us-east-1:123456789012:parameter/b"
+        "backend/BLOB_BUCKET"       = "arn:aws:ssm:us-east-1:123456789012:parameter/c"
       }
       cache = { credential_secret = "arn:aws:secretsmanager:us-east-1:123456789012:secret:cache", endpoint = "cache" }
     }
@@ -374,6 +374,10 @@ run "consumer_scales_on_its_backlog_by_default" {
     error_message = "A sustained backlog adds tasks, half an hour quiet removes one, and missing data does neither."
   }
   assert {
+    condition     = startswith(aws_cloudwatch_metric_alarm.consumer_backlog[0].alarm_name, "warmbly-production-consumer-") && !startswith(aws_cloudwatch_metric_alarm.consumer_quiet[0].alarm_name, "warmbly-production-consumer-")
+    error_message = "A consumer deploy bakes against the backlog alarm and never against the quiet alarm, which fires whenever the consumer is idle."
+  }
+  assert {
     condition     = contains(jsondecode(aws_ecs_task_definition.service["consumer"].container_definitions)[0].environment, { name = "CONSUMER_METRICS_CLOUDWATCH", value = "warmbly-production" }) && length(aws_iam_role_policy.consumer_metrics) == 1
     error_message = "The consumer publishes the backlog its alarms read, and its role may publish it."
   }
@@ -403,4 +407,70 @@ run "realtime_keeps_a_fixed_count" {
     autoscaling = { realtime = { min = 1, max = 2 } }
   }
   expect_failures = [var.autoscaling]
+}
+
+run "unmatched_hosts_answer_404_by_default" {
+  command = apply
+  assert {
+    condition     = aws_lb_listener.https.default_action[0].type == "fixed-response" && aws_lb_listener.https.default_action[0].fixed_response[0].status_code == "404"
+    error_message = "a host no rule matches is refused unless tracking is asked to serve it"
+  }
+}
+
+run "unmatched_hosts_reach_tracking_when_enabled" {
+  command = apply
+  variables {
+    tracking_serves_unmatched_hosts = true
+  }
+  assert {
+    condition     = aws_lb_listener.https.default_action[0].type == "forward" && aws_lb_listener.https.default_action[0].target_group_arn == aws_lb_target_group.service["tracking"].arn
+    error_message = "a host no rule matches goes to tracking"
+  }
+}
+
+run "unmatched_hosts_follow_the_tls_route" {
+  command = apply
+  variables {
+    tracking_serves_unmatched_hosts = true
+    target_tls                      = "route"
+  }
+  assert {
+    condition     = alltrue([for group in aws_lb_listener.https.default_action[0].forward[0].target_group : group.arn == aws_lb_target_group.service_tls["tracking"].arn ? group.weight == 1 : group.weight == 0])
+    error_message = "the catch-all moves to HTTPS with every other tracking rule"
+  }
+}
+
+run "nodes_keep_the_public_backend_by_default" {
+  command = apply
+  variables {
+    target_tls = "route"
+  }
+  assert {
+    condition     = !strcontains(aws_ecs_task_definition.service["backend"].container_definitions, "NODE_BACKEND_INTERNAL_URL")
+    error_message = "nodes are offered the private address only once nodes_private_backend is set"
+  }
+}
+
+run "nodes_are_offered_the_private_backend_over_tls" {
+  command = apply
+  variables {
+    target_tls            = "route"
+    nodes_private_backend = true
+  }
+  assert {
+    condition     = strcontains(aws_ecs_task_definition.service["backend"].container_definitions, "\"NODE_BACKEND_INTERNAL_URL\"") && strcontains(aws_ecs_task_definition.service["backend"].container_definitions, "https://backend.warmbly.internal:8443") && strcontains(aws_ecs_task_definition.service["backend"].container_definitions, "\"NODE_BACKEND_INTERNAL_CA\"")
+    error_message = "the backend offers nodes its private TLS address and the certificate that names it"
+  }
+}
+
+run "nodes_never_get_the_plain_hop" {
+  command = apply
+  variables {
+    target_tls            = "serve"
+    nodes_private_backend = true
+  }
+  assert {
+    condition     = !strcontains(aws_ecs_task_definition.service["backend"].container_definitions, "NODE_BACKEND_INTERNAL_URL")
+    error_message = "a node is offered the private address only once callers are on TLS"
+  }
 }

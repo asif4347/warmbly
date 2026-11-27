@@ -22,11 +22,12 @@ const (
 	EventWarmupDispatchOverdue   = "warmup.dispatch_overdue"
 	EventWarmupDispatchAfterStop = "warmup.dispatch_after_stop"
 	EventOrgRisk                 = "org_risk.escalated"
-	EventWarmupReporterUntrusted = "warmup.reporter_untrusted"
 	EventSubscriptionIssue       = "subscription.payment_failed"
 	EventAdminSignIn             = "admin.signed_in"
 	EventAdminAccess             = "admin.access_changed"
-	EventTest                    = "test"
+	// EventStoreUnavailable is GraphKit refusing the instance's partner account (suspended, bad key, empty balance).
+	EventStoreUnavailable = "store.unavailable"
+	EventTest             = "test"
 )
 
 // Severity drives the colour a chat transport renders.
@@ -76,6 +77,12 @@ var Catalog = []EventDef{
 		Severity:    SeverityInfo, SelfHostRelevant: true,
 	},
 	{
+		Key: EventStoreUnavailable, Group: "Operations",
+		Label:       "Domain and mailbox store unavailable",
+		Description: "GraphKit refused this instance's partner account (suspended, key refused or balance too low), so no workspace can buy or renew.",
+		Severity:    SeverityUrgent, SelfHostRelevant: true,
+	},
+	{
 		Key: EventSubscriptionIssue, Group: "Sales",
 		Label:       "Subscription billing issue",
 		Description: "A subscription invoice could not be finalized or paid, so sending may be at risk.",
@@ -121,12 +128,6 @@ var Catalog = []EventDef{
 		Key: EventOrgRisk, Group: "Abuse",
 		Label:       "Workspace risk escalated",
 		Description: "Risk scoring moved a workspace into a stricter posture.",
-		Severity:    SeverityWarning, SelfHostRelevant: true,
-	},
-	{
-		Key: EventWarmupReporterUntrusted, Group: "Abuse",
-		Label:       "Linked mailbox placement reports untrusted",
-		Description: "A mailbox a linked instance runs reports spam placement far from what other recipients saw for the same senders, so its reports no longer count toward other mailboxes' placement.",
 		Severity:    SeverityWarning, SelfHostRelevant: true,
 	},
 }

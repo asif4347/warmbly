@@ -388,12 +388,13 @@ struct SettingsPage<Content: View>: View {
             .padding(.bottom, 120)
         }
         .scrollIndicators(.hidden)
+        .readableMargins()
         .scrollDismissesKeyboard(.interactively)
         .defaultScrollAnchor(SettingsDebug.anchor)
-        .background(WTheme.groupedPage)
+        .background(GroupedSurface.page)
         .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(WTheme.groupedPage, for: .navigationBar)
+        .surfaceTitleDisplayMode()
+        .toolbarBackground(GroupedSurface.page, for: .navigationBar)
     }
 }
 

@@ -42,10 +42,36 @@ func (s *emailService) OAuthCallbackOrigin(provider models.InboxProvider) (strin
 }
 
 func (s *emailService) OAuthConnectWithCode(ctx context.Context, userID string, orgID *uuid.UUID, provider models.InboxProvider, code, verifier string) (*models.Email, *errx.Error) {
-	return s.OAuthConnectWithCodeForAccount(ctx, userID, orgID, provider, code, verifier, uuid.Nil)
+	return s.oauthConnectWithCode(ctx, userID, orgID, provider, code, verifier, uuid.Nil, "")
 }
 
 func (s *emailService) OAuthConnectWithCodeForAccount(ctx context.Context, userID string, orgID *uuid.UUID, provider models.InboxProvider, code, verifier string, accountID uuid.UUID) (*models.Email, *errx.Error) {
+	return s.oauthConnectWithCode(ctx, userID, orgID, provider, code, verifier, accountID, "")
+}
+
+func (s *emailService) OAuthConnectWithCodeAs(ctx context.Context, userID string, orgID *uuid.UUID, provider models.InboxProvider, code, verifier, address string) (*models.Email, *errx.Error) {
+	return s.oauthConnectWithCode(ctx, userID, orgID, provider, code, verifier, uuid.Nil, address)
+}
+
+// ErrSignedInAsOther: a link for one mailbox was signed in with another account, so nothing was stored.
+const ErrSignedInAsOther = "signed_in_as_other"
+
+// requireAddress refuses a sign-in whose account is not the one mailbox it was for ("" accepts any).
+func requireAddress(provider models.InboxProvider, got, want string) *errx.Error {
+	want = strings.TrimSpace(want)
+	if want == "" || strings.EqualFold(strings.TrimSpace(got), want) {
+		return nil
+	}
+	who := "Google"
+	if provider == models.InboxProviderOutlook {
+		who = "Microsoft"
+	}
+	return errx.NewWithIdentifier(errx.Conflict, ErrSignedInAsOther,
+		"You signed in to "+who+" as "+got+", but this link is for "+want+", so nothing was connected. "+
+			"Sign out of "+who+" (or use a private window), open the link again and sign in as "+want+".")
+}
+
+func (s *emailService) oauthConnectWithCode(ctx context.Context, userID string, orgID *uuid.UUID, provider models.InboxProvider, code, verifier string, accountID uuid.UUID, address string) (*models.Email, *errx.Error) {
 	ctx, cancel := detach(ctx, connectBudget)
 	defer cancel()
 	if code = strings.TrimSpace(code); code == "" {
@@ -84,10 +110,16 @@ func (s *emailService) OAuthConnectWithCodeForAccount(ctx context.Context, userI
 	if xerr != nil {
 		return nil, xerr
 	}
+	if xerr := requireAddress(provider, owner.Email, address); xerr != nil {
+		return nil, xerr
+	}
 	if existing, xerr := s.findExisting(ctx, userID, orgID, owner.Email); xerr != nil {
 		return nil, xerr
 	} else if existing != nil {
 		return nil, errx.ErrEmailOnboardAlreadyExists
+	}
+	if provider == models.InboxProviderGoogle && personalGmail(owner.Email) {
+		return nil, errx.ErrEmailOnboardGooglePersonal
 	}
 	name := strings.TrimSpace(owner.Name)
 	if name == "" {
@@ -104,6 +136,7 @@ func (s *emailService) OAuthConnectWithCodeForAccount(ctx context.Context, userI
 		AccessToken:    tok.AccessToken,
 		RefreshToken:   tok.RefreshToken,
 		ExpiresAt:      tok.Expiry,
+		GrantedScopes:  recordedScopes(tok),
 	})
 	if xerr != nil {
 		return nil, xerr
@@ -136,8 +169,8 @@ func (s *emailService) OAuthAccessToken(ctx context.Context, accountID uuid.UUID
 	if current.AccessToken != "" && time.Until(current.Expiry) > 2*time.Minute {
 		return current, nil
 	}
-	// The client config is only needed to refresh.
-	cfg, xerr := s.oauthConfigFor(models.InboxProvider(acc.Provider))
+	// Only the client that issued the grant can refresh it.
+	cfg, xerr := s.grantConfig(ctx, creds.OAuthAppID, models.InboxProvider(acc.Provider))
 	if xerr != nil {
 		return nil, xerr
 	}
@@ -149,7 +182,7 @@ func (s *emailService) OAuthAccessToken(ctx context.Context, accountID uuid.UUID
 	if fresh.RefreshToken == "" {
 		fresh.RefreshToken = current.RefreshToken
 	}
-	if err := s.emailRepository.RefreshBoxToken(ctx, accountID, fresh.AccessToken, fresh.RefreshToken, fresh.Expiry); err != nil {
+	if err := s.emailRepository.RefreshBoxTokenForApp(ctx, accountID, fresh.AccessToken, fresh.RefreshToken, fresh.Expiry, creds.OAuthAppID); err != nil {
 		log.Warn().Err(err).Str("account_id", accountID.String()).Msg("brokered token persist failed")
 	}
 	return fresh, nil

@@ -6,6 +6,7 @@ package form
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -29,7 +30,7 @@ type Service interface {
 	Create(ctx context.Context, orgID uuid.UUID, createdBy *uuid.UUID, name string) (*models.Form, *errx.Error)
 	Update(ctx context.Context, orgID, id uuid.UUID, in *models.FormWrite) (*models.Form, *errx.Error)
 	Delete(ctx context.Context, orgID, id uuid.UUID) *errx.Error
-	ListSubmissions(ctx context.Context, orgID, formID uuid.UUID, limit int, before *time.Time) ([]models.FormSubmission, bool, *errx.Error)
+	ListSubmissions(ctx context.Context, orgID, formID uuid.UUID, limit int, after *models.FormSubmissionPosition) ([]models.FormSubmission, bool, *errx.Error)
 	DeleteSubmission(ctx context.Context, orgID, formID, subID uuid.UUID) *errx.Error
 	// SetAsset stores an uploaded brand asset URL; an empty url clears it.
 	SetAsset(ctx context.Context, orgID, id uuid.UUID, kind, url string) (*models.Form, *errx.Error)
@@ -341,6 +342,12 @@ func (s *service) Update(ctx context.Context, orgID, id uuid.UUID, in *models.Fo
 	if in.CategoryIDs != nil {
 		f.CategoryIDs = *in.CategoryIDs
 	}
+	if in.SegmentIDs != nil {
+		if len(*in.SegmentIDs) > models.FormMaxSegments {
+			return nil, errx.New(errx.BadRequest, fmt.Sprintf("at most %d segments per form", models.FormMaxSegments))
+		}
+		f.SegmentIDs = *in.SegmentIDs
+	}
 	if in.AllowedDomains != nil {
 		domains, xerr := models.ValidateFormDomains(*in.AllowedDomains)
 		if xerr != nil {
@@ -420,8 +427,8 @@ func (s *service) Delete(ctx context.Context, orgID, id uuid.UUID) *errx.Error {
 	return s.repo.Delete(ctx, orgID, id)
 }
 
-func (s *service) ListSubmissions(ctx context.Context, orgID, formID uuid.UUID, limit int, before *time.Time) ([]models.FormSubmission, bool, *errx.Error) {
-	return s.repo.ListSubmissions(ctx, orgID, formID, limit, before)
+func (s *service) ListSubmissions(ctx context.Context, orgID, formID uuid.UUID, limit int, after *models.FormSubmissionPosition) ([]models.FormSubmission, bool, *errx.Error) {
+	return s.repo.ListSubmissions(ctx, orgID, formID, limit, after)
 }
 
 func (s *service) DeleteSubmission(ctx context.Context, orgID, formID, subID uuid.UUID) *errx.Error {
@@ -514,10 +521,18 @@ func (s *service) Submit(ctx context.Context, publicID string, answers map[strin
 		}
 		if owner != nil {
 			lead.Campaigns = campaignList(f.CampaignID)
-			lead.Categories = categoryList(f.CategoryIDs)
+			lead.Categories = idStrings(f.CategoryIDs)
+			lead.Segments = idStrings(f.SegmentIDs)
 			lead.Source = models.ContactSourceForm
 			lead.SourceDetail = f.Name
 			created, cerr := s.contacts.Add(ctx, owner.String(), f.OrganizationID, []models.AddContact{*lead})
+			// A segment deleted since the form loaded fails the write; retry with the ones still linked.
+			if cerr != nil && len(f.SegmentIDs) > 0 {
+				if fresh, ferr := s.repo.GetByPublicID(ctx, publicID); ferr == nil && len(fresh.SegmentIDs) < len(f.SegmentIDs) {
+					lead.Segments = idStrings(fresh.SegmentIDs)
+					created, cerr = s.contacts.Add(ctx, owner.String(), f.OrganizationID, []models.AddContact{*lead})
+				}
+			}
 			if cerr == nil && len(created) > 0 {
 				id := created[0].ID
 				sub.ContactID = &id
@@ -742,7 +757,7 @@ func campaignList(id *uuid.UUID) []string {
 	return []string{id.String()}
 }
 
-func categoryList(ids []uuid.UUID) []string {
+func idStrings(ids []uuid.UUID) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, id.String())

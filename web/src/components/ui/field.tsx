@@ -18,6 +18,7 @@ const base =
 
 export function TextInput({
     value,
+    id,
     onChange,
     placeholder,
     type = "text",
@@ -30,8 +31,11 @@ export function TextInput({
     invalid,
     title,
     maxLength,
+    "aria-label": ariaLabel,
 }: {
     value: string;
+    // Names the field for a <Label htmlFor>.
+    id?: string;
     onChange: (v: string) => void;
     placeholder?: string;
     type?: string;
@@ -52,9 +56,13 @@ export function TextInput({
     // Caps the value in the field itself, for the cases where the server has a
     // hard limit and silently truncating or failing the save would be worse.
     maxLength?: number;
+    // Names a field that has no visible <Label>.
+    "aria-label"?: string;
 }) {
     return (
         <input
+            id={id}
+            aria-label={ariaLabel}
             type={type}
             value={value}
             placeholder={placeholder}
@@ -128,9 +136,9 @@ export function SearchInput({
     );
 }
 
-export function Label({ children, className }: { children: React.ReactNode; className?: string }) {
+export function Label({ children, className, htmlFor }: { children: React.ReactNode; className?: string; htmlFor?: string }) {
     return (
-        <label className={cn(
+        <label htmlFor={htmlFor} className={cn(
             "text-[10px] uppercase tracking-[0.14em] text-slate-400 font-medium block mb-1.5",
             className,
         )}>
@@ -165,6 +173,7 @@ export function FieldRow({ children, className }: { children: React.ReactNode; c
 // inside the field, before the steppers.
 export function NumberInput({
     value,
+    id,
     onChange,
     onCommit,
     min,
@@ -192,6 +201,7 @@ export function NumberInput({
     suffix?: React.ReactNode;
     align?: "left" | "right" | "center";
     className?: string;
+    id?: string;
 }) {
     const clamp = (n: number) => {
         if (Number.isNaN(n)) return min ?? 0;
@@ -217,6 +227,7 @@ export function NumberInput({
             )}
         >
             <input
+                id={id}
                 type="number"
                 inputMode="numeric"
                 value={Number.isFinite(value) ? value : ""}

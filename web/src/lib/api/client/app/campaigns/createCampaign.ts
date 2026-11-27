@@ -29,6 +29,7 @@ export interface CreateCampaignInput {
     start_date?: string | null;
     end_date?: string | null;
     timezone?: string;
+    timezone_mode?: 'campaign' | 'recipient';
     days?: number;
     start_time?: string;
     end_time?: string;
@@ -40,10 +41,12 @@ export interface CreateCampaignInput {
     // Net-new send controls (all optional; backend defaults reproduce today's behavior)
     sender_strategy?: 'tags' | 'explicit';
     rotation_mode?: 'weighted' | 'round_robin' | 'least_recently_used';
+    follow_up_sender?: 'same' | 'same_domain' | 'rotate';
     ramp_enabled?: boolean;
     ramp_start?: number;
     ramp_increment?: number;
     ramp_ceiling?: number;
+    warmup_graduation?: boolean;
     esp_match_mode?: 'off' | 'prefer' | 'strict';
     max_new_leads_per_day?: number;
     prioritize_new_leads?: boolean;

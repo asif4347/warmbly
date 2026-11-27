@@ -30,6 +30,10 @@ export interface CampaignSummary {
     bounces: number
     unsubscribes: number
     reply_breakdown: ReplyBreakdown
+    // Sends that carried an open pixel and tracked links; open_rate and
+    // click_rate are of these. Absent from a server older than the field.
+    open_tracked_sent?: number
+    click_tracked_sent?: number
     open_rate: number
     click_rate: number
     reply_rate: number
@@ -65,7 +69,11 @@ export interface SequenceStats {
     replies: number
     positive_replies: number
     bounces: number
-    // Percentages of this step's own emails_sent.
+    // Sends that carried an open pixel and tracked links; open_rate and
+    // click_rate are of these. Absent from a server older than the field.
+    open_tracked_sent?: number
+    click_tracked_sent?: number
+    // Percentages of this step's own sends (opens and clicks of its tracked ones).
     open_rate: number
     click_rate: number
     reply_rate: number
@@ -103,4 +111,23 @@ export default interface CampaignAnalytics {
     daily_stats?: DailyStats[]
     // Where and on what people opened and clicked; human events only.
     engagement?: CampaignEngagementBreakdown | null
+    // Social steps' results; null or absent when the campaign has none.
+    social?: CampaignSocialStats | null
+}
+
+export interface CampaignSocialChannelStats {
+    actions_sent: number
+    replies: number
+}
+
+export interface CampaignSocialStats {
+    invites_sent: number
+    invites_accepted: number
+    // Percentage of invites_sent, like the other rates.
+    acceptance_rate: number
+    messages_sent: number
+    inmails_sent: number
+    voice_notes_sent?: number
+    replies: number
+    by_channel?: Record<string, CampaignSocialChannelStats>
 }

@@ -70,6 +70,7 @@ type OrganizationService interface {
 
 	// CRUD
 	Create(ctx context.Context, userID uuid.UUID, name, timezone string) (*models.Organization, *errx.Error)
+	CreateAgencyClient(ctx context.Context, userID uuid.UUID, name, timezone string) (*models.Organization, *errx.Error)
 	Get(ctx context.Context, orgID uuid.UUID) (*models.Organization, *errx.Error)
 	GetBySlug(ctx context.Context, slug string) (*models.Organization, *errx.Error)
 	Update(ctx context.Context, orgID uuid.UUID, req *models.UpdateOrganizationRequest) (*models.Organization, *errx.Error)
@@ -92,6 +93,8 @@ type OrganizationService interface {
 	CreateInvitedUser(ctx context.Context, token string, email *mail.Address, passwordHash string) (*models.User, *models.OrganizationMember, *errx.Error)
 	AcceptInvitationByID(ctx context.Context, invitationID, userID uuid.UUID, email string) (*models.OrganizationMember, *errx.Error)
 	PreviewInvitation(ctx context.Context, token string) (*models.InvitationPreview, *errx.Error)
+	// InvitationOrganization is the workspace an invitation, by token or id, is for; nil when there is none.
+	InvitationOrganization(ctx context.Context, token string, invitationID *uuid.UUID) (*uuid.UUID, *errx.Error)
 	GetInvitationToken(ctx context.Context, orgID, invitationID uuid.UUID) (string, *errx.Error)
 
 	// Custom roles
@@ -230,6 +233,13 @@ func (s *organizationService) notifyOperator(key, title, summary string, fields 
 	s.opsNotify.NotifyOperator(key, title, summary, fields)
 }
 
+// WireAgencyPool lets the limits this service reports follow an agency's shared pool.
+func (s *organizationService) WireAgencyPool(p feature.AgencyPool) {
+	if g, ok := s.gate.(interface{ WireAgencyPool(feature.AgencyPool) }); ok {
+		g.WireAgencyPool(p)
+	}
+}
+
 // WireAuthPolicy attaches the deployment auth policy, so invitations answer to
 // DISABLE_REGISTRATION the same way the signup form does.
 func (s *organizationService) WireAuthPolicy(p *config.AuthPolicy) {
@@ -289,6 +299,16 @@ func NewService(
 
 // Create creates a new organization and adds the user as owner
 func (s *organizationService) Create(ctx context.Context, userID uuid.UUID, name, timezone string) (*models.Organization, *errx.Error) {
+	return s.create(ctx, userID, name, timezone, true)
+}
+
+// CreateAgencyClient is Create for a workspace an agency runs: the daily
+// creation throttle applies, the owned-workspace cap does not.
+func (s *organizationService) CreateAgencyClient(ctx context.Context, userID uuid.UUID, name, timezone string) (*models.Organization, *errx.Error) {
+	return s.create(ctx, userID, name, timezone, false)
+}
+
+func (s *organizationService) create(ctx context.Context, userID uuid.UUID, name, timezone string, ownedCap bool) (*models.Organization, *errx.Error) {
 	name, nerr := displayname.Validate("Workspace name", name, displayname.Workspace, false)
 	if nerr != nil {
 		return nil, nerr
@@ -332,7 +352,7 @@ func (s *organizationService) Create(ctx context.Context, userID uuid.UUID, name
 		return nil, errx.New(errx.NotFound, "user not found")
 	}
 
-	if !config.SelfHosted() {
+	if ownedCap && !config.SelfHosted() {
 		ownedCount, countErr := s.orgRepo.GetUserOwnedOrganizationCount(ctx, userID)
 		if countErr != nil {
 			errs.CaptureException(countErr)
@@ -546,6 +566,9 @@ func (s *organizationService) Delete(ctx context.Context, orgID uuid.UUID) *errx
 		if errors.Is(err, repository.ErrOrganizationCloudLinked) {
 			return errx.NewWithIdentifier(errx.Conflict, "organization_cloud_connected", "Disconnect this workspace from Warmbly Cloud before deleting it.")
 		}
+		if errors.Is(err, repository.ErrStorePurchasesActive) {
+			return errx.NewWithIdentifier(errx.Conflict, "store_purchases_active", "Cancel this workspace's purchased mailboxes and turn off renewal on its purchased domains before deleting it.")
+		}
 		errs.CaptureException(err)
 		return errx.New(errx.Internal, "failed to delete organization")
 	}
@@ -655,6 +678,10 @@ func (s *organizationService) GetMembers(ctx context.Context, orgID uuid.UUID) (
 		errs.CaptureException(err)
 	}
 	s.attachMemberAccess(ctx, orgID, members)
+	// Every caller renders the list to people, so the joined users carry their visible address.
+	for i := range members {
+		members[i].User.ForDisplay()
+	}
 	return members, nil
 }
 
@@ -864,6 +891,26 @@ func (s *organizationService) AcceptInvitationByID(ctx context.Context, invitati
 	return s.acceptResolved(ctx, inv, userID, email)
 }
 
+func (s *organizationService) InvitationOrganization(ctx context.Context, token string, invitationID *uuid.UUID) (*uuid.UUID, *errx.Error) {
+	var inv *models.OrganizationInvitation
+	var err error
+	switch {
+	case token != "":
+		inv, err = s.orgRepo.GetInvitationByToken(ctx, crypt.SHA256(token))
+	case invitationID != nil:
+		inv, err = s.orgRepo.GetInvitationByID(ctx, *invitationID)
+	}
+	if err != nil {
+		errs.CaptureException(err)
+		return nil, errx.InternalError()
+	}
+	if inv == nil {
+		return nil, nil
+	}
+	id := inv.OrganizationID
+	return &id, nil
+}
+
 // PreviewInvitation returns the safe public view for the /invite landing page.
 func (s *organizationService) PreviewInvitation(ctx context.Context, token string) (*models.InvitationPreview, *errx.Error) {
 	inv, err := s.orgRepo.GetInvitationByToken(ctx, crypt.SHA256(token))
@@ -946,7 +993,11 @@ func (s *organizationService) acceptResolved(ctx context.Context, inv *models.Or
 	// Verify email matches. Name both addresses: the usual cause is a browser
 	// already signed in as someone else, and a bare "does not match" hides it.
 	if !strings.EqualFold(email, inv.Email) {
-		return nil, errx.New(errx.Forbidden, "this invitation is for "+inv.Email+", but you are signed in as "+email+"; sign out and use the invited address")
+		as := email
+		if models.InternalAddress(email) {
+			as = "an account the service managing your workspace signs in"
+		}
+		return nil, errx.New(errx.Forbidden, "this invitation is for "+inv.Email+", but you are signed in as "+as+"; sign out and use the invited address")
 	}
 
 	// An expired invitation stays listed so the team page can send it again.
@@ -1005,7 +1056,7 @@ func (s *organizationService) acceptResolved(ctx context.Context, inv *models.Or
 		Role:           primary.Name,
 		RoleID:         &primary.ID,
 		Permissions:    primary.Permissions,
-		InvitedBy:      &inv.InvitedBy,
+		InvitedBy:      repository.InviterOf(inv.InvitedBy),
 		InvitedAt:      inv.CreatedAt,
 		AcceptedAt:     &now,
 		// Grants on resources deleted since the invite are dropped by the insert.
@@ -1187,22 +1238,24 @@ func (s *organizationService) TransferOwnership(ctx context.Context, orgID, acto
 		return errx.New(errx.Forbidden, "only the workspace owner can transfer ownership")
 	}
 
-	// Verify new owner is a member
-	member, err := s.orgRepo.GetMember(ctx, orgID, newOwnerUserID)
-	if err != nil {
-		errs.CaptureException(err)
-		return errx.New(errx.Internal, "failed to verify membership")
-	}
-	if member == nil {
-		return errx.New(errx.BadRequest, "new owner must be a member of the organization")
+	if newOwnerUserID == actorUserID {
+		return errx.New(errx.BadRequest, "you already own this workspace")
 	}
 
-	if err := s.orgRepo.TransferOwnership(ctx, orgID, newOwnerUserID); err != nil {
+	// The repository decides again against the locked row, so two requests cannot both move it.
+	switch err := s.orgRepo.TransferOwnership(ctx, orgID, actorUserID, newOwnerUserID); {
+	case err == nil:
+		return nil
+	case errors.Is(err, repository.ErrOwnershipNotHeld):
+		return errx.New(errx.Forbidden, "only the workspace owner can transfer ownership")
+	case errors.Is(err, repository.ErrNewOwnerNotMember):
+		return errx.New(errx.BadRequest, "new owner must be a member of the organization")
+	case errors.Is(err, repository.ErrNewOwnerUnavailable):
+		return errx.New(errx.Conflict, "that member's account cannot take ownership right now")
+	default:
 		errs.CaptureException(err)
 		return errx.New(errx.Internal, "failed to transfer ownership")
 	}
-
-	return nil
 }
 
 // HasPermission checks if a user has a specific permission
@@ -1587,9 +1640,9 @@ func (s *organizationService) SetLimitOverrides(ctx context.Context, orgID uuid.
 //  2. plan != nil   → use plan column
 //  3. otherwise     → fall back to the product-level hard cap
 //
-// Every field but mailboxes and daily sends is never nil: an "unlimited" plan
+// Every field but mailboxes, daily sends and contacts is never nil: an "unlimited" plan
 // is bounded by the product hard caps in config/constants.go. Mailboxes follow
-// MailboxAllowance and daily sends follow the sender's gate, where nil really
+// MailboxAllowance, daily sends and contacts follow the gate, where nil really
 // means unlimited. Admins can raise individual caps per-org by writing an override.
 func (s *organizationService) GetEffectiveLimits(ctx context.Context, orgID uuid.UUID) (*models.OrganizationLimits, *errx.Error) {
 	plan, err := s.GetOrganizationLimits(ctx, orgID)
@@ -1634,15 +1687,35 @@ func (s *organizationService) GetEffectiveLimits(ctx context.Context, orgID uuid
 	if err != nil {
 		return nil, err
 	}
+	contacts, err := s.contactLimit(ctx, orgID, ovMaxContacts)
+	if err != nil {
+		return nil, err
+	}
 
 	return &models.OrganizationLimits{
 		MaxCampaigns:       resolve(ovMaxCampaigns, planLimits.MaxCampaigns, config.HardCapCampaignsTotal),
 		MaxActiveCampaigns: resolve(ovMaxActive, planLimits.MaxActiveCampaigns, config.HardCapCampaignsActive),
 		MaxTeamMembers:     resolve(ovMaxMembers, planLimits.MaxTeamMembers, config.HardCapTeamMembers),
 		MaxEmailAccounts:   mailboxes.Allowance,
-		MaxContacts:        resolve(ovMaxContacts, planLimits.MaxContacts, config.HardCapContacts),
+		MaxContacts:        contacts,
 		DailyCampaignLimit: daily,
 	}, nil
+}
+
+// contactLimit is the ceiling the contact writes enforce, nil when there is none.
+func (s *organizationService) contactLimit(ctx context.Context, orgID uuid.UUID, override int) (*int, *errx.Error) {
+	if s.gate == nil {
+		v := override
+		if v <= 0 {
+			v = config.HardCapContacts
+		}
+		return &v, nil
+	}
+	n, xerr := s.gate.ContactLimit(ctx, orgID)
+	if xerr != nil || n <= 0 {
+		return nil, xerr
+	}
+	return &n, nil
 }
 
 // dailySendLimit is the cap the sender enforces (feature.GetDailyEmailLimit), nil when it is unlimited.
@@ -2025,6 +2098,7 @@ func (s *organizationService) CreateRole(ctx context.Context, orgID, actorID uui
 		Description:    strings.TrimSpace(req.Description),
 		Color:          color,
 		Permissions:    perms,
+		ActsInScope:    req.ActsInScope,
 	}
 	if err := s.orgRepo.CreateRole(ctx, role); err != nil {
 		// Unique (org, name) violation is the only expected failure here.
@@ -2071,6 +2145,13 @@ func (s *organizationService) UpdateRole(ctx context.Context, orgID, actorID, ro
 			return nil, xerr
 		}
 		role.Permissions = perms
+	}
+	// Whether restricted members act with the role changes what it does for them, so the actor must hold it.
+	if req.ActsInScope != nil && *req.ActsInScope != role.ActsInScope {
+		if xerr := s.validateActorHoldsPermissions(ctx, orgID, actorID, role.Permissions); xerr != nil {
+			return nil, xerr
+		}
+		role.ActsInScope = *req.ActsInScope
 	}
 
 	// Write-through: assigned members pick up the new name + permissions
@@ -2135,10 +2216,18 @@ func (s *organizationService) GrantManagedPlan(ctx context.Context, orgID, planI
 		if plan == nil {
 			return nil, errx.New(errx.BadRequest, "that plan does not exist")
 		}
+		// An agency plan sends from the agency's pool, which one workspace on its own does not have.
+		if plan.IsAgencyPlan() {
+			return nil, errx.NewWithIdentifier(errx.BadRequest, "agency_plan_needs_agency",
+				"Agency plans are given to an agency, not to one workspace. Open the agency under Agencies and give it the plan there; its client workspaces receive it.")
+		}
 	}
 	if err := s.subRepo.SetManagedPlan(ctx, orgID, planID, adminID, reason, until); err != nil {
 		errs.CaptureException(err)
 		return nil, errx.New(errx.Internal, "failed to grant the plan")
+	}
+	if err := s.subRepo.ResumeTrialWarmup(ctx, orgID); err != nil {
+		errs.CaptureException(err)
 	}
 	return s.GetManagedPlan(ctx, orgID)
 }

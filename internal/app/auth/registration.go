@@ -28,6 +28,9 @@ func (s *authService) RegistrationStart(ctx context.Context, data *AuthData, ori
 	if err := s.signupAllowed(ctx, data.Email, data.Invite); err != nil {
 		return nil, err
 	}
+	if err := s.portalSignupAllowed(ctx, data.Email, data.Invite); err != nil {
+		return nil, err
+	}
 
 	// The caller's 400, not an incident. See LoginStart.
 	if xerr := s.verifyHuman(ctx, appattest.ActionRegister, data.Turnstile, data.AppAttest, ipaddr); xerr != nil {
@@ -49,9 +52,8 @@ func (s *authService) RegistrationStart(ctx context.Context, data *AuthData, ori
 	// nobody can receive. Every product surveyed defaults self-host to this.
 	if !s.policy.RequireEmailVerification || !s.mailDelivers {
 		u, err := s.createAccount(ctx, data.Email, passwordHash, SignupAttribution{
-			ReferralCode: data.ReferralCode,
-			Invite:       data.Invite,
-			Acquisition:  data.Acquisition,
+			Invite:      data.Invite,
+			Acquisition: data.Acquisition,
 		}, origin)
 		if err != nil {
 			return nil, err
@@ -99,7 +101,6 @@ func (s *authService) RegistrationStart(ctx context.Context, data *AuthData, ori
 		CodeHash:     codeHash,
 		PasswordHash: passwordHash,
 		Nonce:        nonce,
-		ReferralCode: data.ReferralCode,
 		Invite:       data.Invite,
 	}
 	// Held across the emailed code so the org created at confirm still knows
@@ -163,13 +164,16 @@ func (s *authService) RegistrationConfirm(ctx context.Context, data *ConfirmData
 	if err := s.signupAllowed(ctx, claims.Email, sess.Invite); err != nil {
 		return nil, err
 	}
+	if err := s.portalSignupAllowed(ctx, claims.Email, sess.Invite); err != nil {
+		return nil, err
+	}
 
 	// Single-use: only the request that consumes the session creates the account.
 	if !s.consumeCodeSession(ctx, sessKey) {
 		return nil, errx.ErrSession
 	}
 
-	attr := SignupAttribution{ReferralCode: sess.ReferralCode, Invite: sess.Invite}
+	attr := SignupAttribution{Invite: sess.Invite}
 	if sess.Acquisition != nil {
 		attr.Acquisition = *sess.Acquisition
 	}

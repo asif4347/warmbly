@@ -62,7 +62,6 @@ type UserRepository interface {
 	// exempt AND belongs to no organization, which a real user never is.
 	DeleteOrphanExemptUser(ctx context.Context, id uuid.UUID) error
 	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
-	SetFreeTrialUsed(ctx context.Context, userID uuid.UUID) error
 	UpdateOnboarding(ctx context.Context, userID uuid.UUID, firstName, lastName, referralSource, role, teamSize string) error
 	MarkOnboarded(ctx context.Context, userID uuid.UUID) (time.Time, error)
 	MarkProductTourCompleted(ctx context.Context, userID uuid.UUID) (time.Time, error)
@@ -178,7 +177,7 @@ func (r *userRepository) getUser(ctx context.Context, key string, value any) (*m
 	var u models.User
 
 	q := fmt.Sprintf(
-		`SELECT u.id, u.email, u.first_name, u.last_name, u.avatar_url, u.referral_source, u.onboarding_completed_at, u.product_tour_completed_at,
+		`SELECT u.id, u.email, COALESCE(u.contact_email, ''), u.first_name, u.last_name, u.avatar_url, u.referral_source, u.onboarding_completed_at, u.product_tour_completed_at,
 		   u.max_organizations, u.free_trial_used, u.admin_permissions,
 		   u.deletion_scheduled_at, u.deletion_scheduled_for, u.undo_send_seconds,
 		   u.updated_at, u.created_at,
@@ -199,7 +198,7 @@ func (r *userRepository) getUser(ctx context.Context, key string, value any) (*m
 		ctx,
 		q,
 		params...,
-	).Scan(&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.AvatarURL, &u.ReferralSource, &u.OnboardingCompletedAt, &u.ProductTourCompletedAt,
+	).Scan(&u.ID, &u.Email, &u.ContactEmail, &u.FirstName, &u.LastName, &u.AvatarURL, &u.ReferralSource, &u.OnboardingCompletedAt, &u.ProductTourCompletedAt,
 		&u.MaxOrganizations, &u.FreeTrialUsed, &adminPerm,
 		&u.DeletionScheduledAt, &u.DeletionScheduledFor, &u.UndoSendSeconds,
 		&u.UpdatedAt, &u.CreatedAt, &u.Roles)
@@ -231,12 +230,6 @@ func (r *userRepository) GetUser(ctx context.Context, userID uuid.UUID) (*models
 
 func (r *userRepository) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
 	return r.getUser(ctx, "email", normalizeUserEmail(email))
-}
-
-func (r *userRepository) SetFreeTrialUsed(ctx context.Context, userID uuid.UUID) error {
-	const q = `UPDATE users SET free_trial_used = TRUE, updated_at = NOW() WHERE id = $1`
-	_, err := r.DB.Exec(ctx, q, userID)
-	return err
 }
 
 func (r *userRepository) UpdateOnboarding(ctx context.Context, userID uuid.UUID, firstName, lastName, referralSource, role, teamSize string) error {
@@ -391,13 +384,17 @@ func (r *userRepository) SetLoginCodeExempt(ctx context.Context, id uuid.UUID, e
 func (r *userRepository) ListLoginCodeExempt(ctx context.Context) ([]models.LoginCodeExemption, error) {
 	rows, err := r.DB.Query(ctx, `
 		SELECT u.id, u.email, u.login_code_exempt_reason, u.login_code_exempt_at, u.password_expires_at,
-		       workspace.id, seeded.created_at,
+		       workspace.id, seeded.created_at, COALESCE(workspace.active, false),
 		       EXISTS (SELECT 1 FROM admin_audit_logs t WHERE t.action = 'create_tester' AND t.target_id = u.id)
 		FROM users u
 		LEFT JOIN LATERAL (
-			SELECT o.id FROM organizations o
+			SELECT o.id, `+testerWorkspaceActiveSQL("$1")+` AS active FROM organizations o
 			WHERE o.owner_user_id = u.id AND o.category = 'test'
-			ORDER BY o.created_at, o.id LIMIT 1
+			-- Of several owned Test workspaces, list the one sample data can still be added to.
+			ORDER BY active DESC, EXISTS (
+				SELECT 1 FROM admin_audit_logs a
+				WHERE a.target_type = 'organization' AND a.target_id = o.id AND a.action = 'seed_tester_workspace'
+			), o.created_at, o.id LIMIT 1
 		) workspace ON true
 		LEFT JOIN LATERAL (
 			SELECT a.created_at FROM admin_audit_logs a
@@ -406,7 +403,7 @@ func (r *userRepository) ListLoginCodeExempt(ctx context.Context) ([]models.Logi
 			ORDER BY a.created_at LIMIT 1
 		) seeded ON true
 		WHERE u.login_code_exempt
-		ORDER BY u.login_code_exempt_at NULLS FIRST`)
+		ORDER BY u.login_code_exempt_at NULLS FIRST`, models.TestPlanID)
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +412,7 @@ func (r *userRepository) ListLoginCodeExempt(ctx context.Context) ([]models.Logi
 	out := []models.LoginCodeExemption{}
 	for rows.Next() {
 		var e models.LoginCodeExemption
-		if err := rows.Scan(&e.UserID, &e.Email, &e.Reason, &e.GrantedAt, &e.PasswordExpiresAt, &e.TestWorkspaceID, &e.SampleDataSeededAt, &e.CreatedAsTester); err != nil {
+		if err := rows.Scan(&e.UserID, &e.Email, &e.Reason, &e.GrantedAt, &e.PasswordExpiresAt, &e.TestWorkspaceID, &e.SampleDataSeededAt, &e.SampleDataEligible, &e.CreatedAsTester); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

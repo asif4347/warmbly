@@ -90,6 +90,9 @@ type Session struct {
 	// RequireFreshAuth.
 	ReauthAt *time.Time `json:"reauth_at,omitempty"`
 
+	// PortalAgencyID is the agency whose portal domain this session was signed in for; it then reaches only that agency.
+	PortalAgencyID *uuid.UUID `json:"portal_agency_id,omitempty"`
+
 	CreatedAt time.Time  `json:"created_at"`
 	RevokedAt *time.Time `json:"revoked_at"`
 	ExpiresAt *time.Time `json:"expires_at"`
@@ -156,9 +159,6 @@ type RegistrationSession struct {
 	PasswordHash string `json:"password_hash"`
 	CodeHash     string `json:"code_hash"`
 	Nonce        string `json:"nonce"`
-	// ReferralCode is the optional referral code captured at RegistrationStart,
-	// applied for attribution once the account + org are created at confirm.
-	ReferralCode string `json:"referral_code,omitempty"`
 	// Invite is the invitation token captured at RegistrationStart, re-checked
 	// and redeemed at confirm so the account lands in the inviting org.
 	Invite string `json:"invite,omitempty"`

@@ -36,7 +36,7 @@ Two other entry points:
 
 - the full `internal/seed` fixture first (plans, workers, the demo orgs), so it works on a fresh database
 - the Sunrise Labs org on an active Pro subscription, owned by `sandbox@warmbly.test`, plus a second teammate (Marco Diaz, admin), one pending invitation, and an active developer API key
-- AI credits: the plan's monthly allowance plus a 5,000-credit purchased top-up, so the assistant and every other AI surface work out of the box (re-seeding refills both pools)
+- Balance: the plan's monthly allowance plus money added on top, so the assistant and every other AI surface work out of the box (re-seeding refills both)
 - 20 sender mailboxes on `@sunrise.test` (a healthy warmup pool by the dashboard's own coverage bar), assigned to the worker `make sandbox` runs, spread across the whole warmup lifecycle: seven graduated senders that finished their ramp weeks ago and carry full (~50/day) cold volume, eight mid-ramp, three freshly connected, one with warmup paused, and one on reduced health with an open provider warning. Every account has matching warmup ramp stats and daily send counts backfilled, varied pool health scores, a personal signature, and a tag (VIP, Agency, or Cold); pacing is demo friendly (45s minimum gap, 100/day cap)
 - campaigns in every list bucket: two active ("Sunrise Q3 launch outreach", 3 steps, 48 contacts; "Agency partnerships", 2 steps, 24 contacts), one paused, one completed, and one draft, all with tracking enabled, every step connected to the next (the scheduler only follows explicit step connections), all 20 senders in the rotation, and a realistic funnel of sent, opened, clicked, replied, and bounced timestamps spread over three weeks
 - six placement seed inboxes on the instance panel, on domains of their own (`gmail-seeds.test`, `workspace-seeds.test`, `m365-seeds.test`, `outlook-seeds.test`, `yahoo-seeds.test`) with the provider each stands in for, so a [placement test](/guides/placement-tests/) from any Sunrise mailbox has somewhere to land
@@ -68,7 +68,7 @@ Seeding ends by running one evaluation and printing what it found, so `make sand
 Real mail servers stand in for the internet's mail infrastructure:
 
 - **Mailpit** is the SMTP sink. Every mailbox's outbound server points at it, so all sends (campaign and warmup) are captured and visible in its UI.
-- **Dovecot** hosts the mailboxes' inboxes. It accepts any username with the password `sandbox` and auto-creates the maildir on first use. The worker's real IMAP sync polls it every minute.
+- **Dovecot** hosts the mailboxes' inboxes. It accepts any username with the password `sandbox` and auto-creates the maildir on first use. The worker's real IMAP sync holds INBOX in `IDLE`, so new mail appears within seconds; other folders wait for the full check.
 
 The simulator bridges the two and plays every human. It also plays the spam filter for the seed inboxes: a placement copy the content check scores below 70 goes to Junk, and a fixed share of the rest does too, more on the Microsoft and Yahoo seeds and more again for tracked copy, so a test and its tracking comparison both show a spread:
 
@@ -118,6 +118,12 @@ Connect either vendor from **Add account > Inbox vendor** with any API key. The 
 | Mailforge | four mailboxes on `sunrisehq.test`, hosted on the sandbox's Mailpit and Dovecot, so they import and connect for real | forwarding only |
 
 The mock keeps its state in memory, so a restart puts every domain back the way it started.
+
+The first InboxKit mailbox on each domain is listed as its admin, and the mock answers InboxKit's trusted-app and mailbox sign-in requests: a trusted-app request completes after about 5 seconds, and a sign-in request fails after about 20, because nothing in the sandbox can sign in to Google. The `.test` domains are not hosted by Google, so an import never takes that path on its own; it is there for exercising the vendor client against the mock.
+
+### Smartlead for tool migrations
+
+The same mock also plays Smartlead's API at `/smartlead`, so [Migrate from another tool](/guides/migrate-from-another-tool/) runs end to end with no Smartlead account. With `MAILVENDOR_SANDBOX_URL` set, the backend reads Smartlead from the mock, and any API key works. The account is an agency with two clients, "Northwind Studio" (two campaigns, 28 leads, three mailboxes) and "Brightline Legal" (one campaign, 18 leads, two mailboxes), plus one campaign of 12 leads and one mailbox assigned to no client. The campaigns carry A/B variants, merge tokens with fallbacks, spintax, a condition and sender placeholders; the leads span every status the import maps; and the block list has two entries that apply to every client and two of each client's own. The mailboxes are Google and Microsoft, so they come over as mailboxes to sign in again.
 
 ## Demo script
 

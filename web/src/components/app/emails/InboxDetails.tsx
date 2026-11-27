@@ -50,6 +50,7 @@ import {
     PowerIcon,
     PowerOffIcon,
     CloudIcon,
+    CalendarXIcon,
     type LucideIcon,
 } from "lucide-react";
 import { relativeTime } from "@/lib/unibox/messageDetails";
@@ -88,9 +89,10 @@ import { mailboxConnectionLabel, mailHostLogo } from "@/lib/mailHost";
 import { useGrants } from "@/lib/api/hooks/app/emails/useMailboxGrants";
 import { domainOf, grantFor, grantName, vendorLabel, type GrantProvider } from "@/lib/api/models/app/emails/MailboxSources";
 import MailboxGrantDialog from "./import/grants/MailboxGrantDialog";
-import SigninRetiringNotice from "./migration/SigninRetiringNotice";
+import MailboxSigninSection, { SigninPrompt } from "./migration/MailboxSigninSection";
 import ProviderLogo from "./ProviderLogo";
 import MailboxSourceChip from "./MailboxSourceChip";
+import { PartnerEnablementNote } from "./PartnerEnablement";
 import { mailboxSource } from "@/lib/mailboxSource";
 import UpdateCredentialsDialog from "./UpdateCredentialsDialog";
 import MailboxPlacementTab from "@/components/app/placement/MailboxPlacementTab";
@@ -102,10 +104,16 @@ import useCurrentOrganization from "@/lib/api/hooks/app/organizations/useCurrent
 import { timezoneOptions } from "@/lib/timezone";
 import { utcDay, utcToday } from "@/lib/campaignPeriod";
 import SyncStatusCard from "./SyncStatusCard";
+import SendPauseNotice from "./SendPauseNotice";
 import ServerCertificatesCard from "./ServerCertificatesCard";
+import SubscriptionCard from "@/components/app/store/SubscriptionCard";
+import { useCancelAtPeriodEnd, usePurchasedMailbox, useStorePausedStatus } from "@/components/app/store/usePurchasedMailbox";
+import { PURCHASED_LOCKED, purchaseState, shortDate } from "@/lib/buy/purchased";
 import CloudWarmupCard from "./CloudWarmupCard";
+import WarmupFilterTagField from "./WarmupFilterTagField";
 import WarmupPartnerDiversity from "./WarmupPartnerDiversity";
 import useCloudPool from "@/hooks/useCloudPool";
+import { resolveMailboxWarmup, warmupActivityLabel, warmupUnknown, type MailboxWarmup } from "@/lib/mailboxWarmup";
 import { cloudOwnedWarmupFields } from "@/lib/cloudWarmup";
 import useAuthConfig from "@/lib/api/hooks/auth/useAuthConfig";
 import { Toggle } from "@/components/app/campaigns/preferences/components/CampaignPreferenceBoolBox";
@@ -270,8 +278,8 @@ function ColdRampNotice({ ramp }: { ramp: import("@/lib/api/models/app/analytics
                     </p>
                     <p className="text-[11.5px] text-sky-800/90 leading-relaxed mt-0.5">
                         {ramp.held ? "Recent negative feedback is holding the pacing policy. " : ""}
-                        Automated test history does not prove real-recipient readiness. This conservative policy
-                        requires recent human campaign replies before increasing volume. No full-speed date or safe volume is guaranteed.
+                        In campaigns that ramp up as replies come in, this mailbox starts low and gains volume as recipients reply.
+                        Campaigns set to ramp on a schedule or send at full volume are not held to this. No full-speed date or safe volume is guaranteed.
                     </p>
                 </div>
             </div>
@@ -414,6 +422,8 @@ const EDITABLE: (keyof Inbox)[] = [
     "warmup_placement", "warmup_folder", "warmup_retention_days",
     "test_mode", "test_send_enabled", "test_receive_enabled", "shared_daily_limit", "rolling_recipient_limit",
 ];
+// Local participation is saved only for a mailbox confirmed local; Cloud owns it for an enrolled one.
+const LOCAL_PARTICIPATION: (keyof Inbox)[] = ["test_mode", "test_send_enabled", "test_receive_enabled", "shared_daily_limit", "rolling_recipient_limit"];
 
 function Detail({ mailbox, onClose, initialTab, tabIntentKey, onTabIntentConsumed, canWarmup = true }: { mailbox: Inbox; onClose: () => void; initialTab?: MailboxTab; tabIntentKey?: number; onTabIntentConsumed?: () => void; canWarmup?: boolean }) {
     const [tab, setTab] = useBrowseState<MailboxTab>(`emails.mailbox.${mailbox.id}.tab`, "overview", mailboxTab,
@@ -464,15 +474,20 @@ function Detail({ mailbox, onClose, initialTab, tabIntentKey, onTabIntentConsume
     const warmup = useWarmupAnalytics(mailbox.id, from, to);
     const pool = useCloudPool();
     const mutation = useUpdateEmail(mailbox.id, pool.connected && pool.isEnrolled(mailbox.id) ? cloudOwnedWarmupFields : undefined);
+    const effectiveWarmup = resolveMailboxWarmup(mailbox, status.data, pool);
+    const savable = useMemo(
+        () => effectiveWarmup.source === "local" ? EDITABLE : EDITABLE.filter((k) => !LOCAL_PARTICIPATION.includes(k)),
+        [effectiveWarmup.source],
+    );
 
     const dirty = useMemo(
-        () => daysToApply !== null || EDITABLE.some((k) => JSON.stringify(form[k]) !== JSON.stringify(mailbox[k])),
-        [daysToApply, form, mailbox],
+        () => daysToApply !== null || savable.some((k) => JSON.stringify(form[k]) !== JSON.stringify(mailbox[k])),
+        [daysToApply, form, mailbox, savable],
     );
 
     const save = async () => {
         const patch: Partial<Inbox> = {};
-        for (const k of EDITABLE) {
+        for (const k of savable) {
             if (JSON.stringify(form[k]) !== JSON.stringify(mailbox[k])) {
                 (patch as Record<string, unknown>)[k] = form[k];
             }
@@ -532,14 +547,30 @@ function Detail({ mailbox, onClose, initialTab, tabIntentKey, onTabIntentConsume
                         {mailboxSource(mailbox).kind !== "host" && <MailboxSourceChip box={mailbox} labelClassName="inline" />}
                     </div>
                 </div>
-                <span className={cn("h-5 px-2 rounded-full border text-[10px] font-semibold uppercase tracking-wide inline-flex items-center shrink-0", statusTone(mailbox.status))}>
-                    {mailbox.status === "inactive" ? "Off" : mailbox.status}
-                </span>
+                {(() => {
+                    const purchase = purchaseState(mailbox);
+                    if (purchase.kind === "cancelled") {
+                        return (
+                            <span
+                                title={purchase.on ? `Subscription ended ${purchase.on}` : "Subscription ended"}
+                                className="h-5 px-2 rounded-full border text-[10px] font-semibold uppercase tracking-wide inline-flex items-center shrink-0 bg-slate-100 text-slate-600 border-slate-200"
+                            >
+                                Cancelled{purchase.on ? ` · ${purchase.on}` : ""}
+                            </span>
+                        );
+                    }
+                    return (
+                        <span className={cn("h-5 px-2 rounded-full border text-[10px] font-semibold uppercase tracking-wide inline-flex items-center shrink-0", statusTone(mailbox.status))}>
+                            {mailbox.status === "inactive" ? "Off" : mailbox.status}
+                        </span>
+                    );
+                })()}
                 <ResourceViewers resource={mailbox.id ? `mailbox:${mailbox.id}` : null} className="shrink-0" />
                 <button onClick={onClose} aria-label="Close" className="w-7 h-7 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition-colors shrink-0">
                     <XIcon className="w-4 h-4" />
                 </button>
             </div>
+            {mailbox.id && <PartnerEnablementNote emailAccountId={mailbox.id} />}
 
             {/* Tabs */}
             <ScrollStrip activeKey={tab} className="shrink-0 border-b border-slate-200" innerClassName="px-3 gap-1">
@@ -571,10 +602,10 @@ function Detail({ mailbox, onClose, initialTab, tabIntentKey, onTabIntentConsume
 
             {/* Body */}
             <div className="flex-1 min-h-0 overflow-y-auto">
-                {tab === "overview" && <OverviewTab status={status.data} loading={status.isPending} mailbox={mailbox} warmup={warmup.data} />}
+                {tab === "overview" && <OverviewTab status={status.data} loading={status.isPending} mailbox={mailbox} warmup={warmup.data} warmupState={effectiveWarmup} onOpenSignin={() => setTab("settings")} />}
                 {tab === "deliverability" && <MailboxPlacementTab mailboxId={mailbox.id} poolHealth={status.data?.warmup_health} />}
                 {tab === "analytics" && <AnalyticsTab warmup={warmup.data} replyTarget={mailbox.warmup_reply_rate} loading={warmup.isPending} failed={warmup.isError} retry={() => void warmup.refetch()} />}
-                {tab === "warmup" && <WarmupTab form={form} update={update} status={status.data} mailbox={mailbox} canWarmup={canWarmup} />}
+                {tab === "warmup" && <WarmupTab form={form} update={update} status={status.data} mailbox={mailbox} canWarmup={canWarmup} warmup={effectiveWarmup} />}
                 {tab === "sending" && <SendingBehaviorTab mailboxId={mailbox.id} />}
                 {tab === "settings" && <SettingsTab form={form} update={update} mailbox={mailbox} onDisconnected={onClose} />}
             </div>
@@ -732,10 +763,10 @@ function DelegatedGrantNotice({ mailbox, inError = false }: { mailbox: Inbox; in
     );
 }
 
-function OverviewTab({ status, loading, mailbox, warmup }: { status?: import("@/lib/api/models/app/analytics/AccountStatus").default; loading: boolean; mailbox: Inbox; warmup?: WarmupAnalytics }) {
+function OverviewTab({ status, loading, mailbox, warmup, warmupState, onOpenSignin }: { status?: AccountStatusModel; loading: boolean; mailbox: Inbox; warmup?: WarmupAnalytics; warmupState: MailboxWarmup; onOpenSignin: () => void }) {
     const health = status?.health;
     const usage = status?.daily_usage;
-    const ws = status?.warmup_status;
+    const ws = warmupState.info;
     const replyShare = weekReplyShare(warmup);
 
     // When a sending-behaviour profile is on, TODAY'S rolled plan is the real
@@ -761,7 +792,7 @@ function OverviewTab({ status, loading, mailbox, warmup }: { status?: import("@/
     return (
         <div className="divide-y divide-slate-200/60">
             {mailbox.status === "inactive" && <SwitchedOffNotice mailbox={mailbox} />}
-            {mailbox.provider === "gmail" && mailbox.auth_method !== "delegated" && <SigninRetiringNotice mailbox={mailbox} />}
+            <SigninPrompt mailbox={mailbox} onOpen={onOpenSignin} />
             {/* Whatever the Advisor has on this mailbox, above the numbers that
                 produced it. This is where a row flag and a deep link both land. */}
             <AdvisorStrip
@@ -800,9 +831,18 @@ function OverviewTab({ status, loading, mailbox, warmup }: { status?: import("@/
                     </ul>
                 )}
                 {/* A login refused at send time can hold sending while sync still works, so no credential error carries the button. */}
-                {status?.send_recovery_reason === "authentication" && !firstCredentialErrorId &&
+                {status?.send_recovery_reason === "authentication" && !firstCredentialErrorId && !status.send_pause &&
                     (mailbox.auth_method === "delegated" ? <DelegatedGrantNotice mailbox={mailbox} inError /> : <ReconnectAction mailbox={mailbox} />)}
             </div>
+
+            {status?.send_pause && (
+                <SendPauseNotice
+                    mailboxId={mailbox.id}
+                    address={mailbox.email}
+                    pause={status.send_pause}
+                    reconnect={!firstCredentialErrorId && (mailbox.auth_method === "delegated" ? <DelegatedGrantNotice mailbox={mailbox} inError /> : <ReconnectAction mailbox={mailbox} />)}
+                />
+            )}
 
             {/* Sync: import progress and fair-use status */}
             <SyncStatusCard mailboxId={mailbox.id} provider={mailbox.provider} />
@@ -822,7 +862,7 @@ function OverviewTab({ status, loading, mailbox, warmup }: { status?: import("@/
                                 : undefined
                     }
                 />
-                <StatCard label="Warmup today" value={ws ? ws.current_volume : (usage?.warmup_sent ?? "—")} sub={ws ? `target ${ws.target_volume}` : undefined} accent />
+                <StatCard label="Warmup today" value={warmupState.sentToday ?? "—"} sub={warmupUnknown(warmupState) ? warmupActivityLabel[warmupState.activity] : `${warmupState.source === "cloud" ? "Warmbly Cloud · " : ""}${ws ? `target ${ws.target_volume}` : warmupActivityLabel[warmupState.activity]}`} accent />
                 <StatCard label="Reply target" value={ws ? `${ws.reply_rate}%` : "—"} sub={replyShare === null ? "configured warmup share" : `${replyShare}% over the last 7 days`} />
                 <StatCard label="Days warming" value={ws ? ws.days_active : "—"} sub={ws ? `max ${ws.max_volume}/day` : undefined} />
             </div>
@@ -962,7 +1002,7 @@ function AnalyticsTab({ warmup, replyTarget, loading, failed, retry }: { warmup?
     const chartData = warmup.daily_stats.map((d) => ({
         key: d.date,
         value: d.emails_sent,
-        hint: `${d.date}: ${d.emails_sent} sent / ${d.target_volume} target · ${d.emails_received ?? 0} received · ${d.emails_replied} replies`,
+        hint: `${d.date}: ${d.emails_sent} sent${d.target_volume > 0 ? ` / ${d.target_volume} target` : ""} · ${d.emails_received ?? 0} received · ${d.emails_replied} replies`,
     }));
     const received = s.total_received ?? 0;
     const exchange = s.total_sent > 0 ? `${Math.round((received / s.total_sent) * 100)}% of what it sent` : "from the pool";
@@ -975,7 +1015,7 @@ function AnalyticsTab({ warmup, replyTarget, loading, failed, retry }: { warmup?
                 <StatCard label="Total sent" value={s.total_sent} sub={`${s.average_daily.toFixed(1)}/active day`} />
                 <StatCard label="Received" value={received} sub={exchange} accent />
                 <StatCard label="Replies" value={s.total_replied} sub={replySub} />
-                <StatCard label="Target met" value={`${Math.round(s.target_progress)}%`} sub="of planned volume" />
+                <StatCard label="Target met" value={targets.some((t) => t > 0) ? `${Math.round(s.target_progress)}%` : "—"} sub="of planned volume" />
                 <div className="col-span-2">
                     <StatCard label="Days active" value={s.days_active} sub={`${utcDay(warmup.date_range.from)} → ${utcDay(warmup.date_range.to)}`} />
                 </div>
@@ -1006,7 +1046,7 @@ function AnalyticsTab({ warmup, replyTarget, loading, failed, retry }: { warmup?
                     if (!d) return null;
                     return (
                         <p className="mt-2 text-[11px] text-slate-500 font-mono tabular-nums">
-                            {d.date}: {d.emails_sent} sent / {d.target_volume} target · {d.emails_received ?? 0} received · {d.emails_replied} replies
+                            {d.date}: {d.emails_sent} sent{d.target_volume > 0 ? ` / ${d.target_volume} target` : ""} · {d.emails_received ?? 0} received · {d.emails_replied} replies
                         </p>
                     );
                 })()}
@@ -1322,8 +1362,8 @@ function AuthCheckPanel({ mailbox }: { mailbox: Inbox }) {
     );
 }
 
-function WarmupTab({ form, update, status, mailbox, canWarmup = true }: { form: Inbox; update: (p: Partial<Inbox>) => void; status?: AccountStatusModel; mailbox: Inbox; canWarmup?: boolean }) {
-    const ws = status?.warmup_status;
+function WarmupTab({ form, update, status, mailbox, canWarmup = true, warmup }: { form: Inbox; update: (p: Partial<Inbox>) => void; status?: AccountStatusModel; mailbox: Inbox; canWarmup?: boolean; warmup: MailboxWarmup }) {
+    const ws = warmup.info;
     const wh = status?.warmup_health;
     const whUnavailable = cloudStandingUnavailable(wh);
     const persona = useSendingBehavior(mailbox.id).data;
@@ -1340,7 +1380,11 @@ function WarmupTab({ form, update, status, mailbox, canWarmup = true }: { form: 
     const paused = !off && !!mailbox.warmup && (!!mailbox.warmup_paused_at || !diagnosticSendingAllowed(mailbox));
     // Warmup on with sending off is receive-only, which still receives; only a real pause stops both.
     const receiveOnly = paused && !mailbox.warmup_paused_at;
-    const active = diagnosticWarmupActive(mailbox);
+    const active = warmup.activity === "active";
+    // The local controls act on the local setting, not on the resolved display state.
+    const localActive = diagnosticWarmupActive(mailbox);
+    // Warmup set to run on a switched-off mailbox is stopped; the controls still change the setting.
+    const stoppedHere = mailbox.status !== "active" && !off;
     // When Warmbly Cloud warms this mailbox the local controls step aside.
     const pool = useCloudPool();
     const inCloud = pool.connected && pool.isEnrolled(mailbox.id);
@@ -1383,18 +1427,18 @@ function WarmupTab({ form, update, status, mailbox, canWarmup = true }: { form: 
             {/* Ban banner + appeal — only when the mailbox is blocked from the pool */}
             <WarmupBanBanner emailId={mailbox.id} />
 
-            <CloudWarmupCard mailboxId={mailbox.id} email={mailbox.email} provider={mailbox.provider} />
+            <CloudWarmupCard mailboxId={mailbox.id} email={mailbox.email} provider={mailbox.provider} status={mailbox.status} />
 
-            {/* Lifecycle control */}
-            {!inCloud && (
+            {/* Lifecycle control: only once Cloud ownership is known, so a missing report never offers a local action. */}
+            {!inCloud && warmup.source === "local" && (
             <div className="px-5 py-4 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5 min-w-0">
-                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", active ? "bg-orange-50 text-orange-600" : paused ? "bg-amber-50 text-amber-600" : "bg-slate-100 text-slate-400")}>
+                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", stoppedHere ? "bg-slate-100 text-slate-400" : localActive ? "bg-orange-50 text-orange-600" : paused ? "bg-amber-50 text-amber-600" : "bg-slate-100 text-slate-400")}>
                         <FlameIcon className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
-                        <div className="text-[12.5px] font-medium text-slate-900">{active ? "Warming up" : receiveOnly ? "Receiving only" : paused ? "Paused" : "Warmup off"}</div>
-                        <div className="text-[11px] text-slate-400 truncate">{active ? "Automated diagnostic traffic, not organic engagement" : receiveOnly ? "Receives warmup mail; sending is off" : paused && !off ? "Paused: no warmup mail is sent or received" : "Sending and receiving diagnostic tests disabled"}</div>
+                        <div className="text-[12.5px] font-medium text-slate-900">{stoppedHere ? "Stopped: mailbox off" : localActive ? "Warming up" : receiveOnly ? "Receiving only" : paused ? "Paused" : "Warmup off"}</div>
+                        <div className="text-[11px] text-slate-400 truncate">{stoppedHere ? `Set to ${localActive ? "warm" : receiveOnly ? "receive only" : "stay paused"} once the mailbox is switched back on` : localActive ? "Automated diagnostic traffic, not organic engagement" : receiveOnly ? "Receives warmup mail; sending is off" : paused && !off ? "Paused: no warmup mail is sent or received" : "Sending and receiving diagnostic tests disabled"}</div>
                     </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -1408,7 +1452,7 @@ function WarmupTab({ form, update, status, mailbox, canWarmup = true }: { form: 
                             {off ? "Start" : "Resume"}
                         </button>
                     )}
-                    {active && (
+                    {localActive && (
                         <>
                             <button
                                 onClick={() => run("pause", "paused")}
@@ -1452,7 +1496,7 @@ function WarmupTab({ form, update, status, mailbox, canWarmup = true }: { form: 
             )}
 
             {/* Live volume */}
-            {!inCloud && (
+            {!inCloud && warmup.source === "local" && (
                 <div className="px-5 py-4 space-y-3 border-t border-slate-100">
                     <Eyebrow>Diagnostic participation</Eyebrow>
                     <SelectMenu
@@ -1603,6 +1647,7 @@ function WarmupTab({ form, update, status, mailbox, canWarmup = true }: { form: 
             {!inCloud && (
                 <div className="px-5 py-5 space-y-4">
                     <WarmupPlacementFields form={form} update={update} provider={mailbox.provider} />
+                    <WarmupFilterTagField mailboxId={mailbox.id} provider={mailbox.provider} />
                 </div>
             )}
 
@@ -2221,7 +2266,7 @@ function SendIdentityCard({
  * takes before asking, and the copy differs by provider because what happens to
  * the connection does: Google accepts a revocation and Microsoft does not.
  */
-// Off stops everything, so the way back sits where the drawer opens.
+// The switch controls execution on this instance.
 function SwitchedOffNotice({ mailbox }: { mailbox: Inbox }) {
     const power = useMailboxSwitch(mailbox.id, mailbox.email);
     return (
@@ -2231,7 +2276,7 @@ function SwitchedOffNotice({ mailbox }: { mailbox: Inbox }) {
                 <div className="min-w-0 flex-1">
                     <p className="text-[12.5px] font-medium text-slate-900">This mailbox is switched off</p>
                     <p className="text-[11.5px] text-slate-600 leading-relaxed mt-0.5">
-                        It is not sending campaigns, warming up or syncing mail, whatever its warmup setting says. Its
+                        It is not sending campaigns, running local warmup or syncing mail on this instance. Warmbly Cloud warmup is managed separately in the Warmup tab. Its
                         settings, history and worker are kept, so switching it back on picks up where it stopped.
                         To keep it out of campaigns while it warms, turn on Hold from campaigns below first, then switch it back on.
                     </p>
@@ -2254,6 +2299,8 @@ function SwitchedOffNotice({ mailbox }: { mailbox: Inbox }) {
 function MailboxPowerCard({ mailbox }: { mailbox: Inbox }) {
     const power = useMailboxSwitch(mailbox.id, mailbox.email);
     if (mailbox.status !== "active" && mailbox.status !== "inactive") return null;
+    // A purchase that ended has no mailbox left to switch back on.
+    if (purchaseState(mailbox).kind === "cancelled") return null;
     const on = mailbox.status === "active";
     return (
         <div className="px-5 py-5 space-y-3">
@@ -2262,7 +2309,7 @@ function MailboxPowerCard({ mailbox }: { mailbox: Inbox }) {
                 <div className="min-w-0">
                     <div className="text-[12.5px] font-medium text-slate-900">Mailbox on</div>
                     <div className="text-[11px] text-slate-400">
-                        Switched off, it neither sends, warms nor syncs, and keeps its settings and history. To stop
+                        Switched off, it stops campaign sending, local warmup and syncing on this instance, and keeps its settings and history. Warmbly Cloud warmup is managed separately in the Warmup tab. To stop
                         only campaign sending and keep warming, use Hold from campaigns on the Overview tab. On a
                         mailbox that is off, turn the hold on before switching it back on.
                     </div>
@@ -2278,6 +2325,47 @@ function MailboxPowerCard({ mailbox }: { mailbox: Inbox }) {
     );
 }
 
+// A purchased mailbox the workspace still pays for is cancelled, not disconnected: removing it would not stop its billing.
+function PurchasedDangerCard({ mailbox }: { mailbox: Inbox }) {
+    const m = usePurchasedMailbox(mailbox.id);
+    const cancel = useCancelAtPeriodEnd();
+    const canBill = usePermission("MANAGE_BILLING");
+    const ending = shortDate(m?.cancels_at);
+    // Cancelling needs GraphKit, so it is not offered while the instance is disconnected from it.
+    const paused = useStorePausedStatus() !== null;
+    return (
+        <div className="px-5 py-5 space-y-3">
+            <Eyebrow>Danger zone</Eyebrow>
+            <div className="flex flex-col sm:flex-row gap-2 sm:gap-4 sm:items-center border-l-2 border-red-200 pl-3">
+                <div className="min-w-0 flex-1">
+                    <div className="text-[12.5px] font-medium text-red-700 leading-tight flex items-center gap-1.5">
+                        <CalendarXIcon className="w-3 h-3" />
+                        Cancel this mailbox
+                    </div>
+                    <div className="text-[11.5px] text-red-700/70 leading-tight mt-0.5">
+                        {ending
+                            ? `Cancelled. It keeps working until ${ending}, then it is deleted, stops being billed and is switched off here. Its history stays until you disconnect it.`
+                            : paused
+                              ? "Cancelling is paused until a GraphKit API key is added to this instance again."
+                              : PURCHASED_LOCKED}
+                        {!canBill && !ending && !paused && " Cancelling needs the Manage billing permission."}
+                    </div>
+                </div>
+                {!ending && !paused && (
+                    <button
+                        type="button"
+                        onClick={() => m && cancel.ask(m)}
+                        disabled={!m || !canBill || cancel.pending}
+                        className="self-start sm:ml-auto h-7 px-2.5 rounded-md border border-red-300 hover:border-red-400 text-red-700 hover:text-red-800 hover:bg-red-100/60 text-[12px] font-medium transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        {cancel.pending ? "Cancelling…" : "Cancel subscription…"}
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+}
+
 function DisconnectCard({ mailbox, onDisconnected }: { mailbox: Inbox; onDisconnected: () => void }) {
     const confirm = useConfirm();
     const remove = useRemoveEmail(mailbox.id);
@@ -2285,9 +2373,12 @@ function DisconnectCard({ mailbox, onDisconnected }: { mailbox: Inbox; onDisconn
     const authConfig = useAuthConfig();
     const cloudUnknown = authConfig.isLoading || authConfig.isError || pool.loading || pool.refreshing || pool.unavailable;
     const cloudManaged = pool.rowFor(mailbox.id)?.managed === true;
+    // A purchase that ended was deleted with its sign-in, so there is no access left to revoke.
+    const ended = purchaseState(mailbox).kind === "cancelled";
 
-    const revocation =
-        cloudManaged
+    const revocation = ended
+        ? "The mailbox itself was already deleted when its subscription ended."
+        : cloudManaged
             ? "Cloud warmup sending and receiving stop. Its mailbox, sign-in and history stay in your Warmbly Cloud workspace."
             : mailbox.provider === "gmail"
             ? "Warmbly's access to your Google account is revoked, so it disappears from your third-party access list."
@@ -2300,7 +2391,9 @@ function DisconnectCard({ mailbox, onDisconnected }: { mailbox: Inbox; onDisconn
         confirm.show(
             cloudManaged
                 ? `Disconnect ${mailbox.email} from this instance and stop its Cloud warmup sending and receiving? Imported mail and history on this instance are deleted. Its mailbox, sign-in and history stay in your Warmbly Cloud workspace.`
-                : `Disconnect ${mailbox.email}? This deletes its imported mail, warmup history and credentials, and cannot be undone. Switch the mailbox off instead if you only want it to stop.`,
+                : ended
+                  ? `Disconnect ${mailbox.email}? This deletes its imported mail and warmup history here, and cannot be undone.`
+                  : `Disconnect ${mailbox.email}? This deletes its imported mail, warmup history and credentials, and cannot be undone. Switch the mailbox off instead if you only want it to stop.`,
             async () => {
                 try {
                     await remove.mutateAsync();
@@ -2388,6 +2481,7 @@ function SettingsTab({ form, update, mailbox, onDisconnected }: { form: Inbox; u
     );
     return (
         <div className="divide-y divide-slate-200/60">
+            <MailboxSigninSection mailbox={mailbox} />
             <div className="px-5 py-5 space-y-4">
                 <Eyebrow>Sender profile</Eyebrow>
                 <FieldShell label="Display name">
@@ -2555,7 +2649,13 @@ function SettingsTab({ form, update, mailbox, onDisconnected }: { form: Inbox; u
 
             <MailboxPowerCard mailbox={mailbox} />
 
-            <DisconnectCard mailbox={mailbox} onDisconnected={onDisconnected} />
+            {mailbox.purchased && <SubscriptionCard emailAccountId={mailbox.id} />}
+
+            {purchaseState(mailbox).kind === "live" ? (
+                <PurchasedDangerCard mailbox={mailbox} />
+            ) : (
+                <DisconnectCard mailbox={mailbox} onDisconnected={onDisconnected} />
+            )}
 
             <div className="flex flex-wrap items-center gap-1.5 px-5 py-3 text-[11px] text-slate-400">
                 <SendIcon className="w-3 h-3" /> Changes apply to new sends. <ReplyIcon className="w-3 h-3 ml-1" /> Signature applies to replies too.

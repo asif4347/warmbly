@@ -78,10 +78,6 @@ func (w *WorkerService) handleWarmupAction(ctx context.Context, action models.Wa
 					return nil
 				}
 			}
-		} else if recovery, ok := w.SyncContextRepository.(repository.WarmupActionRecoveryAdmission); ok && action.CommandID != "" {
-			var decision models.WarmupActionDecision
-			decision, err = recovery.AdmitWarmupAction(ctx, models.WarmupActionRequest{MailboxID: action.EmailID, WorkerID: worker, Actions: action.Actions, CommandID: action.CommandID})
-			action.Actions = decision.Actions
 		} else {
 			action.Actions, err = gate.PermittedWarmupActions(ctx, action.EmailID, worker, action.Actions)
 		}
@@ -133,6 +129,8 @@ func (w *WorkerService) handleWarmupAction(ctx context.Context, action models.Wa
 		}
 	}
 	var err error
+	// imapDown is an IMAP server we could not reach; redelivery would only wait out its connect timeout again.
+	imapDown := false
 	switch {
 	case !exists:
 		// Engagement on a mailbox this worker is not holding is dropped; it
@@ -152,6 +150,7 @@ func (w *WorkerService) handleWarmupAction(ctx context.Context, action models.Wa
 		err = w.runGraphWarmupActions(ctx, mail, action, rescue)
 	case mail.SmtpImapData != nil && mail.SmtpImapData.ImapClient != nil:
 		err = w.runImapWarmupActions(ctx, mail, action, rescue)
+		imapDown = action.FilingID == "" && mailServerUnreachable(err)
 	default:
 		if action.FilingID != "" {
 			err = errors.New("mailbox has no provider client for warmup filing")
@@ -186,7 +185,7 @@ func (w *WorkerService) handleWarmupAction(ctx context.Context, action models.Wa
 	// Engagement is best effort and never returns here. A retention delete
 	// (the row is already retired) and a removal check are redelivered, a
 	// bounded number of times.
-	if d := deliveryOf(ctx); (d.redelivers || action.FilingID != "") && d.attempt < warmupDeleteRedeliveries {
+	if d := deliveryOf(ctx); (d.redelivers || action.FilingID != "") && d.attempt < warmupDeleteRedeliveries && !imapDown {
 		return err
 	}
 	log.Error().Err(err).
@@ -211,6 +210,12 @@ func rescueFailure(err error) string {
 		return models.WarmupRescueGone
 	}
 	return models.WarmupRescueFailed
+}
+
+// mailServerUnreachable is a server we could not connect to; redelivering only spends a handler on connect timeouts.
+func mailServerUnreachable(err error) bool {
+	var mailErr *errx.MailError
+	return errors.As(err, &mailErr) && (mailErr.Code == errx.MailErrorCodeServerUnreachable || mailErr.Code == errx.MailErrorCodeConnectionLost)
 }
 
 // warmupDeleteRedeliveries bounds how many times a failed retention delete or
@@ -278,7 +283,20 @@ func (w *WorkerService) runGoogleWarmupActions(ctx context.Context, mail *wmail.
 		gmailID = id
 	}
 
+	// Engagement goes over IMAP; filing, deletion and anything IMAP could not settle stay on the API.
+	settled := w.runGmailIMAPEngagement(ctx, mail, action, rescue)
+	if gmailID == "" && action.RFCMessageID != "" && unsettledEngagement(action.Actions, settled) {
+		// A mailbox that switched sign-in while this was queued has no Gmail id yet; the API needs one.
+		if id, err := mail.GoogleData.Client.FindByRFCMessageID(ctx, action.RFCMessageID); err == nil {
+			gmailID = id
+		} else {
+			log.Error().Err(err).Str("email_id", action.EmailID.String()).Msg("Failed to find the warmup message (Gmail)")
+		}
+	}
 	for _, act := range action.Actions {
+		if settled[act] {
+			continue
+		}
 		switch act {
 		case models.WarmupActionFile:
 			if placement == models.WarmupPlacementInbox || gmailID == "" {
@@ -297,24 +315,24 @@ func (w *WorkerService) runGoogleWarmupActions(ctx context.Context, mail *wmail.
 				return err
 			}
 		case models.WarmupActionMarkRead:
-			if err := mail.GoogleData.Client.MarkAsRead(ctx, action.GmailID); err != nil {
-				log.Error().Err(err).Str("gmail_id", action.GmailID).Msg("Failed to mark as read")
+			if err := mail.GoogleData.Client.MarkAsRead(ctx, gmailID); err != nil {
+				log.Error().Err(err).Str("gmail_id", gmailID).Msg("Failed to mark as read")
 			}
 		case models.WarmupActionRescueFromSpam:
 			toInbox := placement == models.WarmupPlacementInbox
-			if err := mail.GoogleData.Client.RescueFromSpam(ctx, action.GmailID, label, toInbox); err != nil {
-				log.Error().Err(err).Str("gmail_id", action.GmailID).Msg("Failed to rescue from spam (Gmail)")
+			if err := mail.GoogleData.Client.RescueFromSpam(ctx, gmailID, label, toInbox); err != nil {
+				log.Error().Err(err).Str("gmail_id", gmailID).Msg("Failed to rescue from spam (Gmail)")
 				setRescue(rescue, rescueFailure(err))
 			} else {
 				setRescue(rescue, models.WarmupRescueMoved)
 			}
 		case models.WarmupActionMarkImportant:
-			if err := mail.GoogleData.Client.MarkImportant(ctx, action.GmailID); err != nil {
-				log.Error().Err(err).Str("gmail_id", action.GmailID).Msg("Failed to mark important")
+			if err := mail.GoogleData.Client.MarkImportant(ctx, gmailID); err != nil {
+				log.Error().Err(err).Str("gmail_id", gmailID).Msg("Failed to mark important")
 			}
 		case models.WarmupActionStar:
-			if err := mail.GoogleData.Client.AddStar(ctx, action.GmailID); err != nil {
-				log.Error().Err(err).Str("gmail_id", action.GmailID).Msg("Failed to star warmup message")
+			if err := mail.GoogleData.Client.AddStar(ctx, gmailID); err != nil {
+				log.Error().Err(err).Str("gmail_id", gmailID).Msg("Failed to star warmup message")
 			}
 		default:
 			log.Warn().Str("action", act).Msg("Unknown warmup action")

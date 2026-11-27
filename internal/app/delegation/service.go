@@ -6,6 +6,7 @@
 package delegation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 	"golang.org/x/oauth2/google"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/api/gmail/v1"
 
 	"github.com/warmbly/warmbly/internal/config"
@@ -60,6 +62,9 @@ type Config struct {
 	// GoogleMissing and MicrosoftMissing name the settings an operator still has to set; empty when enabled.
 	GoogleMissing    []string `json:"google_missing"`
 	MicrosoftMissing []string `json:"microsoft_missing"`
+
+	// GoogleMailboxClientID is the per-mailbox sign-in client a Workspace admin marks Trusted; empty with none configured.
+	GoogleMailboxClientID string `json:"google_mailbox_client_id,omitempty"`
 }
 
 // Stable codes for refusals a client branches on.
@@ -67,12 +72,16 @@ const (
 	ErrIDNotConfigured      = "mailbox_grant_not_configured"
 	ErrIDGoogleUnauthorized = "google_delegation_unauthorized"
 	ErrIDMicrosoftConsent   = "microsoft_consent_missing"
+	// ErrIDGoogleRetired refuses a Google domain-wide delegation grant for a domain the workspace holds none for.
+	ErrIDGoogleRetired      = "google_delegation_retired"
 	ErrIDState              = "mailbox_grant_state_invalid"
 	ErrIDNotCovered         = "mailbox_grant_domain_mismatch"
 	ErrIDMailboxUnreachable = "mailbox_grant_mailbox_unreachable"
 	ErrIDGrantInactive      = "mailbox_grant_inactive"
 	ErrIDProof              = "mailbox_grant_proof_missing"
 	ErrIDUnavailable        = "mailbox_grant_unavailable"
+	// ErrIDMicrosoftTenantConsent is a purchased Microsoft 365 mailbox whose tenant has not approved this instance's app for the workspace.
+	ErrIDMicrosoftTenantConsent = "microsoft_tenant_consent_required"
 )
 
 // States holds a consent round trip's state until the administrator returns.
@@ -133,6 +142,18 @@ type Service struct {
 	msLoginBase    string
 	graphBase      string
 
+	googleMailboxClientID string
+
+	// purchased brokers tokens for Google mailboxes bought in the store; nil without the store.
+	purchased PurchasedTokens
+	// wakers run connects waiting on a tenant's consent once it is verified.
+	wakers []ConsentWaker
+	// consentAttempts and consentPause bound the wait for a fresh consent to reach the token endpoint.
+	consentAttempts int
+	consentPause    time.Duration
+	// autoConsents runs one automatic tenant consent per workspace and tenant at a time.
+	autoConsents singleflight.Group
+
 	sources sync.Map // cache key -> oauth2.TokenSource
 }
 
@@ -152,6 +173,9 @@ type Deps struct {
 	GoogleSignin *oauth2.Config
 	Prover       *domainproof.Prover
 	TXT          TXTLookup
+
+	// GoogleMailboxClientID is shown to a Workspace admin trusting per-mailbox sign-in.
+	GoogleMailboxClientID string
 }
 
 func NewService(d Deps) *Service {
@@ -166,6 +190,11 @@ func NewService(d Deps) *Service {
 		gmailBase:      "https://gmail.googleapis.com/gmail/v1",
 		msLoginBase:    "https://login.microsoftonline.com",
 		graphBase:      "https://graph.microsoft.com/v1.0",
+
+		googleMailboxClientID: d.GoogleMailboxClientID,
+
+		consentAttempts: 4,
+		consentPause:    10 * time.Second,
 	}
 	if s.txt == nil {
 		s.txt = net.DefaultResolver
@@ -200,6 +229,7 @@ func (s *Service) Config() Config {
 		GoogleEnabled: s.googleEnabled(), GoogleClientID: s.googleClientID,
 		GoogleScopes: config.GoogleDelegationScopes, MicrosoftEnabled: s.microsoftEnabled(),
 		GoogleMissing: []string{}, MicrosoftMissing: []string{},
+		GoogleMailboxClientID: s.googleMailboxClientID,
 	}
 	if !c.GoogleEnabled {
 		c.GoogleMissing = append(c.GoogleMissing, "GOOGLE_WORKSPACE_DELEGATION_KEY")
@@ -282,7 +312,7 @@ func tokenError(provider string, err error) *errx.Error {
 		return errx.NewWithIdentifier(errx.BadRequest, ErrIDGoogleUnauthorized, "Google did not issue a token for this domain. Check the domain-wide delegation entry and try again.")
 	}
 	switch {
-	case strings.Contains(code, "AADSTS700016"), strings.Contains(code, "AADSTS65001"), strings.Contains(code, "AADSTS500011"):
+	case microsoftConsentCodes(code):
 		return errx.NewWithIdentifier(errx.BadRequest, ErrIDMicrosoftConsent,
 			"This Microsoft 365 organization has not approved Warmbly. Ask a Global Administrator to connect it with admin consent.")
 	case strings.Contains(code, "AADSTS90002"):
@@ -302,29 +332,45 @@ func (e *apiError) Error() string { return fmt.Sprintf("status %d", e.status) }
 
 // getJSON calls a Google or Graph endpoint with a token from ts.
 func (s *Service) getJSON(ctx context.Context, ts oauth2.TokenSource, u string, out any) error {
+	return s.doJSON(ctx, ts, http.MethodGet, u, nil, out)
+}
+
+// doJSON sends in, when not nil, as a JSON body and decodes the answer into out.
+func (s *Service) doJSON(ctx context.Context, ts oauth2.TokenSource, method, u string, in, out any) error {
 	tok, err := ts.Token()
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	var body io.Reader
+	if in != nil {
+		raw, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	req.Header.Set("Accept", "application/json")
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := s.http.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode >= 300 {
-		return &apiError{status: resp.StatusCode, body: truncate(string(body), 300)}
+		return &apiError{status: resp.StatusCode, body: truncate(string(raw), 300)}
 	}
 	if out == nil {
 		return nil
 	}
-	return json.Unmarshal(body, out)
+	return json.Unmarshal(raw, out)
 }
 
 func truncate(s string, n int) string {
@@ -413,7 +459,7 @@ func unavailable(err error) bool {
 	}
 	var re *oauth2.RetrieveError
 	if errors.As(err, &re) {
-		return re.Response != nil && re.Response.StatusCode >= 500
+		return re.Response != nil && (re.Response.StatusCode >= 500 || re.Response.StatusCode == http.StatusTooManyRequests)
 	}
 	return true
 }
@@ -582,6 +628,14 @@ func (s *Service) check(ctx context.Context, g *models.DomainGrant) *errx.Error 
 	var xerr *errx.Error
 	switch g.Provider {
 	case models.GrantProviderGoogle:
+		// A purchased Workspace has no directory of the customer's to read; its tokens are brokered per mailbox,
+		// so the grant stays active (whatever a release that cannot broker recorded) and each mailbox is proved below.
+		if g.Purchased {
+			if s.purchased == nil {
+				return notConfigured("Google Workspace")
+			}
+			break
+		}
 		if !s.googleEnabled() {
 			return notConfigured("Google Workspace")
 		}
@@ -605,12 +659,25 @@ func (s *Service) check(ctx context.Context, g *models.DomainGrant) *errx.Error 
 	ids, err := s.repo.InactiveMailboxes(ctx, g.ID)
 	if err == nil {
 		for _, id := range ids {
+			if g.Provider == models.GrantProviderGoogle && g.Purchased && !s.brokerReaches(ctx, g, id) {
+				continue
+			}
 			if _, xerr := s.mailboxes.ReactivateDelegated(ctx, id); xerr != nil {
 				log.Warn().Str("email_account_id", id.String()).Str("error", xerr.Message).Msg("delegation: reactivating a mailbox failed")
 			}
 		}
 	}
 	return nil
+}
+
+// brokerReaches reports whether the broker mints a token for a purchased grant's mailbox right now.
+func (s *Service) brokerReaches(ctx context.Context, g *models.DomainGrant, accountID uuid.UUID) bool {
+	d, xerr := s.store.GetDelegation(ctx, accountID)
+	if xerr != nil || d == nil || d.OrganizationID != g.OrganizationID || d.GrantID != g.ID || !covers(g, d.Email) {
+		return false
+	}
+	_, err := s.purchased.GoogleToken(ctx, g.OrganizationID, strings.ToLower(d.Email), []string{gmail.GmailModifyScope, gmail.GmailSettingsBasicScope})
+	return err == nil
 }
 
 // Delete forgets a grant; its mailboxes stop, since nothing can mint for them any more.
@@ -706,6 +773,11 @@ func (s *Service) GrantFor(ctx context.Context, orgID uuid.UUID, provider, domai
 
 // Connect proves a token works for one address under a grant and stores the mailbox.
 func (s *Service) Connect(ctx context.Context, orgID uuid.UUID, userID string, grantID uuid.UUID, email, name string) (*models.Email, *errx.Error) {
+	return s.connect(ctx, orgID, userID, grantID, email, name, false)
+}
+
+// connect is Connect; purchased marks a mailbox bought in the store, which the mailbox allowance does not bound.
+func (s *Service) connect(ctx context.Context, orgID uuid.UUID, userID string, grantID uuid.UUID, email, name string, purchased bool) (*models.Email, *errx.Error) {
 	g, xerr := s.get(ctx, orgID, grantID)
 	if xerr != nil {
 		return nil, xerr
@@ -721,10 +793,19 @@ func (s *Service) Connect(ctx context.Context, orgID uuid.UUID, userID string, g
 	if domain == "" || !covers(g, email) {
 		return nil, errx.NewWithIdentifier(errx.BadRequest, ErrIDNotCovered, "This address is not on a domain the grant covers.")
 	}
-	data := models.NewDelegatedAccount{Email: email, Name: name, GrantID: g.ID}
+	data := models.NewDelegatedAccount{Email: email, Name: name, GrantID: g.ID, Purchased: purchased}
 	switch g.Provider {
 	case models.GrantProviderGoogle:
-		addr, err := s.googleProfile(ctx, strings.ToLower(email))
+		var addr string
+		var err error
+		if g.Purchased && s.purchased != nil {
+			if xerr := s.provePurchased(ctx, orgID, strings.ToLower(email)); xerr != nil {
+				return nil, xerr
+			}
+			addr = strings.ToLower(email)
+		} else {
+			addr, err = s.googleProfile(ctx, strings.ToLower(email))
+		}
 		if err != nil {
 			return nil, s.googleErr(err)
 		}
@@ -749,6 +830,15 @@ func (s *Service) Connect(ctx context.Context, orgID uuid.UUID, userID string, g
 // AccessToken is a worker's token for a delegated mailbox; handled is false
 // for any other mailbox, so the caller can try its own broker.
 func (s *Service) AccessToken(ctx context.Context, accountID uuid.UUID) (*models.PoolLinkAccessToken, bool, *errx.Error) {
+	return s.accessToken(ctx, accountID, false)
+}
+
+// IMAPAccessToken is a delegated Google mailbox's token under the optional https://mail.google.com/ scope, for Gmail IMAP.
+func (s *Service) IMAPAccessToken(ctx context.Context, accountID uuid.UUID) (*models.PoolLinkAccessToken, bool, *errx.Error) {
+	return s.accessToken(ctx, accountID, true)
+}
+
+func (s *Service) accessToken(ctx context.Context, accountID uuid.UUID, imap bool) (*models.PoolLinkAccessToken, bool, *errx.Error) {
 	d, xerr := s.store.GetDelegation(ctx, accountID)
 	if xerr != nil {
 		return nil, true, xerr
@@ -769,15 +859,30 @@ func (s *Service) AccessToken(ctx context.Context, accountID uuid.UUID) (*models
 	var ts oauth2.TokenSource
 	switch d.Provider {
 	case models.InboxProviderGoogle:
+		// IMAP is minted on its own, so a delegation entry without the optional scope still serves the API token.
+		scopes := []string{gmail.GmailModifyScope, gmail.GmailSettingsBasicScope}
+		if imap {
+			scopes = []string{gmail.MailGoogleComScope}
+		}
+		if g.Purchased {
+			if s.purchased == nil {
+				return nil, true, notConfigured("Google Workspace")
+			}
+			ts = s.purchasedGoogleSource(g.OrganizationID, strings.ToLower(d.Email), scopes...)
+			break
+		}
 		if !s.googleEnabled() {
 			return nil, true, notConfigured("Google Workspace")
 		}
-		src, err := s.googleSource(d.Subject, gmail.GmailModifyScope, gmail.GmailSettingsBasicScope)
+		src, err := s.googleSource(d.Subject, scopes...)
 		if err != nil {
 			return nil, true, errx.InternalError()
 		}
 		ts = src
 	case models.InboxProviderOutlook:
+		if imap {
+			return nil, true, errx.ErrNotFound
+		}
 		if !s.microsoftEnabled() {
 			return nil, true, notConfigured("Microsoft 365")
 		}
@@ -787,6 +892,10 @@ func (s *Service) AccessToken(ctx context.Context, accountID uuid.UUID) (*models
 	}
 	tok, err := ts.Token()
 	if err != nil {
+		// The worker remembers a refused IMAP token for the mailbox, so a provider outage must not read as one.
+		if imap && unavailable(err) {
+			return nil, true, unavailableErr()
+		}
 		provider := models.GrantProviderGoogle
 		if d.Provider == models.InboxProviderOutlook {
 			provider = models.GrantProviderMicrosoft
@@ -840,8 +949,8 @@ func sortedKeys(m map[string]bool) []string {
 }
 
 // SigninMigration is every mailbox still on per-mailbox Google sign-in, by
-// domain, with where it moves: the domain's grant, or an app password for a
-// shared address like gmail.com.
+// domain, with the domain's existing active grant when it has one; a shared
+// address like gmail.com is marked personal.
 func (s *Service) SigninMigration(ctx context.Context, orgID uuid.UUID) ([]models.SigninMigration, *errx.Error) {
 	boxes, xerr := s.store.ListSigninRetiring(ctx, orgID)
 	if xerr != nil {

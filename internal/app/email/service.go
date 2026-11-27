@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -48,6 +49,8 @@ type EmailService interface {
 	// SetSendHold holds a mailbox in reserve or releases it; a release lands
 	// wherever its warmup health says, so an unhealthy mailbox rests.
 	SetSendHold(ctx context.Context, orgID, emailAccountID string, hold bool) (*models.SendLifecycleState, *errx.Error)
+	// ResumeSending lifts a provider pause or a refusal hold the owner says is fixed.
+	ResumeSending(ctx context.Context, orgID, emailAccountID string) (*repository.SendPauseRelease, *errx.Error)
 	// UpdateTrackingDomain sets or clears the custom open/click tracking
 	// domain and resolves it once, persisting the verdict.
 	UpdateTrackingDomain(ctx context.Context, orgID, emailAccountID, domain string) (*models.TrackingDomainStatus, *errx.Error)
@@ -156,6 +159,22 @@ type EmailService interface {
 	// WireImportSignin lets an OAuth connect close the import rows that were
 	// waiting for someone to sign in as that mailbox.
 	WireImportSignin(r ImportSigninResolver)
+	// VendorConsentApp, VendorConsentURL and FinishVendorConsent let an inbox
+	// vendor sign in as an import row's Google mailbox with no Warmbly session.
+	// WireOAuthApps lets a workspace's own OAuth client carry its sign-ins and refreshes.
+	WireOAuthApps(apps OAuthApps, gate PartnershipGate)
+	// RequireOwnOAuthApp refuses a flow that only this deployment's client can serve on the Partnership plan.
+	RequireOwnOAuthApp(ctx context.Context, orgID uuid.UUID) *errx.Error
+	// WorkspaceGrantToken draws a worker token for a mailbox a workspace client signed in; handled is false otherwise.
+	WorkspaceGrantToken(ctx context.Context, accountID uuid.UUID) (*oauth2.Token, bool, *errx.Error)
+	// ConnectWithGrant connects, or renews, the mailbox a sign-in the workspace's own app completed belongs to.
+	ConnectWithGrant(ctx context.Context, userID string, orgID uuid.UUID, g models.MailboxOAuthGrant, allow func(uuid.UUID) bool) (*models.Email, bool, *errx.Error)
+	// LinkSigninURL and LinkSigninFinish carry a sign-in link's round trip, with no Warmbly session.
+	LinkSigninURL(ctx context.Context, orgID uuid.UUID, provider models.InboxProvider, state, verifier, loginHint string) (string, *uuid.UUID, *errx.Error)
+	LinkSigninFinish(ctx context.Context, userID string, orgID uuid.UUID, provider models.InboxProvider, appID *uuid.UUID, code, verifier, expectedEmail string) (*models.Email, *errx.Error)
+	VendorConsentApp() (clientID, appName string, ok bool)
+	VendorConsentURL(ctx context.Context, req models.VendorConsentRequest) (string, *errx.Error)
+	FinishVendorConsent(ctx context.Context, code, state, providerErr string, authorizeFor func(userID string) FinishAuthorizer) (*VendorConsentResult, *errx.Error)
 	// WireAvatars lets a connect keep the profile photo its provider returns.
 	WireAvatars(a AvatarSaver)
 	// WireAccountErrors lets a successful reconnect resolve the credential
@@ -167,6 +186,9 @@ type EmailService interface {
 	OAuthCallbackOrigin(provider models.InboxProvider) (string, *errx.Error)
 	OAuthConnectWithCode(ctx context.Context, userID string, orgID *uuid.UUID, provider models.InboxProvider, code, verifier string) (*models.Email, *errx.Error)
 	OAuthConnectWithCodeForAccount(ctx context.Context, userID string, orgID *uuid.UUID, provider models.InboxProvider, code, verifier string, accountID uuid.UUID) (*models.Email, *errx.Error)
+	// OAuthConnectWithCodeAs is OAuthConnectWithCode for one mailbox only: a sign-in as any other
+	// account is refused before anything is stored ("" accepts any account).
+	OAuthConnectWithCodeAs(ctx context.Context, userID string, orgID *uuid.UUID, provider models.InboxProvider, code, verifier, address string) (*models.Email, *errx.Error)
 	// OAuthAccessToken is a live access token for an OAuth mailbox, refreshed when near expiry.
 	OAuthAccessToken(ctx context.Context, accountID uuid.UUID) (*oauth2.Token, *errx.Error)
 	// LoadAccountOntoWorker assigns a worker if needed and ships the mailbox
@@ -187,12 +209,14 @@ type EmailService interface {
 	// StartWorkerReconciler periodically ensures every active mailbox is
 	// assigned to a worker and loaded onto it (blocks until ctx is cancelled).
 	StartWorkerReconciler(ctx context.Context, interval time.Duration)
-	// ReloadWorkerAccounts re-ships every active mailbox assigned to one
-	// worker, for a worker that just booted and holds none in memory.
-	ReloadWorkerAccounts(ctx context.Context, workerID uuid.UUID)
+	// RequestWorkerReload re-ships, in the background, every active mailbox assigned to a worker that just
+	// booted (full), or the named ones it reported missing. Requests for one worker never overlap.
+	RequestWorkerReload(workerID uuid.UUID, full bool, ids []uuid.UUID)
 }
 
 type emailService struct {
+	reloadMu           sync.Mutex
+	reloads            map[uuid.UUID]*workerReload
 	emailRepository    repository.EmailRepository
 	cipherService      cipher.CipherService
 	mailCreds          *mailcred.Sealer
@@ -210,11 +234,15 @@ type emailService struct {
 	syncState          repository.EmailSyncStateRepository
 	mailboxes          repository.MailboxRepository
 	syncBudget         SyncBudgetSource
+	fullCheck          fullCheckAllowances
 	seedScope          SeedScopeSource
 	// poolLink marks linked warmup-only mailboxes, which sync with no history.
 	poolLink repository.PoolLinkRepository
 	// cloudLink marks managed mailboxes whose credential the cloud holds.
 	cloudLink repository.CloudLinkRepository
+	// oauthApps resolves a workspace's own OAuth client; partnership refuses this deployment's client to Partnership workspaces.
+	oauthApps   OAuthApps
+	partnership PartnershipGate
 	// cloudUnenroll revokes a Warmbly Cloud enrollment on delete.
 	cloudUnenroll CloudUnenroller
 	// cloudCredentials re-sends a changed credential to Warmbly Cloud.
@@ -449,7 +477,7 @@ func (s *emailService) GetSyncState(ctx context.Context, orgID, emailID string) 
 	if xerr != nil {
 		return nil, models.SyncPolicy{}, nil, xerr
 	}
-	data, err := s.syncDataFor(ctx, acc.ID, true)
+	data, err := s.syncDataFor(ctx, acc.ID, acc.OrganizationID, true)
 	if err != nil {
 		log.Error().Err(err).Str("email_id", acc.ID.String()).Msg("sync state: policy lookup failed")
 		return nil, models.SyncPolicy{}, nil, errx.InternalError()

@@ -2,6 +2,7 @@ package errx
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -85,6 +86,9 @@ const (
 	// trust without a certificate authority whose certificate was never
 	// confirmed, so no connection is made until it is.
 	MailErrorCodeTLSCertificateUnconfirmed MailErrorCode = "TLS_CERTIFICATE_UNCONFIRMED"
+	// MailErrorCodeMailboxUnreachable is Warmbly switching off a mailbox whose server has not let it connect for
+	// days; switching the mailbox back on resolves it (migration 000391).
+	MailErrorCodeMailboxUnreachable MailErrorCode = "MAILBOX_UNREACHABLE"
 )
 
 // TLSCertificateMailErrorCodes are resolved by confirming the server's
@@ -191,6 +195,8 @@ const (
 	MailServerThrottlingMessage = "The mail server temporarily refused new connections or sign-ins from Warmbly's sending address, which providers do when many mailboxes they host connect from the same address. Warmbly now spaces its connections to this server and retries on its own; nothing needs to change on the mailbox."
 	// MailServerPacedMessage is a send held back without contacting a server that is limiting Warmbly's address.
 	MailServerPacedMessage = "Not sent yet: this mailbox's mail server is limiting connections from Warmbly's sending address, so Warmbly is holding the send briefly instead of adding to them. It is retried automatically."
+	// MailWrongServerHint opens the message for a provider saying the account lives on another of its servers.
+	MailWrongServerHint = "The mail server refused the sign-in because this mailbox's account is hosted on a different server of the same provider."
 	// MailNoSTARTTLSHint is what a mailbox owner reads when the port offers no encryption.
 	MailNoSTARTTLSHint = "The server offers no STARTTLS on this port, and Warmbly only signs in over an encrypted connection. Use the server's SSL/TLS port (usually 465) or a port that offers STARTTLS (usually 587)."
 )
@@ -214,17 +220,27 @@ func mailServerUnreachableMessage(stage, reason string) string {
 // IsKnownIMAPConnectionMessage accepts each fixed IMAP connection message,
 // in its current wording and the generic one earlier workers still send.
 func IsKnownIMAPConnectionMessage(message string) bool {
+	return slices.Contains(IMAPConnectionMessages(MailConnectionReasonDNSFailure, MailConnectionReasonDNSTimeout, MailConnectionReasonCertificate,
+		MailConnectionReasonWorkerAddress, MailConnectionReasonRefused, MailConnectionReasonRoute, MailConnectionReasonClosed,
+		MailConnectionReasonTimeout, MailConnectionReasonFailed, MailConnectionReasonPrivateHost), message)
+}
+
+// IMAPConnectionMessages is every stored wording of an IMAP connection failure for reasons, at each stage.
+func IMAPConnectionMessages(reasons ...string) []string {
+	var out []string
 	for _, stage := range [...]string{MailConnectionStageIMAPDial, MailConnectionStageIMAPTLS, MailConnectionStageIMAPSTARTTLS} {
-		for _, reason := range [...]string{MailConnectionReasonDNSFailure, MailConnectionReasonDNSTimeout, MailConnectionReasonCertificate,
-			MailConnectionReasonWorkerAddress, MailConnectionReasonRefused, MailConnectionReasonRoute, MailConnectionReasonClosed,
-			MailConnectionReasonTimeout, MailConnectionReasonFailed, MailConnectionReasonPrivateHost} {
-			if message == mailServerUnreachableMessage(stage, reason) ||
-				message == fmt.Sprintf(mailServerUnreachablePrefix, stage, reason)+mailServerUnreachableHint {
-				return true
-			}
+		for _, reason := range reasons {
+			out = append(out, mailServerUnreachableMessage(stage, reason), fmt.Sprintf(mailServerUnreachablePrefix, stage, reason)+mailServerUnreachableHint)
 		}
 	}
-	return false
+	return out
+}
+
+// IMAPServerSilentReasons are the connection failures where the server never answered at all, as opposed to a
+// certificate, an address Warmbly refuses, or the worker's own network.
+var IMAPServerSilentReasons = []string{
+	MailConnectionReasonDNSFailure, MailConnectionReasonDNSTimeout, MailConnectionReasonRefused,
+	MailConnectionReasonRoute, MailConnectionReasonClosed, MailConnectionReasonTimeout, MailConnectionReasonFailed,
 }
 
 var (
@@ -260,6 +276,14 @@ var (
 			MailErrorResolveMethodRetry,
 		)
 	}
+	// ErrMailMailboxUnreachable is the switch-off notice for a mailbox whose server refused every connection for silentFor.
+	ErrMailMailboxUnreachable = func(silentFor time.Duration) *MailError {
+		span := fmt.Sprintf("%d hours", int(silentFor.Hours()))
+		if h := int(silentFor.Hours()); h%24 == 0 {
+			span = fmt.Sprintf("%d days", h/24)
+		}
+		return MError(MailErrorCritical, MailErrorCodeMailboxUnreachable, fmt.Sprintf("Warmbly could not connect to this mailbox's mail server for %s, so it switched the mailbox off and stopped retrying. The server no longer answers, or no longer accepts connections from Warmbly.", span), MailErrorResolveMethodReload)
+	}
 	ErrMailResourceNotFound      = MError(MailErrorWarning, MailErrorCodeNotFound, "The mail server does not have the folder or message that was requested.", MailErrorResolveMethodRetry)
 	ErrMailCondStoreNotSupported = MError(MailErrorCritical, MailErrorCodeUnsupported, "The mail server does not support the required CONDSTORE extension. Synchronization cannot continue.", MailErrorResolveMethodReload)
 	ErrMailInvalidCredentials    = MError(
@@ -268,6 +292,14 @@ var (
 		"The email address or password is incorrect. Please check your credentials and try again.",
 		MailErrorResolveMethodReload,
 	)
+	// ErrMailCredentialsRefused is a sign-in the server refused without a response code; detail is its own words.
+	ErrMailCredentialsRefused = func(detail string) *MailError {
+		return MError(MailErrorCritical, MailErrorCodeInvalidCredentials, fmt.Sprintf("The mail server refused the sign-in. The address or password is wrong, or the mailbox no longer exists on the server. The server said: %s", detail), MailErrorResolveMethodReload)
+	}
+	// ErrMailWrongServer is credentials-class because Update credentials is where the host is fixed; detail is the server's own words.
+	ErrMailWrongServer = func(detail string) *MailError {
+		return MError(MailErrorCritical, MailErrorCodeInvalidCredentials, fmt.Sprintf("%s The server said: %s", MailWrongServerHint, detail), MailErrorResolveMethodReload)
+	}
 	ErrMailAuthenticationFailed = MError(
 		MailErrorCritical,
 		MailErrorCodeAuthenticationFailed,
@@ -414,6 +446,10 @@ func (e *MailError) GetUserErrorInfo() UserErrorInfo {
 	case MailErrorCodeInvalidCredentials:
 		info.Title = "Invalid Credentials"
 		info.ActionRequired = "Please update your email credentials"
+		if strings.HasPrefix(e.Message, MailWrongServerHint) {
+			info.Title = "Wrong mail server"
+			info.ActionRequired = "Choose Update credentials on the mailbox and enter the IMAP and SMTP hosts for the data centre your account is in"
+		}
 	case MailErrorCodeServerUnreachable:
 		info.Title = "Connection Error"
 		info.ActionRequired = "The email server is temporarily unavailable. We'll retry automatically."
@@ -437,6 +473,9 @@ func (e *MailError) GetUserErrorInfo() UserErrorInfo {
 	case MailErrorCodeSyncFlood:
 		info.Title = "Sync stopped: unusual volume"
 		info.ActionRequired = "Check what is delivering mail into this mailbox, then reactivate it under Mailboxes"
+	case MailErrorCodeMailboxUnreachable:
+		info.Title = "Switched off: server unreachable"
+		info.ActionRequired = "If the mailbox was deleted, remove it from Warmbly. If it still exists, make sure its server is online and accepts Warmbly's connections, then switch the mailbox back on"
 	case MailErrorCodeSyncFairUse:
 		info.Title = "Sync stopped: fair use"
 		info.ActionRequired = "Reduce the volume landing in this mailbox or ask your administrator to raise the sync budget, then reactivate it"

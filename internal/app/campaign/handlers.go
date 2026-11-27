@@ -2,6 +2,7 @@ package campaign
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/rs/zerolog/log"
@@ -54,8 +55,8 @@ func (s *campaignService) Create(ctx context.Context, userID string, orgID *uuid
 
 	// Daily creation throttle (config.DailyThrottleNewCampaigns). Caps
 	// per-day new-campaign rate per org so an unlimited plan can't be
-	// abused to ramp instantly.
-	if s.throttle != nil {
+	// abused to ramp instantly. A tool migration is held to its own cap instead.
+	if s.throttle != nil && !migrationCreate(ctx) {
 		if xerr := s.throttle.CheckAndIncrement(ctx, *orgID, dailythrottle.ResourceCampaign, config.DailyThrottleNewCampaigns); xerr != nil {
 			return nil, xerr
 		}
@@ -131,6 +132,7 @@ func (s *campaignService) Overview(ctx context.Context, orgID string, allowed []
 }
 
 func (s *campaignService) Update(ctx context.Context, orgID, query string, data *models.UpdateCampaign) (*models.Campaign, *errx.Error) {
+	defer s.forgetCapacity(orgID)
 	tags, xerr := validate.Uuids(data.EmailTags)
 	if xerr != nil {
 		return nil, xerr
@@ -208,6 +210,7 @@ func (s *campaignService) RescheduleForOrganization(ctx context.Context, orgID u
 }
 
 func (s *campaignService) Delete(ctx context.Context, orgID uuid.UUID, campaignID string) (*models.Campaign, *errx.Error) {
+	defer s.forgetCapacity(orgID.String())
 	campaign, cID, xerr := s.campaignForOrg(ctx, orgID, campaignID)
 	if xerr != nil {
 		return nil, xerr
@@ -449,6 +452,7 @@ func truncateUTF8(s string, n int) string {
 }
 
 func (s *campaignService) StartCampaign(ctx context.Context, orgID uuid.UUID, campaignID string, opts models.StartCampaignOptions) *errx.Error {
+	defer s.forgetCapacity(orgID.String())
 	cID, parseErr := uuid.Parse(campaignID)
 	if parseErr != nil {
 		return errx.ErrUuid
@@ -554,6 +558,26 @@ func (s *campaignService) StartCampaign(ctx context.Context, orgID uuid.UUID, ca
 			))
 		}
 	}
+	socialChannels := map[string]bool{}
+	for i, seq := range seqs {
+		if seq.Kind != "action" {
+			continue
+		}
+		var cfg models.ActionConfig
+		_ = json.Unmarshal(seq.Action, &cfg)
+		if cfg.Type != models.ActionSocial {
+			continue
+		}
+		if cfg.Social == nil || !models.IsSocialChannel(cfg.Social.Channel) {
+			return errx.NewWithIdentifier(errx.BadRequest, "social_step_incomplete", fmt.Sprintf(
+				"Step %d is a social step with no channel or action picked. Set it up before starting.", i+1))
+		}
+		socialChannels[cfg.Social.Channel] = true
+		if why := cfg.Social.Incomplete(); why != "" {
+			return errx.NewWithIdentifier(errx.BadRequest, "social_step_incomplete", fmt.Sprintf(
+				"Step %d, a %s step, %s. Finish it before starting.", i+1, models.SocialChannelLabel(cfg.Social.Channel), why))
+		}
+	}
 
 	// Refuse a launch whose list is known to be largely undeliverable. Only
 	// KNOWN-invalid addresses count: a list nobody has verified is not evidence
@@ -605,6 +629,21 @@ func (s *campaignService) StartCampaign(ctx context.Context, orgID uuid.UUID, ca
 			EventType:  "started",
 			Message:    "Campaign started",
 		})
+	}
+	// A warning, not a refusal: a lead with no handle on a channel passes over (or stops at) that channel's steps.
+	if len(socialChannels) > 0 && s.campaignLogRepo != nil {
+		if counts, cerr := s.campaignRepository.CountLeadsWithoutSocial(ctx, cID); cerr == nil {
+			for _, ch := range models.SocialChannels {
+				if n := counts[ch]; socialChannels[ch] && n > 0 {
+					s.campaignLogRepo.CreateLog(ctx, &repository.CampaignLogEntry{
+						CampaignID: cID,
+						EventType:  "social_missing_handles",
+						Message:    fmt.Sprintf("%d lead(s) have no %s handle, so their %s steps will not reach them", n, models.SocialChannelLabel(ch), models.SocialChannelLabel(ch)),
+						Metadata:   map[string]interface{}{"count": n, "channel": ch},
+					})
+				}
+			}
+		}
 	}
 
 	// Publish realtime event
@@ -911,6 +950,7 @@ func (s *campaignService) ResumeVerificationPaused(ctx context.Context, orgID uu
 }
 
 func (s *campaignService) StopCampaign(ctx context.Context, orgID uuid.UUID, campaignID string) *errx.Error {
+	defer s.forgetCapacity(orgID.String())
 	cID, parseErr := uuid.Parse(campaignID)
 	if parseErr != nil {
 		return errx.ErrUuid
@@ -1109,6 +1149,44 @@ const estimateHorizonDays = 2 * 366
 // wired it simulates the campaign day by day under the send path's clamps and
 // the warmup mail running alongside; without it, it applies only the cap rule
 // and the result is the earliest the last send can land.
+// estimateRampUp gives the draft the ramp-up the wizard has: what was sent,
+// else the saved campaign's, else a new campaign's defaults.
+func estimateRampUp(draft, saved *models.Campaign, in *models.CampaignEstimate) *errx.Error {
+	draft.WarmupGraduation = true
+	draft.RampStart, draft.RampIncrement, draft.RampCeiling = config.CampaignRampStartDefault, config.CampaignRampIncrementDefault, config.CampaignRampCeilingDefault
+	if saved != nil {
+		draft.WarmupGraduation, draft.RampEnabled = saved.WarmupGraduation, saved.RampEnabled
+		draft.RampStart, draft.RampIncrement, draft.RampCeiling = saved.RampStart, saved.RampIncrement, saved.RampCeiling
+		draft.RampLevel, draft.RampLevelDate = saved.RampLevel, saved.RampLevelDate
+	}
+	if in.WarmupGraduation != nil {
+		draft.WarmupGraduation = *in.WarmupGraduation
+	}
+	if in.RampEnabled != nil {
+		draft.RampEnabled = *in.RampEnabled
+	}
+	edited := false
+	for _, f := range []struct {
+		v   *int
+		dst *int
+	}{{in.RampStart, &draft.RampStart}, {in.RampIncrement, &draft.RampIncrement}, {in.RampCeiling, &draft.RampCeiling}} {
+		if f.v != nil && *f.v != *f.dst {
+			*f.dst, edited = *f.v, true
+		}
+	}
+	if !draft.RampEnabled {
+		return nil
+	}
+	if xerr := validate.CampaignRamp(draft.RampStart, draft.RampIncrement, draft.RampCeiling); xerr != nil {
+		return xerr
+	}
+	// A ramp edited in the wizard is drawn from its first day.
+	if edited || saved == nil || !saved.RampEnabled {
+		draft.RampLevel, draft.RampLevelDate = 0, nil
+	}
+	return nil
+}
+
 func (s *campaignService) Estimate(ctx context.Context, orgID uuid.UUID, in *models.CampaignEstimate) (*models.CampaignEstimateResult, *errx.Error) {
 	out := &models.CampaignEstimateResult{}
 
@@ -1225,6 +1303,9 @@ func (s *campaignService) Estimate(ctx context.Context, orgID uuid.UUID, in *mod
 		zone = *in.Timezone
 	}
 	draft := &models.Campaign{OrganizationID: &orgID, DailyLimit: dailyLimit, Days: days, Timezone: zone, StartDate: in.StartDate, StartTime: startTime, EndTime: endTime}
+	if xerr := estimateRampUp(draft, saved, in); xerr != nil {
+		return nil, xerr
+	}
 	// A saved campaign's own per-day windows stand unless a window is sent.
 	if saved != nil && !timesSent && !saved.ScheduleWindows.IsEmpty() {
 		draft.ScheduleWindows = saved.ScheduleWindows
@@ -1235,7 +1316,11 @@ func (s *campaignService) Estimate(ctx context.Context, orgID uuid.UUID, in *mod
 	// domain authentication, cold rotation), so the wizard promises what the
 	// send path will honour rather than the caps added up.
 	if planner, ok := s.planner(); ok {
-		capacity, err := planner.PoolCapacityToday(ctx, &models.Campaign{OrganizationID: &orgID, DailyLimit: dailyLimit}, accounts)
+		capacity, err := planner.PoolCapacityToday(ctx, &models.Campaign{
+			OrganizationID: &orgID, DailyLimit: dailyLimit, WarmupGraduation: draft.WarmupGraduation,
+			RampEnabled: draft.RampEnabled, RampStart: draft.RampStart, RampIncrement: draft.RampIncrement,
+			RampCeiling: draft.RampCeiling, RampLevel: draft.RampLevel,
+		}, accounts)
 		if err != nil {
 			errs.CaptureException(err)
 			return nil, errx.InternalError()
@@ -1471,6 +1556,9 @@ func (s *campaignService) SendPlan(ctx context.Context, orgID uuid.UUID, campaig
 			if plan.Stale {
 				s.refreshPlanAsync(campaign, orgID, key)
 			}
+			if snap.Day == planBudgetDay(now) {
+				s.overlayLiveSends(ctx, plan)
+			}
 			return plan, nil
 		} else if err != nil {
 			// A snapshot read that failed is logged and falls through to a
@@ -1521,21 +1609,60 @@ func (s *campaignService) SendPlan(ctx context.Context, orgID uuid.UUID, campaig
 	return plan, nil
 }
 
+// overlayLiveSends moves a stored plan's sent counts up to the sends made
+// since it was walked, taking each from what was still to go, so the numbers
+// track every send while the walk itself runs on its own interval.
+func (s *campaignService) overlayLiveSends(ctx context.Context, plan *models.CampaignSendPlan) {
+	if s.taskRepo == nil {
+		return
+	}
+	live, err := s.taskRepo.CountCampaignSendsTodayBySender(ctx, plan.CampaignID)
+	if err != nil {
+		return
+	}
+	total := 0
+	for i := range plan.Mailboxes {
+		mp := &plan.Mailboxes[i]
+		if d := live[mp.ID] - mp.SentToday; d > 0 {
+			mp.SentToday += d
+			mp.ExpectedRemaining = max(0, mp.ExpectedRemaining-d)
+		}
+	}
+	for _, n := range live {
+		total += n
+	}
+	if d := total - plan.SentToday; d > 0 {
+		plan.SentToday = total
+		plan.ExpectedRemaining = max(0, plan.ExpectedRemaining-d)
+		plan.Projected = max(plan.Projected, plan.SentToday+plan.ExpectedRemaining)
+	}
+}
+
+// forgetCapacity drops the workspace's cached capacity after a change to
+// which campaigns run or how they are clamped.
+func (s *campaignService) forgetCapacity(orgID string) {
+	if s.capacityCache != nil {
+		s.capacityCache.forget(orgID)
+	}
+}
+
 func (s *campaignService) WorkspaceCapacity(ctx context.Context, orgID uuid.UUID) (*models.WorkspaceSendCapacity, *errx.Error) {
 	planner, ok := s.planner()
 	if !ok {
 		return nil, errx.New(errx.Internal, "send planning is not available")
 	}
+	var gen uint64
 	if s.capacityCache != nil {
 		if out, ok := s.capacityCache.get(orgID.String()); ok {
 			return out, nil
 		}
+		gen = s.capacityCache.generation(orgID.String())
 	}
 	accounts, xerr := s.emailRepo.GetAllActiveInScope(ctx, repository.NewAccountScope(&orgID))
 	if xerr != nil {
 		return nil, xerr
 	}
-	out, err := planner.PoolCapacityToday(ctx, &models.Campaign{OrganizationID: &orgID}, accounts)
+	out, err := planner.WorkspaceCapacityToday(ctx, orgID, accounts)
 	if err != nil {
 		errs.CaptureException(err)
 		return nil, errx.InternalError()
@@ -1548,7 +1675,22 @@ func (s *campaignService) WorkspaceCapacity(ctx context.Context, orgID uuid.UUID
 		}
 	}
 	if s.capacityCache != nil {
-		s.capacityCache.put(orgID.String(), out)
+		s.capacityCache.putAt(orgID.String(), out, gen)
 	}
+	return out, nil
+}
+
+func (s *campaignService) LeadTimezones(ctx context.Context, orgID uuid.UUID, campaignID string) (*models.CampaignLeadTimezones, *errx.Error) {
+	campaign, xerr := s.Get(ctx, orgID.String(), campaignID)
+	if xerr != nil {
+		return nil, xerr
+	}
+	out, err := s.campaignRepository.LeadTimezones(ctx, orgID, campaign.ID)
+	if err != nil {
+		log.Error().Err(err).Str("campaign_id", campaign.ID.String()).Msg("campaign lead timezones")
+		return nil, errx.InternalError()
+	}
+	out.TimezoneMode = campaign.TimezoneMode
+	out.Timezone = campaign.ClockTimezone()
 	return out, nil
 }

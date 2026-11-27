@@ -11,6 +11,7 @@ import (
 	"github.com/warmbly/warmbly/internal/observability/errs"
 
 	"github.com/warmbly/warmbly/internal/app/orgrisk"
+	"github.com/warmbly/warmbly/internal/app/partners"
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
@@ -34,14 +35,13 @@ type SignupOrigin struct {
 	UserAgent string
 }
 
-// SignupAttribution is everything the signup link carried: who sent the person
-// (a referral code or a team invitation) and where they came from. All three
-// are captured at RegistrationStart, held on the registration session across
-// the emailed code, and applied once the account and its organization exist.
+// SignupAttribution is everything the signup link carried: the team invitation
+// it may hold and where the person came from. Both are captured at
+// RegistrationStart, held on the registration session across the emailed
+// code, and applied once the account and its organization exist.
 type SignupAttribution struct {
-	ReferralCode string
-	Invite       string
-	Acquisition  models.OrgAcquisition
+	Invite      string
+	Acquisition models.OrgAcquisition
 }
 
 func (s *authService) createAccount(ctx context.Context, address, passwordHash string, attr SignupAttribution, origin SignupOrigin) (*models.User, *errx.Error) {
@@ -113,16 +113,7 @@ func (s *authService) createAccount(ctx context.Context, address, passwordHash s
 		}
 	}
 
-	// Where the workspace came from, written once and never updated.
-	// Best-effort: attribution is a reporting nicety and must never be the
-	// reason a signup fails.
-	if s.acquisition != nil && org != nil && !attr.Acquisition.Empty() {
-		acq := attr.Acquisition
-		acq.OrganizationID = org.ID
-		if err := s.acquisition.RecordOrganizationAcquisition(ctx, &acq); err != nil {
-			errs.CaptureException(err)
-		}
-	}
+	s.attributeWorkspace(ctx, u, org, attr.Acquisition)
 
 	// Fold the signup's own risk into the new workspace's posture. A signup
 	// signal alone can only ever reach `watch`, which by definition changes
@@ -145,14 +136,6 @@ func (s *authService) createAccount(ctx context.Context, address, passwordHash s
 		}
 	}
 
-	// Attribute the signup to a referrer if a referral code rode along.
-	// Best-effort: a bad or self-referral code never fails registration.
-	if s.referral != nil && org != nil && attr.ReferralCode != "" {
-		if xerr := s.referral.AttributeSignup(ctx, attr.ReferralCode, org.ID, u.ID); xerr != nil {
-			errs.CaptureException(xerr)
-		}
-	}
-
 	workspace := ""
 	if org != nil {
 		workspace = org.Name
@@ -161,6 +144,28 @@ func (s *authService) createAccount(ctx context.Context, address, passwordHash s
 	s.countSignup(u, org, attr, origin)
 
 	return u, nil
+}
+
+// attributeWorkspace records where a new workspace came from, once, and tells
+// the partner program about a signup that came through a partner's link.
+// Best-effort: attribution must never be the reason a signup fails.
+func (s *authService) attributeWorkspace(ctx context.Context, u *models.User, org *models.Organization, acq models.OrgAcquisition) {
+	if org == nil {
+		return
+	}
+	acq = acq.Normalize()
+	acq.OrganizationID = org.ID
+	if channel := acq.Channel(); s.acquisition != nil && !channel.Empty() {
+		if err := s.acquisition.RecordOrganizationAcquisition(ctx, &channel); err != nil {
+			errs.CaptureException(err)
+		}
+	}
+	if s.partners != nil && acq.PartnerClickID != "" && u != nil {
+		s.partners.RecordSignup(ctx, org.ID, acq.PartnerClickID, partners.Customer{
+			Email: u.Email,
+			Name:  displayname.FullName(u.FirstName, u.LastName),
+		})
+	}
 }
 
 // analyticsRequest names the new account and workspace on a server-side
@@ -212,8 +217,7 @@ func (s *authService) countSignup(u *models.User, org *models.Organization, attr
 		channel["referrer_host"] = acq.ReferrerHost
 	}
 	props := map[string]any{
-		"invited":  attr.Invite != "",
-		"referred": attr.ReferralCode != "",
+		"invited": attr.Invite != "",
 	}
 	for k, v := range channel {
 		props[k] = v
@@ -292,6 +296,24 @@ func (s *authService) signupAllowed(ctx context.Context, address, invite string)
 	}
 
 	return errx.ErrRegistrationClosed
+}
+
+// ErrPortalRegistrationClosed refuses a signup sent from an agency portal that carries no invitation.
+var ErrPortalRegistrationClosed = errx.NewWithIdentifier(errx.Forbidden, "portal_registration_closed",
+	"Accounts on an agency portal are set up from an invitation. Open the link in the invitation you received.")
+
+// portalSignupAllowed holds a signup sent from a verified portal origin to a live invitation for this address.
+func (s *authService) portalSignupAllowed(ctx context.Context, address, invite string) *errx.Error {
+	if config.PortalOrigin(config.DashboardOriginFromContext(ctx)) == "" {
+		return nil
+	}
+	if invite == "" {
+		return ErrPortalRegistrationClosed
+	}
+	if !s.inviteAllows(ctx, invite, address) {
+		return errx.ErrInvitationInvalid
+	}
+	return nil
 }
 
 // invitedSignupAllowed reports whether an invitee may create their own account.

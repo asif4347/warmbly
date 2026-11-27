@@ -85,7 +85,7 @@ func federatedFixture(hash string, policy *config.AuthPolicy) (*authService, *mo
 func resolve(t *testing.T, s *authService) federatedResolution {
 	t.Helper()
 	res, err := s.resolveFederatedUser(context.Background(), models.IdentityProviderGoogle,
-		"https://accounts.google.com", "subject-1", &mail.Address{Address: "owner@example.com"}, "", "")
+		"https://accounts.google.com", "subject-1", &mail.Address{Address: "owner@example.com"}, "", "", models.OrgAcquisition{})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestFederatedSignInAsksNothingWhenNothingCanBeLinked(t *testing.T) {
 
 	s, u, ids := federatedFixture("$argon2id$hash", &config.AuthPolicy{})
 	res, err := s.resolveFederatedUser(context.Background(), models.IdentityProviderGoogle,
-		"https://accounts.google.com", "", &mail.Address{Address: "owner@example.com"}, "", "")
+		"https://accounts.google.com", "", &mail.Address{Address: "owner@example.com"}, "", "", models.OrgAcquisition{})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -185,10 +185,27 @@ func TestFederatedSignInRefusesAnIdentityAnotherAccountHolds(t *testing.T) {
 	ids.taken = true
 
 	_, err := s.resolveFederatedUser(context.Background(), models.IdentityProviderGoogle,
-		"https://accounts.google.com", "subject-1", &mail.Address{Address: "owner@example.com"}, "", "")
+		"https://accounts.google.com", "subject-1", &mail.Address{Address: "owner@example.com"}, "", "", models.OrgAcquisition{})
 	if err == nil || err.Code != errx.Forbidden {
 		t.Fatalf("got %v, want a Forbidden refusal", err)
 	}
 }
 
 func (m *memoryIdentities) Unlink(context.Context, uuid.UUID, string) error { return nil }
+
+// An address under the reserved .invalid domain belongs to an account only its partner signs in; a provider asserting
+// it neither links that account nor creates one.
+func TestFederatedSignInRefusesAnInternalAddress(t *testing.T) {
+	s, u, ids := federatedFixture("", &config.AuthPolicy{})
+	u.Email = "p-0123456789abcdef@graphkit.partner.invalid"
+	for _, addr := range []string{u.Email, "nobody@other.partner.invalid"} {
+		res, err := s.resolveFederatedUser(context.Background(), models.IdentityProviderGoogle,
+			"https://accounts.google.com", "subject-1", &mail.Address{Address: addr}, "", "", models.OrgAcquisition{})
+		if err == nil || res.UserID != uuid.Nil {
+			t.Fatalf("%s resolved to %s (%v)", addr, res.UserID, err)
+		}
+	}
+	if len(ids.linked) != 0 {
+		t.Fatalf("linked %v to an internal address", ids.linked)
+	}
+}

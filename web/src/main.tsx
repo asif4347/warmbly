@@ -8,22 +8,29 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
 import { RouterProvider } from "@tanstack/react-router";
 
 import { Toaster } from '@/components/ui/toaster';
-import { initErrorReporting } from "@/lib/observability";
+import { initErrorReporting, reportsErrors } from "@/lib/observability";
 import { initProductAnalytics } from "@/lib/productAnalytics";
 import { installDomMutationGuard } from "@/lib/domGuard";
+import { installRandomUUID } from "@/lib/randomUUID";
 import { queryClient } from "@/lib/queryClient";
 import { dashboardPages, router } from "./router";
 
 // Before the first render, so a translated page never commits unguarded.
 installDomMutationGuard();
+installRandomUUID();
 
 // Before the first render, so a boot failure is reported too.
 initErrorReporting();
 // Off unless the deployment configured a key; a self-host never loads it.
 initProductAnalytics();
 
+// A caught error is reported by the boundary that caught it; React's console copy would report it twice.
+const logCaught = (error: unknown, info: { componentStack?: string }) => {
+  if (import.meta.env.DEV || !reportsErrors()) console.error(error, info.componentStack)
+}
+
 const rootEl = document.getElementById('root')!
-createRoot(rootEl).render(
+createRoot(rootEl, { onCaughtError: logCaught }).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/observability/errs"
 	"golang.org/x/time/rate"
 )
 
@@ -23,8 +25,14 @@ const (
 	graphRenewBefore = 48 * time.Hour
 	// gmailRenewBefore renews a Gmail watch daily, as Google recommends.
 	gmailRenewBefore = 6 * 24 * time.Hour
-	// pushRetryAfter spaces attempts to open a channel the provider refused.
+	// pushRetryAfter spaces attempts to open a channel the provider could not open just now.
 	pushRetryAfter = 30 * time.Minute
+	// pushRefusedRetryAfter spaces attempts the provider refused outright, which wait on someone fixing it.
+	pushRefusedRetryAfter = 6 * time.Hour
+	// pushRetryAfterMax bounds how long a provider's Retry-After can hold a channel closed.
+	pushRetryAfterMax = 24 * time.Hour
+	// pushReportEvery is how often one mailbox's refused channel reaches error tracking.
+	pushReportEvery = 24 * time.Hour
 	// imapWatchBackoffMax bounds the wait before re-opening a dropped IDLE session.
 	imapWatchBackoffMax = 30 * time.Minute
 )
@@ -33,16 +41,23 @@ const (
 // not sign every mailbox in at once.
 var imapWatchDials = rate.NewLimiter(rate.Limit(20), 20)
 
+// pushRefusal is a mailbox's last refused channel: which target, when to ask again, when it was reported.
+type pushRefusal struct {
+	target   string
+	retryAt  time.Time
+	reported time.Time
+}
+
+// pushRefusals is kept per process, not per WMail, so a rebuilt mailbox neither asks early nor reports again.
+var pushRefusals sync.Map // uuid.UUID -> pushRefusal
+
 // pushChannel is the provider channel a mailbox holds open, and what the
 // control plane asked for.
 type pushChannel struct {
-	mu      sync.Mutex
-	want    *models.AddWorkerEmailPushData
-	state   *models.MailboxPushState
-	retryAt time.Time
-	renew   atomic.Bool
-	// failing keeps a refused channel to one warning until it opens again.
-	failing atomic.Bool
+	mu    sync.Mutex
+	want  *models.AddWorkerEmailPushData
+	state *models.MailboxPushState
+	renew atomic.Bool
 	// unsent is set while the control plane has not taken the current state.
 	unsent atomic.Bool
 	// closed is the last channel this worker closed, so a stored copy a consumer never cleared is not adopted.
@@ -54,6 +69,7 @@ type pushChannel struct {
 
 // ApplyPush takes the push settings from a republished ADD_EMAIL.
 func (w *WMail) ApplyPush(data *models.AddWorkerEmailPushData) {
+	defer w.signalChanged()
 	w.push.mu.Lock()
 	defer w.push.mu.Unlock()
 	w.push.want = data
@@ -75,19 +91,64 @@ func (w *WMail) Wake(renew bool) {
 	}
 }
 
-// pollInterval is the wait between passes: long when the provider announces
-// the mailbox's changes, short when only polling finds them.
-func (w *WMail) pollInterval() time.Duration {
+// liveSignal reports whether the provider announces this mailbox's changes
+// now (IDLE held, or a push channel the control plane still asks for and that
+// has not lapsed), and when a push channel lapses.
+func (w *WMail) liveSignal() (bool, time.Time) {
 	if w.push.imapIdle.Load() {
-		return config.SyncImapWatchedInterval
+		return true, time.Time{}
 	}
 	w.push.mu.Lock()
 	defer w.push.mu.Unlock()
 	if s, want := w.push.state, w.push.want; s != nil && want != nil && s.ExpiresAt.After(time.Now()) &&
 		(s.Provider == models.MailboxPushGraph && want.GraphNotificationURL != "" || s.Provider == models.MailboxPushGmail && want.GmailTopic != "") {
-		return config.SyncPushFallbackInterval()
+		return true, s.ExpiresAt
 	}
-	return ImapCheckInterval
+	return false, time.Time{}
+}
+
+// signalChanged tells the sync loop to work its timers out again.
+func (w *WMail) signalChanged() {
+	select {
+	case w.signal <- struct{}{}:
+	default:
+	}
+}
+
+// setImapIdle records whether IDLE holds INBOX and reports whether it changed.
+func (w *WMail) setImapIdle(held bool) bool {
+	if w.push.imapIdle.Swap(held) == held {
+		return false
+	}
+	w.signalChanged()
+	return true
+}
+
+// pushTarget names the channel the control plane asked for, so a changed topic or endpoint is tried at once.
+func pushTarget(want *models.AddWorkerEmailPushData) string {
+	if want == nil {
+		return ""
+	}
+	return credentialPrint(want.GmailTopic + "\x00" + want.GraphNotificationURL + "\x00" + want.GraphClientState)
+}
+
+// pushRetryAt is when to ask again: a refusal that waits on a fix waits longest, and a provider's Retry-After is never cut short.
+func pushRetryAt(err error, now time.Time) time.Time {
+	at := now.Add(pushRetryAfter)
+	var mailErr *errx.MailError
+	if !errors.As(err, &mailErr) || mailErr.Failure == nil {
+		return at
+	}
+	if f := mailErr.Failure; f.Disposition == errx.SendPermanent || f.Disposition == errx.SendAuth {
+		at = now.Add(pushRefusedRetryAfter)
+	}
+	if r := mailErr.Failure.RetryAt; r != nil && r.After(at) {
+		at = *r
+		if limit := now.Add(pushRetryAfterMax); at.After(limit) {
+			at = limit
+		}
+	}
+	return at
 }
 
 func credentialPrint(v string) string {
@@ -107,10 +168,15 @@ func (w *WMail) maintainPush(ctx context.Context) {
 	defer cancel()
 	now := time.Now()
 	w.push.mu.Lock()
-	want, state, retryAt := w.push.want, w.push.state, w.push.retryAt
+	want, state := w.push.want, w.push.state
 	w.push.mu.Unlock()
 	renew := w.push.renew.Swap(false)
-	if !renew && now.Before(retryAt) {
+	target := pushTarget(want)
+	var refusal pushRefusal
+	if v, ok := pushRefusals.Load(w.ID); ok {
+		refusal = v.(pushRefusal)
+	}
+	if !renew && refusal.target == target && now.Before(refusal.retryAt) {
 		if w.push.unsent.Load() {
 			w.reportPush(state)
 		}
@@ -132,17 +198,21 @@ func (w *WMail) maintainPush(ctx context.Context) {
 	default:
 		return
 	}
-	if err != nil {
-		w.push.mu.Lock()
-		w.push.retryAt = now.Add(pushRetryAfter)
-		w.push.mu.Unlock()
+	// A mailbox stopping mid-call is not a refusal; a channel it closed on the way is still reported below.
+	if err != nil && ctx.Err() == nil {
+		next := pushRefusal{target: target, retryAt: pushRetryAt(err, now), reported: refusal.reported}
 		event := log.Debug()
-		if !w.push.failing.Swap(true) {
+		if refusal.target != target || now.Sub(refusal.reported) >= pushReportEvery {
+			next.reported = now
 			event = log.Warn()
+			// Workers ship no logs, so this daily report is how an operator sees why push is off.
+			errs.CaptureException(err, errs.Tag("component", "mailbox_push"), errs.Tag("provider", string(w.EmailType)), errs.Tag("email_id", w.ID.String()))
 		}
+		pushRefusals.Store(w.ID, next)
 		event.Err(err).Str("email_id", w.ID.String()).Msg("mailbox push channel not opened; polling continues")
-	} else {
-		w.push.failing.Store(false)
+	} else if err == nil && !refusal.reported.IsZero() && !samePush(state, next) {
+		// Only a channel the provider just opened, renewed or closed clears the refusal; a no-op proves nothing.
+		pushRefusals.Delete(w.ID)
 	}
 	// A failed open still reports a channel it closed on the way, and a lost report is sent again next pass.
 	if samePush(state, next) && !w.push.unsent.Load() {
@@ -284,12 +354,13 @@ func (w *WMail) runImapWatcher(ctx context.Context) {
 		}
 		started := time.Now()
 		err := conn.WatchInbox(ctx, func() {
-			if !w.push.imapIdle.Swap(true) {
+			if w.setImapIdle(true) {
 				// Anything that arrived while the watch was down is picked up now.
 				w.Wake(false)
 			}
 		})
-		w.push.imapIdle.Store(false)
+		// The narrow poll takes over at once while the watch is down.
+		w.setImapIdle(false)
 		_ = conn.Close()
 		if ctx.Err() != nil {
 			return

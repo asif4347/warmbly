@@ -12,9 +12,9 @@
 import React from "react";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { AlertTriangleIcon, RefreshCcwIcon } from "lucide-react";
-import { captureException } from "@/lib/observability";
+import { captureException, reportsErrors } from "@/lib/observability";
 import { SENTRY_RELEASE } from "@/lib/information";
-import { isModuleLoadError } from "@/lib/moduleLoadError";
+import { canReloadForStaleChunk, isModuleLoadError, reloadForStaleChunk } from "@/lib/moduleLoadError";
 
 interface State {
     error: Error | null;
@@ -45,12 +45,14 @@ export class ErrorBoundary extends React.Component<BoundaryProps, State> {
     }
 
     componentDidCatch(error: Error, info: React.ErrorInfo) {
+        if (reloadForStaleChunk(error)) return;
         this.setState({ info });
         // Through lib/observability, so the error reaches whichever backend
         // the deployment configured. Reading a global off `window` found the
         // SDK only when it had put itself there, which a bundled one does not.
         captureException(error);
-        console.error("[ErrorBoundary]", error, info?.componentStack);
+        // Reported just above; console capture would file the same error again.
+        if (import.meta.env.DEV || !reportsErrors()) console.error("[ErrorBoundary]", error, info?.componentStack);
     }
 
     reset = () => {
@@ -60,6 +62,7 @@ export class ErrorBoundary extends React.Component<BoundaryProps, State> {
 
     render() {
         if (!this.state.error) return this.props.children;
+        if (isModuleLoadError(this.state.error) && canReloadForStaleChunk()) return null;
         return <BoundaryFallback error={this.state.error} info={this.state.info} reset={this.reset} />;
     }
 }

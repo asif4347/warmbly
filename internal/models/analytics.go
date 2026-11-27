@@ -83,6 +83,8 @@ type CampaignAnalytics struct {
 	// Engagement is where and on what people opened and clicked, from the
 	// per-event logs. Human events only.
 	Engagement *CampaignEngagementBreakdown `json:"engagement,omitempty"`
+	// Social is the campaign's social steps over all time; absent when it has run none.
+	Social *SocialCampaignStats `json:"social,omitempty"`
 }
 
 // EngagementBucket is one slice of a breakdown: how many distinct contacts
@@ -141,9 +143,13 @@ type CampaignSummary struct {
 	// ReplyBreakdown splits Replies by classification, plus the automated
 	// replies that never count as one.
 	ReplyBreakdown ReplyBreakdown `json:"reply_breakdown"`
+	// OpenTrackedSent and ClickTrackedSent are the sends that carried an
+	// open pixel and tracked links; OpenRate and ClickRate are of these.
+	OpenTrackedSent  int `json:"open_tracked_sent"`
+	ClickTrackedSent int `json:"click_tracked_sent"`
 
-	OpenRate          float64 `json:"open_rate"`           // percentage
-	ClickRate         float64 `json:"click_rate"`          // percentage
+	OpenRate          float64 `json:"open_rate"`           // percentage of OpenTrackedSent
+	ClickRate         float64 `json:"click_rate"`          // percentage of ClickTrackedSent
 	ReplyRate         float64 `json:"reply_rate"`          // percentage
 	PositiveReplyRate float64 `json:"positive_reply_rate"` // percentage of EmailsSent
 	BounceRate        float64 `json:"bounce_rate"`         // percentage
@@ -179,9 +185,13 @@ type SequenceStats struct {
 	Replies         int `json:"replies"`
 	PositiveReplies int `json:"positive_replies"`
 	Bounces         int `json:"bounces"`
+	// OpenTrackedSent and ClickTrackedSent are the step's sends that carried
+	// an open pixel and tracked links.
+	OpenTrackedSent  int `json:"open_tracked_sent"`
+	ClickTrackedSent int `json:"click_tracked_sent"`
 
-	// Rates are percentages of this step's own EmailsSent, so steps that
-	// reached different numbers of contacts still compare.
+	// Rates are percentages of this step's own sends (opens and clicks of its
+	// tracked ones), so steps that reached different numbers still compare.
 	OpenRate          float64 `json:"open_rate"`
 	ClickRate         float64 `json:"click_rate"`
 	ReplyRate         float64 `json:"reply_rate"`
@@ -228,8 +238,25 @@ type EmailAccountStatus struct {
 	// is below the mailbox's own cap. Without it the cap just reads lower than
 	// the number the owner configured.
 	ColdRamp *ColdRampInfo `json:"cold_ramp,omitempty"`
-	// SendRecoveryReason names a send safety hold ("authentication", "permanent", "conflict" or "unknown"); absent when sending is not held.
+	// SendRecoveryReason names a send safety hold ("authentication", "permanent", "domain_auth", "conflict" or "unknown"); absent when sending is not held.
 	SendRecoveryReason string `json:"send_recovery_reason,omitempty"`
+	// SendPause is a provider's pause on this mailbox's sending; absent while it sends normally.
+	SendPause *SendPauseInfo `json:"send_pause,omitempty"`
+}
+
+// SendPauseInfo is why a provider stopped this mailbox sending and when it starts again.
+type SendPauseInfo struct {
+	// Reason is rate_limited, daily_limit, sender_blocked or retry for a timed pause, or domain_auth, permanent or authentication for a hold; empty for a timed pause an earlier release recorded.
+	Reason string `json:"reason"`
+	Held   bool   `json:"held"`
+	// Until is when a timed pause ends.
+	Until *time.Time `json:"until,omitempty"`
+	// RetryAt is when Warmbly lets a held mailbox try one more send on its own.
+	RetryAt *time.Time `json:"retry_at,omitempty"`
+	// ProviderMessage is the refusal as the worker reported it.
+	ProviderMessage string `json:"provider_message,omitempty"`
+	// Resumable says POST /emails/:id/resume-sending can lift it; an authentication hold needs a reconnect instead.
+	Resumable bool `json:"resumable"`
 }
 
 // EmailAccountStatusesResult is one page of account statuses. Data carries the
@@ -465,14 +492,18 @@ type DashboardOverallStats struct {
 	TotalClicks  int `json:"total_clicks"`
 	// MachineClicks counts the contacts whose only clicks on a step came from
 	// automated fetchers; they are not part of TotalClicks.
-	MachineClicks   int     `json:"machine_clicks"`
-	TotalReplies    int     `json:"total_replies"`
-	TotalBounces    int     `json:"total_bounces"`
-	OpenRate        float64 `json:"open_rate"`
-	ClickRate       float64 `json:"click_rate"`
-	ReplyRate       float64 `json:"reply_rate"`
-	BounceRate      float64 `json:"bounce_rate"`
-	ActiveCampaigns int     `json:"active_campaigns"`
+	MachineClicks int `json:"machine_clicks"`
+	TotalReplies  int `json:"total_replies"`
+	TotalBounces  int `json:"total_bounces"`
+	// OpenTrackedSent and ClickTrackedSent are the sends that carried an
+	// open pixel and tracked links; OpenRate and ClickRate are of these.
+	OpenTrackedSent  int     `json:"open_tracked_sent"`
+	ClickTrackedSent int     `json:"click_tracked_sent"`
+	OpenRate         float64 `json:"open_rate"`
+	ClickRate        float64 `json:"click_rate"`
+	ReplyRate        float64 `json:"reply_rate"`
+	BounceRate       float64 `json:"bounce_rate"`
+	ActiveCampaigns  int     `json:"active_campaigns"`
 	// ActiveAccounts is workspace-wide; a campaign filter does not narrow it.
 	ActiveAccounts int `json:"active_accounts"`
 }
@@ -501,9 +532,13 @@ type TopCampaignStats struct {
 	Name       string    `json:"name"`
 	Status     string    `json:"status"`
 	EmailsSent int       `json:"emails_sent"`
-	OpenRate   float64   `json:"open_rate"`
-	ClickRate  float64   `json:"click_rate"`
-	ReplyRate  float64   `json:"reply_rate"`
+	// OpenTrackedSent and ClickTrackedSent are the sends that carried an
+	// open pixel and tracked links; OpenRate and ClickRate are of these.
+	OpenTrackedSent  int     `json:"open_tracked_sent"`
+	ClickTrackedSent int     `json:"click_tracked_sent"`
+	OpenRate         float64 `json:"open_rate"`
+	ClickRate        float64 `json:"click_rate"`
+	ReplyRate        float64 `json:"reply_rate"`
 }
 
 // AccountHealthSummary provides a summary of all email account health
@@ -544,10 +579,14 @@ type CampaignComparisonItem struct {
 	Name       string    `json:"name"`
 	Status     string    `json:"status"`
 	EmailsSent int       `json:"emails_sent"`
-	OpenRate   float64   `json:"open_rate"`
-	ClickRate  float64   `json:"click_rate"`
-	ReplyRate  float64   `json:"reply_rate"`
-	BounceRate float64   `json:"bounce_rate"`
+	// OpenTrackedSent and ClickTrackedSent are the sends that carried an
+	// open pixel and tracked links; OpenRate and ClickRate are of these.
+	OpenTrackedSent  int     `json:"open_tracked_sent"`
+	ClickTrackedSent int     `json:"click_tracked_sent"`
+	OpenRate         float64 `json:"open_rate"`
+	ClickRate        float64 `json:"click_rate"`
+	ReplyRate        float64 `json:"reply_rate"`
+	BounceRate       float64 `json:"bounce_rate"`
 }
 
 // DirectMailAnalytics reports on mail written by hand rather than sent by a

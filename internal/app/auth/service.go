@@ -9,6 +9,7 @@ import (
 
 	"github.com/warmbly/warmbly/internal/app/appattest"
 	"github.com/warmbly/warmbly/internal/app/organization"
+	"github.com/warmbly/warmbly/internal/app/partners"
 	"github.com/warmbly/warmbly/internal/app/token"
 	"github.com/warmbly/warmbly/internal/app/trial"
 	"github.com/warmbly/warmbly/internal/app/user"
@@ -30,19 +31,18 @@ type TwoFAChallenger interface {
 	CreatePendingChallenge(ctx context.Context, userID uuid.UUID, authProvider string, link *models.UserIdentity) (string, int, *errx.Error)
 }
 
-// ReferralAttributor links a brand-new org to the referrer behind its signup
-// code. Satisfied by *referral.Service; injected post-construction (WireReferral)
-// so the auth package needs no import of referral (no cycle).
-type ReferralAttributor interface {
-	AttributeSignup(ctx context.Context, code string, inviteeOrgID, inviteeUserID uuid.UUID) *errx.Error
-}
-
 // AcquisitionRecorder stores where a signup came from on the new workspace.
 // Satisfied by repository.OrganizationRepository; injected post-construction
 // (WireAcquisition) and nil-safe, so a deployment that never wires it simply
 // records no attribution.
 type AcquisitionRecorder interface {
 	RecordOrganizationAcquisition(ctx context.Context, acq *models.OrgAcquisition) error
+}
+
+// PartnerReferrals records a signup that came through a partner-program link.
+// Satisfied by *partners.Service; wired only when the program is configured.
+type PartnerReferrals interface {
+	RecordSignup(ctx context.Context, orgID uuid.UUID, clickID string, customer partners.Customer)
 }
 
 // ProductAnalytics counts a finished signup. Satisfied by
@@ -87,10 +87,8 @@ type AuthService interface {
 
 	RegistrationStart(ctx context.Context, data *AuthData, origin SignupOrigin) (*models.AuthSession, *errx.Error)
 	RegistrationConfirm(ctx context.Context, data *ConfirmData, session string, origin SignupOrigin) (*models.AuthSession, *errx.Error)
-	// WireReferral attaches the referral attributor (post-construction; nil = no
-	// referral attribution at signup).
-	WireReferral(r ReferralAttributor)
 	WireAcquisition(r AcquisitionRecorder)
+	WirePartners(p PartnerReferrals)
 	WireAnalytics(a ProductAnalytics, host string)
 
 	// WireOperatorNotifier attaches the instance-wide operator alert channel
@@ -161,10 +159,13 @@ type AuthService interface {
 	WireFederatedProvider(name string, p FederatedProvider)
 	FederatedProviders() []string
 	FederatedProviderLabels() map[string]string
-	SSOBegin(ctx context.Context, provider string) (*SSORedirect, *errx.Error)
+	// SSOBegin's acquisition is applied only if the flow provisions a new workspace.
+	SSOBegin(ctx context.Context, provider string, acquisition models.OrgAcquisition) (*SSORedirect, *errx.Error)
 	// SSOCallbackComplete returns a single-use handoff code, not a session: the
 	// provider redirects a browser here, so the response must be a redirect.
 	SSOCallbackComplete(ctx context.Context, in SSOCallback) (*SSOCallbackResult, *errx.Error)
+	// SSOReturnOrigin is the verified portal origin a flow began on; empty means APP_URL.
+	SSOReturnOrigin(ctx context.Context, state string) string
 	SSOExchange(ctx context.Context, code, binding string) (*models.LoginResult, *errx.Error)
 	// SSOLinkConfirm completes a federated sign-in that came back with
 	// link_required: the address already belongs to a password account, and
@@ -212,9 +213,10 @@ type authService struct {
 	appleIDTokens  IDTokenVerifier
 	googleIDTokens IDTokenVerifier
 	twofa          TwoFAChallenger
-	referral       ReferralAttributor
 	// acquisition records the signup's channel on the new org. Nil-safe.
 	acquisition AcquisitionRecorder
+	// partners reports partner-referred signups. Nil unless configured.
+	partners PartnerReferrals
 	// productAnalytics counts finished signups. Nil-safe.
 	productAnalytics ProductAnalytics
 	// analyticsHost is the dashboard's public hostname, forwarded so PostHog's
@@ -274,10 +276,11 @@ func (s *authService) Policy() *config.AuthPolicy { return s.policy }
 
 func (s *authService) WireIdentities(r repository.IdentityRepository) { s.identities = r }
 
-func (s *authService) WireReferral(r ReferralAttributor) { s.referral = r }
-
 // WireAcquisition attaches the store for signup attribution.
 func (s *authService) WireAcquisition(r AcquisitionRecorder) { s.acquisition = r }
+
+// WirePartners attaches the partner program.
+func (s *authService) WirePartners(p PartnerReferrals) { s.partners = p }
 
 // WireAnalytics attaches the product-analytics sink. host is the dashboard's
 // public hostname, which is one of the three inputs to the cookieless hash.

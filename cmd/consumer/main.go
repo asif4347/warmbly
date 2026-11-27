@@ -22,11 +22,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/warmbly/warmbly/internal/app/advanced"
 	"github.com/warmbly/warmbly/internal/app/audit"
+	"github.com/warmbly/warmbly/internal/app/balance"
 	"github.com/warmbly/warmbly/internal/app/cipher"
 	jobs "github.com/warmbly/warmbly/internal/app/consumer"
 	"github.com/warmbly/warmbly/internal/app/contact"
 	"github.com/warmbly/warmbly/internal/app/credits"
-	"github.com/warmbly/warmbly/internal/app/creditwatch"
 	"github.com/warmbly/warmbly/internal/app/crmmode"
 	"github.com/warmbly/warmbly/internal/app/feature"
 	"github.com/warmbly/warmbly/internal/app/hubspot"
@@ -39,7 +39,6 @@ import (
 	"github.com/warmbly/warmbly/internal/app/notification"
 	"github.com/warmbly/warmbly/internal/app/opsnotify"
 	"github.com/warmbly/warmbly/internal/app/pipedrive"
-	"github.com/warmbly/warmbly/internal/app/poollink"
 	"github.com/warmbly/warmbly/internal/app/replyclassify"
 	"github.com/warmbly/warmbly/internal/app/salesforce"
 	warmupapp "github.com/warmbly/warmbly/internal/app/warmup"
@@ -67,9 +66,9 @@ import (
 	"github.com/warmbly/warmbly/internal/pkg/geo"
 	"github.com/warmbly/warmbly/internal/pkg/nodeagent"
 	"github.com/warmbly/warmbly/internal/pkg/nodeauth"
+	"github.com/warmbly/warmbly/internal/pkg/nodebackend"
 	"github.com/warmbly/warmbly/internal/pkg/typesafe"
 	"github.com/warmbly/warmbly/internal/repository"
-	"github.com/warmbly/warmbly/internal/tasks"
 )
 
 func main() {
@@ -129,7 +128,10 @@ func main() {
 		masterKey += "-dev"
 	}
 
-	kmsClient, err := kms.FromEnv(ctx, awscfg, masterKey)
+	// A fleet consumer calls the control plane on its private address when it can reach it.
+	controlPlane := nodebackend.Resolve(ctx, os.Getenv, consumerBackendURL(), log.Printf)
+
+	kmsClient, err := kms.FromEnv(ctx, awscfg, masterKey, kms.WithControlPlane(controlPlane))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -137,6 +139,7 @@ func main() {
 	encryptedKeys, err := encryptedkeys.FromEnv(
 		encryptedkeys.Deps{DB: primaryDB},
 		"postgres",
+		encryptedkeys.WithControlPlane(controlPlane),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -144,7 +147,7 @@ func main() {
 	cipherService := cipher.NewService(kmsClient, redisCache, encryptedKeys)
 
 	// Blob storage (S3 by default, filesystem when BLOB_PROVIDER=filesystem).
-	s3Client, err := storage.NewFromEnv(ctx, awscfg, "main")
+	s3Client, err := storage.NewFromEnv(ctx, awscfg, "main", storage.WithControlPlane(controlPlane))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -281,18 +284,18 @@ func main() {
 	// optional model layer rides the same OpenAI-first provider.
 	creditRepoC := repository.NewCreditRepository(primaryDB)
 	aiSettingsRepoC := repository.NewAISettingsRepository(primaryDB)
-	creditServiceC := credits.NewService(creditRepoC, aiSettingsRepoC, redisCache)
+	creditServiceC := credits.NewService(creditRepoC, aiSettingsRepoC, instancesettings.NewService(instancesettings.NewStore(primaryDB.Pool)), redisCache)
 	// Consumer-side debits (automation AI nodes) also feed the low-balance
 	// alert. Auto top-up stays backend-only (no Stripe service here).
-	creditServiceC.SetMonitor(creditwatch.New(aiSettingsRepoC, creditRepoC, redisCache, streamingPublisher, nil).OnBalanceChanged)
+	// No Stripe here: the backend's sweep starts reloads for work charged in
+	// this process; notices go out from here.
+	balanceC := balance.New(creditServiceC, aiSettingsRepoC, repository.NewSavedCardChargeRepository(primaryDB),
+		repository.NewSubscriptionRepository(primaryDB.Pool), nil, redisCache, streamingPublisher, nil, nil)
+	creditServiceC.SetMonitor(balanceC.OnBalanceChanged)
 	var aiProviderC generation.Provider
 	// Pluggable web search (Serper/SearXNG) backs the AI switch's optional
 	// company lookup on reply-triggered automations that run in the consumer.
-	aiSearchC := generation.NewSearchClient(
-		cfg.GetStringOptional(ctx, "SEARCH_PROVIDER", "search/provider", ""),
-		cfg.GetStringOptional(ctx, "SEARCH_API_URL", "search/api_url", ""),
-		cfg.GetSecretOptional(ctx, "SEARCH_API_KEY", "search/api_key", ""),
-	)
+	aiSearchC := generation.SearchFromConfig(cfg.Lookup(ctx))
 	// Provider selection mirrors the backend: AI_PROVIDER preset + AI_* vars.
 	if cfgAI, rerr := generation.Resolve(generation.ProviderSettings{
 		Provider:   cfg.GetStringOptional(ctx, "AI_PROVIDER", "ai_provider", ""),
@@ -413,7 +416,14 @@ func main() {
 	// The lead-intake actions (create or update contact, add to campaign) write
 	// through a contact service so a reply-triggered flow in this process gets
 	// the same plan check, campaign wake and contact.created as the backend.
-	contactServiceC := contact.NewService(contactRepo, subscriptionRepoConsumer, planRepoConsumer, streamingPublisher)
+	contactGate := feature.NewService(subscriptionRepoConsumer, planRepoConsumer)
+	// An approved contact-limit increase applies here as it does in the backend.
+	if g, ok := contactGate.(interface {
+		WireLimitOverrides(feature.LimitOverrideReader)
+	}); ok {
+		g.WireLimitOverrides(orgRepoConsumer)
+	}
+	contactServiceC := contact.NewService(contactRepo, contactGate, streamingPublisher)
 	if aware, ok := contactServiceC.(contact.WebhookAware); ok {
 		aware.WireWebhooks(webhookService)
 	}
@@ -473,6 +483,7 @@ func main() {
 	}
 	notificationService.WirePush(pushSender, repository.NewDeviceTokenRepository(primaryDB.Pool), redisCache.Client)
 	advancedService.WireNotifier(notificationService)
+	balanceC.WireNotifier(notificationService)
 	// Reply pulses fire in THIS process too (inbox ingest classifies replies).
 	advancedService.WireRealtime(streamingPublisher)
 	// A lifted reply opt-out is recorded like a member lifting one by hand.
@@ -499,9 +510,7 @@ func main() {
 		advancedService.WireBounceJudge(typeSafeClient)
 	}
 
-	// Warmup actions for a mailbox a linked instance runs are queued for that instance instead of a worker.
-	eventsPublisher := poollink.NewSelfExecutionPublisher(events.NewPublisher(consumerBus, s3Client, consumerCodec, cipherService),
-		repository.NewPoolLinkRepository(primaryDB.Pool, primaryDB.ConnectSession), cipherService)
+	eventsPublisher := events.NewPublisher(consumerBus, s3Client, consumerCodec, cipherService)
 
 	// Every consumer loop records to scheduled_job_runs, so the admin panel
 	// lists it next to the backend's and can ask it to run now.
@@ -538,20 +547,10 @@ func main() {
 	advancedService.WireInboxTags(inboxTagRepo)
 
 	cloudLinkC := cloudlink.NewService(repository.NewCloudLinkRepository(primaryDB.Pool, credEncrypter, primaryDB.ConnectSession), emailRepo, nil)
-	// Runs Cloud's warmup for mailboxes whose only credential stays on this instance.
-	outboundAdmission, _ := taskRepo.(repository.OutboundAdmissionRepository)
-	cloudExec := cloudlink.NewExecution(cloudLinkC, cloudlink.ExecutionDeps{
-		Repo:      repository.NewCloudLinkExecRepository(primaryDB.Pool),
-		Publisher: eventsPublisher,
-		Admission: outboundAdmission,
-		Liveness:  tasks.NewWorkerLiveness(workerRepo, redisCache.Client),
-		Cipher:    cipherService,
-	})
-	var cloudExecution jobs.CloudExecution
-	if cloudExec != nil {
-		cloudExecution = cloudExec
-	}
 
+	// Mailboxes bought in the store keep their inbox when the plan lapses.
+	uniboxAccess := feature.WithPurchasedMailboxes(feature.NewService(subscriptionRepoConsumer, planRepoConsumer),
+		feature.StoreMailboxes{Repo: repository.NewStoreRepository(primaryDB)})
 	jobsService := &jobs.JobsService{
 		CampaignIsolationEnabled:    config.CampaignSendIsolationEnabled(),
 		DBConns:                     primaryDB.Pool.Config().MaxConns,
@@ -569,10 +568,10 @@ func main() {
 		WarmupRepo:                  warmupRepo,
 		PoolLinkRepo:                repository.NewPoolLinkRepository(primaryDB.Pool, primaryDB.ConnectSession),
 		CloudLink:                   cloudLinkC,
-		CloudExec:                   cloudExecution,
 		WarmupContentRepo:           repository.NewWarmupContentRepository(primaryDB.Pool),
 		WarmupEngagementRepo:        repository.NewWarmupEngagementRepository(primaryDB.Pool),
 		WarmupRecoveryRepo:          repository.NewWarmupRecoveryRepository(primaryDB.Pool),
+		ExternalWarmup:              repository.NewExternalWarmupRepository(primaryDB.Pool),
 		WarmupPlacementRepo:         repository.NewWarmupPlacementRepository(primaryDB),
 		PlacementRepo:               repository.NewPlacementRepository(primaryDB),
 		WarmupService:               warmupService,
@@ -588,7 +587,7 @@ func main() {
 		AdminRepo:                   repository.NewAdminRepository(primaryDB.Pool),
 		AssignmentService:           workerAssignmentSvc,
 		Notifier:                    notificationService,
-		UniboxAccess:                feature.NewService(subscriptionRepoConsumer, planRepoConsumer),
+		UniboxAccess:                uniboxAccess,
 		OpsNotifier:                 opsNotifierC,
 		TaskRepo:                    taskRepo,
 		CampaignRepo:                campaignRepo,
@@ -634,6 +633,7 @@ func main() {
 	// effective dwell close to the requested value.
 	go jobsService.StartWarmupEngagementPoller(ctx, 30*time.Second)
 	go jobsService.StartWarmupInboxCleanup(ctx)
+	go jobsService.StartExternalWarmupSweep(ctx)
 	go jobsService.StartWarmupFilingRecovery(ctx)
 	// Deletes warmup mail past its retention window from the mailbox itself
 	// and prunes the per-message warmup records after theirs.
@@ -656,7 +656,6 @@ func main() {
 	go jobsService.StartCloudStandingSync(ctx, 5*time.Minute)
 	// Mirrors the warmup settings Warmbly Cloud owns, so edits made there show here.
 	go jobsService.StartCloudSettingsSync(ctx, 15*time.Minute)
-	go cloudExec.Run(ctx)
 
 	// Start dead worker detection (every 5 minutes)
 	go jobsService.StartDeadWorkerDetection(ctx, 5*time.Minute)
@@ -664,6 +663,9 @@ func main() {
 	// Resolve campaign sends that were reserved and dispatched but whose worker
 	// result never came back, so a lead is never held in flight forever.
 	go jobsService.StartStuckSendReclaimer(ctx, 5*time.Minute)
+
+	// Switches off custom-server mailboxes whose server has refused every connection for days.
+	go jobsService.StartUnreachableMailboxSweep(ctx, time.Hour)
 
 	// Gmail push: the watch notifications each Gmail mailbox's worker opened arrive on
 	// this Pub/Sub subscription and wake that worker. Unset keeps Gmail polling.
@@ -773,7 +775,7 @@ func main() {
 	agentDone := make(chan struct{})
 	go func() {
 		defer close(agentDone)
-		newConsumerAgent().Run(ctx)
+		newConsumerAgent(controlPlane).Run(ctx)
 	}()
 
 	// The consumer's ECS service scales on this; unset on every other deployment.
@@ -807,7 +809,7 @@ func main() {
 // Identity resolution mirrors the worker's: an explicit WARMBLY_NODE_ID wins,
 // otherwise it is derived from the hostname so a container recreate keeps the
 // same identity instead of leaving a dead row behind on every restart.
-func newConsumerAgent() *nodeagent.Agent {
+func newConsumerAgent(controlPlane nodebackend.Backend) *nodeagent.Agent {
 	id := resolveConsumerID()
 	return nodeagent.New(nodeagent.Config{
 		NodeID:            id,
@@ -815,7 +817,8 @@ func newConsumerAgent() *nodeagent.Agent {
 		Name:              os.Getenv("WARMBLY_NODE_NAME"),
 		Region:            os.Getenv("WARMBLY_NODE_REGION"),
 		Version:           os.Getenv("WARMBLY_VERSION"),
-		BaseURL:           consumerBackendURL(),
+		BaseURL:           controlPlane.BaseURL(consumerBackendURL()),
+		HTTPClient:        controlPlane.Client(10 * time.Second),
 		Token:             config.NodeAPIToken(),
 		Credential:        nodeauth.FromEnv().Credential,
 		TargetVersionPath: os.Getenv("WARMBLY_TARGET_VERSION_PATH"),

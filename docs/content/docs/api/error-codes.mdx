@@ -42,8 +42,8 @@ Admission denial before dispatch releases the send reservation without spending 
 |------|-------|-------------|
 | 400 | Bad Request | Invalid request syntax or parameters, or a quota that would be passed (`storage_limit_reached`) |
 | 401 | Unauthorized | Missing or invalid authentication |
-| 402 | Payment Required | Out of credits (`insufficient_credits`), or no free placement tests left this month (`placement_quota_exceeded`, `placement_not_entitled`) |
-| 403 | Forbidden | Authenticated but lacks permission, or the workspace's mailbox allowance is full (`mailbox_allowance_reached`) |
+| 402 | Payment Required | The workspace balance is too low (`insufficient_credits`), the plan's included AI usage is used up and the workspace keeps its balance for other charges (`ai_allowance_used`) or AI reached the workspace's monthly limit on using the balance (`ai_overage_limit_reached`), a card was not charged when adding money (`card_declined`, `authentication_required`, `payment_failed`), or no free placement tests left this month (`placement_quota_exceeded`, `placement_not_entitled`) |
+| 403 | Forbidden | Authenticated but lacks permission, the workspace's mailbox allowance is full (`mailbox_allowance_reached`), or new contacts would pass its contact limit (`contact_limit_reached`) |
 | 404 | Not Found | Resource doesn't exist |
 | 409 | Conflict | Resource already exists |
 | 422 | Unprocessable | Validation failed |
@@ -145,7 +145,9 @@ Resource IDs on email, campaign and contact routes must be UUIDs. Email `tags` a
 | `no_contacts` | `POST /contacts/verification` selected no contacts: neither `contacts` nor a `campaign_id` with refused leads |
 | `list_bounce_risk` | `POST /campaigns/:id/start` refused the launch on the list's projected bounce rate. Clean or verify the list, or repeat the request with `acknowledge_list_risk: true` |
 | `leads_undeliverable` | `POST /campaigns/:id/start` found nothing to send because address verification refused every remaining lead; the campaign is parked at `paused_undeliverable` until they are re-verified or marked deliverable |
-| `empty_step_body` | `POST /campaigns/:id/start` found an email step with nothing in either body, so it would send a blank message to every lead it reached. Write the step's body and start again |
+| `empty_step_body` | `POST /campaigns/:id/start` found an email step with nothing in either body, or a social message or InMail step with no message (a comment step with no comment, a voice note with no recording or script), so it would send a blank message to every lead it reached. Write the step's body and start again |
+| `social_accounts_required` | `POST /campaigns/:id/start` on a campaign with social steps on a channel it has no account for among its social senders. The `message` names the channels. Add them with `PUT /campaigns/:id/social-accounts` |
+| `social_needs_mailbox` | `POST /campaigns/:id/start` on a campaign of only social steps in a workspace with no mailbox. Campaigns are scheduled through a mailbox even when they send no email, so connect one first |
 | `invalid_template` | A step, A/B variant or new campaign was written (or a campaign started) with a subject, HTML body or plain-text body that would not render as written: an `{{if}}` with no `{{end}}`, an unknown function, an unknown `.Sender` field, or a bare name such as `{{frist_name}}` that is not a built-in field. The `message` names the field, the line and the problem. Fix the copy and send it again; see [personalization](/guides/expressions/) |
 | `no_leads` | `POST /campaigns/:id/start` on a campaign that has never had a lead, with `continuous` off. Add contacts, or set `continuous` so it starts empty and waits for them. A campaign whose leads have all finished is a different case: it starts and waits |
 | `no_remaining_leads` | A platform-initiated restart of a campaign with nothing left to send and `continuous` off found nothing to do; the campaign is `completed` again. A start you request never answers this: it turns `continuous` on and waits |
@@ -154,6 +156,7 @@ Resource IDs on email, campaign and contact routes must be UUIDs. Email `tags` a
 | `selection_too_large` | A `"all": true` bulk selection resolved to more than its limit: `250,000` contacts, or `50,000` CRM tasks. Narrow the filter and run it in parts; nothing was changed |
 | `invalid_filter` | A list filter could not be read. A task filter carried an id that is not one: `assigned_to`, `contact_id` and `deal_id` name records, and are matched against id columns. Sent by `POST /crm/tasks/search`, `POST /crm/tasks/summary`, and the `filters` of a `"all": true` bulk selection. `GET /unibox` sends it for a `campaign_id` or `contact_id` that is not a UUID, a `since` or `until` that is neither a `YYYY-MM-DD` date nor an RFC 3339 timestamp; the `message` names the parameter |
 | `invalid_setting` | `PATCH /outreach/settings` (or a campaign's advanced settings) carried a value outside the documented vocabulary, for example a `reply_intent.crm_task_intents` entry that is not a reply intent, or an `inbox_tagging.questions` entry with no question text, a label that is missing, repeated or built in, or a choice question with fewer than two options, or an `inbox_tagging.languages` entry that is not a supported language code |
+| `invalid_filter_tag` | `PUT /emails/:id/warmup-filter-tag` was given a `tag` shorter than 6 or longer than 40 characters, one using anything but letters, digits, spaces, hyphens and underscores, or one that calls the mail warmup, automated, generated or a test. Leave `tag` out to get a random code |
 | `invalid_slug` | `PATCH /organization/current` was given a `slug` that is not 2 to 80 lowercase letters, numbers or dashes starting and ending with a letter or number |
 | `invalid_sync_folder` | `PUT /emails/:id/sync` was given a folder the sync always follows (`INBOX`, or a sent, drafts, spam, trash or archive folder by attribute or name), a name that is empty after trimming, longer than 255 characters or carrying a control character, more than 50 names, or a mailbox that is not IMAP. The `message` names the entry refused |
 | `invalid_tls_pin` | An SMTP/IMAP connect or reconnect carried a `tls_pin` that is not a SHA-256 fingerprint (64 hexadecimal characters; colons, spaces and a `sha256:` prefix are ignored), or `POST /emails/onboarding/smtp-imap/:id/certificates/confirm` was missing the fingerprint of a server the mailbox trusts on its own certificate |
@@ -164,6 +167,10 @@ Resource IDs on email, campaign and contact routes must be UUIDs. Email `tags` a
 | `invalid_recipient` | `POST /emails/:id/send`, `POST /unibox/reply` or `POST /unibox/compose` was given a `to`, `cc` or `bcc` entry that is not exactly one email address (`ana@example.com` or `Ana <ana@example.com>`), or no `to` address at all. Put each address in its own entry |
 | `recipient_suppressed` | `POST /emails/:id/send`, `POST /unibox/reply` or `POST /unibox/compose` named a `to`, `cc` or `bcc` address on the workspace [suppression list](/guides/unsubscribe/#the-suppression-list), directly or through its domain. The `message` names the address and the entry. Nothing was queued. A forward (`POST /unibox/reply` with `forward_message_id`) is not checked against the list |
 | `invalid_message_id` | `POST /emails/:id/send` or `POST /unibox/reply` was given an `in_reply_to` entry that is not one Message-ID: printable characters with no spaces or line breaks, with or without the surrounding `<` and `>` |
+| `invalid_draft` | `PUT /unibox/ai-drafts/by-thread` was given a missing or oversized `thread_id`, a `body` that is empty or longer than 8000 characters, a `source` that is empty, longer than 40 characters or not letters, digits, dots, dashes and underscores, an `intent_class` longer than 40 characters, or a `confidence` outside 0 to 1 |
+| `thread_not_found` | `PUT /unibox/ai-drafts/by-thread` named a thread with no inbound message in this workspace |
+| `already_sent` | `PUT /unibox/ai-drafts/by-thread` found an approved draft that already answers the newest inbound message on the thread. Nothing was changed |
+| `draft_discarded` | `PUT /unibox/ai-drafts/by-thread` found a discarded draft that already covers the newest inbound message on the thread. Nothing was changed |
 
 #### Image upload refusals
 
@@ -201,6 +208,7 @@ Avatars, OAuth app logos, form logos, covers and backgrounds, and images placed 
 | `sso_link_expired` | 400 | The pending token from a `link_required` sign-in is unknown, expired (ten minutes), already used, or has had three wrong passwords. Start the provider sign-in again |
 | `password_reused` | 400 | `POST /auth/login/initial-password` was given the issued initial password itself. Choose a password of your own |
 | `password_change_expired` | 400 | The pending token from a `password_change_required` sign-in is unknown, expired (ten minutes) or already used, or the issued password it was for has run out. Sign in again; an issued password past its 48 hours is refused like a wrong password, so ask whoever issued it for a new one |
+| `initial_password_web_only` | 403 | `POST /auth/login` was given a valid issued initial password by a Warmbly iOS app build that cannot choose a new password in the app. Nothing was opened. Finish the first sign-in on the web, where you choose your own password, then sign in to the app with it, or update the app. Clients that send `supports_password_change: true`, browsers and API clients get the `password_change_required` step instead |
 | `password_change_required` | 403 | `POST /auth/sso/link` was given an issued initial password. Sign in with email and password first, which asks you to choose your own, then link the provider |
 | `reset_link_invalid` | 401 | `POST /auth/reset-password/session` or `/confirm` was given a reset link or reset session that expired, was already used, or was issued before the password last changed. Request a new link |
 | `api_credentials_revoke_unsupported` | 400 | `POST /auth/reset-password/confirm` or `POST /auth/me/password` asked to end connected apps and API keys (`revoke_api_credentials`) on a server that cannot. The password was not changed. Send it again without that option, then remove apps and keys from Settings |
@@ -241,6 +249,53 @@ Each registered key may make 30 protected calls per hour. Past that the call ans
 }
 ```
 
+#### Account deletion refusals
+
+Scheduling an account deletion is refused with one of these codes, or with `organization_cloud_connected` (see [Cloud connection refusals](#cloud-connection-refusals)) when a workspace it owns is connected to Warmbly Cloud. The same checks run again when the 30-day grace period ends: if any still applies, the deletion stays pending, is checked again a day later, and the account is kept until it completes.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `account_has_shared_work` | 409 | The account still holds mailboxes, contacts, campaigns, campaign attachments, reply templates, API keys, apps or shared assistant conversations in a workspace it does not own. Remove them before scheduling deletion of the account |
+| `workspace_subscription_active` | 409 | A workspace the account owns has a subscription that will renew. Cancel it before scheduling deletion of the account |
+| `agency_subscription_active` | 409 | An [agency](/guides/agencies/) the account owns has a plan that will renew. Cancel it under **Agency > Billing** before scheduling deletion of the account |
+
+#### Partnership refusals
+
+The [Partnership plan](/guides/partnership/) routes under `/emails/connect` and `/emails/oauth-apps`, its sign-in links, and Google and Microsoft sign-in on that plan.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `partnership_plan_required` | 403 | The workspace is not on the Partnership plan, so the mailbox connect API, sign-in links and its own OAuth apps are not available |
+| `partnership_oauth_app_required` | 422 | On the Partnership plan, Google and Microsoft mailboxes sign in only through the workspace's own OAuth app, and it has none for this provider. Also returned for inbox-vendor sign-in and domain-wide grants, which only Warmbly's own apps can serve |
+| `connect_grant_app_required` | 422 | A handed-over sign-in (`POST /emails/connect/oauth`) needs the workspace's own OAuth app for that provider saved first |
+| `connect_grant_input` | 400 | Send either `refresh_token`, or `code` with the `redirect_uri` it was issued for |
+| `connect_grant_redirect_uri` | 400 | `redirect_uri` must be the `https` callback the code was issued for |
+| `connect_grant_refused` | 422 | The provider refused the token or code: revoked, expired, already used, issued for another `redirect_uri`, or from a different app than the one saved |
+| `connect_grant_offline` | 422 | The sign-in carries no refresh token. Ask for offline access (`access_type=offline` and `prompt=consent` on Google, `offline_access` on Microsoft) |
+| `connect_grant_wrong_mailbox` | 403 | The sign-in belongs to a different address than the `email` sent with it |
+| `connect_grant_mailbox_not_allowed` | 403 | The sign-in would renew a mailbox outside the mailboxes this API key may act on |
+| `connect_link_provider` | 400 | `provider` must be `gmail` or `outlook` |
+| `connect_link_email` | 400 | `email` must be a single bare address |
+| `connect_link_return_url` | 400 | `return_url` must be an `https` address with no fragment |
+| `connect_link_expiry` | 400 | `expires_in_hours` must be between 1 and 168 |
+| `connect_warmup` | 400 | A `warmup` value is not positive, or `reply_rate` is outside 1 to 100 |
+| `connect_link_not_found` | 404 | The workspace has no sign-in link with that id |
+| `connect_link_unavailable` | 404 | The sign-in link expired, was revoked or already connected its mailbox |
+| `connect_link_browser` | 403 | The sign-in was finished in a different browser from the one that opened the link. Open the link again |
+| `connect_link_wrong_mailbox` | 403 | The owner signed in with a different address than the one the link names |
+| `connect_link_declined` | 400 | The owner cancelled the provider's consent screen. The link stays usable |
+| `connect_link_creator_left` | 403 | The member whose key created the link can no longer manage mailboxes in the workspace |
+| `connect_warmup_failed` | none | Set as `error_code` on a connected link: the mailbox connected, but its warmup did not start. Start it with `POST /emails/:id/warmup/start` |
+| `connect_warmup_settings_failed` | none | Set as `error_code` on a connected link: warmup started on the default ramp because the link's ramp settings were refused. Apply them with `PATCH /emails/:id` |
+| `oauth_app_provider` | 400 | The provider in the path must be `gmail` or `outlook` |
+| `oauth_app_client_id` | 400 | The client ID does not fit the provider: Google client IDs end in `.apps.googleusercontent.com`, Microsoft ones are a GUID |
+| `oauth_app_client_secret` | 400 | A new app, or a new client ID, needs its client secret |
+| `oauth_app_redirect_url` | 400 | `redirect_url` must be an `https` address with a path and no fragment |
+| `oauth_app_rejected` | 422 | The provider did not accept the client ID and secret |
+| `oauth_app_in_use` | 409 | Mailboxes are signed in through the app, so its client ID cannot change and it cannot be removed. A new secret for the same client ID can be saved at any time |
+| `oauth_app_not_found` | 404 | The workspace has no OAuth app for that provider |
+| `oauth_app_secret_missing` | 422 | The app has no client secret, which happens after a workspace import without credentials. Save it again |
+
 #### Cloud connection refusals
 
 | `code` | Status | Meaning |
@@ -257,10 +312,8 @@ Each registered key may make 30 protected calls per hour. Past that the call ans
 | `cloud_link_mailbox_inactive` | 422 | Only active mailboxes can be enrolled in Warmbly Cloud warmup |
 | `cloud_link_oauth_mailbox` | 422 | A Google or Microsoft mailbox connected with this instance's own OAuth app cannot be warmed by Warmbly Cloud, because its refresh grant is bound to that app. The `message` says how to connect it instead |
 | `cloud_link_lifecycle` | 400 | A pause or resume request named an action other than `pause` or `resume` |
-| `cloud_link_executor` | 400 | An enrollment named an `executor` other than `cloud` or `instance` |
-| `cloud_link_self_execution_not_granted` | 403 | Keeping a mailbox's credential on this server needs a permission Warmbly grants to the linked Cloud workspace, and it has none or it expired. Ask Warmbly support, or enroll with `executor` `cloud` |
-| `cloud_link_self_execution_unavailable` | 409 | The connected Warmbly Cloud cannot run warmup for a mailbox whose credential stays on this server. Upgrade Cloud, or enroll with `executor` `cloud` |
-| `cloud_link_self_execution_managed` | 422 | The mailbox signs in through Warmbly Cloud or is associated with its app-password copy there, so its credential already lives on Cloud and cannot stay on this server |
+| `cloud_link_executor` | 400 | An enrollment named an `executor` other than `cloud`. Warmbly Cloud warms only mailboxes whose credential it holds |
+| `cloud_link_credential_required` | 409 | The mailbox's credential stayed on this server, so Warmbly Cloud keeps it out of the pool. Enroll it with `executor` `cloud` to hand the credential over; a Google or Microsoft mailbox is added again through Warmbly Cloud sign-in |
 
 #### Warmbly Cloud pool link
 
@@ -287,21 +340,8 @@ These come from Warmbly Cloud's side of the connection (`/v1/pool-link/*`), whic
 | `pool_link_warmup_unavailable` | 403 | Warmup is not available on the Cloud workspace |
 | `pool_link_oauth_pending` | 409 | A mailbox sign-in started through Warmbly Cloud has not completed yet. Poll again |
 | `pool_link_oauth_session` | 404 | The mailbox sign-in session is unknown or has expired. Start the sign-in again |
-| `pool_link_executor` | 400 | On Warmbly Cloud's linked-instance API: an enrollment named an `executor` other than `cloud` or `instance` |
-| `pool_link_executor_credential` | 400 | On Warmbly Cloud's linked-instance API: an enrollment for a mailbox the instance runs carried a credential. Those mailboxes are enrolled without one |
-| `pool_link_executor_conflict` | 409 | On Warmbly Cloud's linked-instance API: a credential was sent for a mailbox whose credential stays on the instance, without `executor` `cloud`. Update the instance, or switch the mailbox to Cloud explicitly |
-| `pool_link_executor_managed` | 422 | On Warmbly Cloud's linked-instance API: a mailbox Cloud connected through its own sign-in cannot be run by the instance |
-| `pool_link_self_execution_not_granted` | 403 | On Warmbly Cloud's linked-instance API: the Cloud workspace has no active permission to keep mailbox credentials on the instance |
-| `pool_link_self_execution_unavailable` | 409 | On Warmbly Cloud's linked-instance API: this Cloud deployment cannot run warmup through the instance |
-| `pool_link_mailbox_not_self_executed` | 409 | On Warmbly Cloud's linked-instance API: Cloud runs this mailbox's warmup, so it takes no warmup reports for it from the instance |
-| `pool_link_command_not_found` | 404 | On Warmbly Cloud's linked-instance API: no command with that ID belongs to the calling instance |
-| `pool_link_command_not_leased` | 409 | On Warmbly Cloud's linked-instance API: a command was answered before it was leased |
-| `pool_link_command_answered` | 409 | On Warmbly Cloud's linked-instance API: the command already has a different answer, expired, or was withdrawn. Repeating the stored answer returns `204` |
-| `pool_link_command_result_invalid` | 422 | On Warmbly Cloud's linked-instance API: the outcome does not fit the command kind, or a `sent` result has no valid `message_id` |
-| `pool_link_arrival_invalid` | 400 | On Warmbly Cloud's linked-instance API: a warmup report is missing its message handle, Message-ID, sender or received time |
-| `pool_link_arrival_pending` | 503 | On Warmbly Cloud's linked-instance API: Cloud has not recorded the send this report matches yet. Report it again shortly |
-| `pool_link_arrival_not_found` | 404 | On Warmbly Cloud's linked-instance API: an observation named a message Cloud never accepted from this mailbox |
-| `pool_link_observation_invalid` | 400 | On Warmbly Cloud's linked-instance API: the observation `kind` is not `removed`, `moved_to_spam` or `owner_activity` |
+| `pool_link_executor` | 400 | On Warmbly Cloud's linked-instance API: an enrollment named an `executor` other than `cloud`. Cloud runs every mailbox it warms |
+| `pool_link_executor_conflict` | 409 | On Warmbly Cloud's linked-instance API: a credential update was sent for a mailbox whose credential stayed on the instance. Enroll the mailbox again with its credential to hand it to Cloud |
 
 #### CLI sign-in
 
@@ -332,11 +372,11 @@ A mailbox warmed by Warmbly Cloud has its warmup settings changed through the cl
 
 | `code` | Status | Meaning |
 |--------|--------|---------|
-| `invalid_name` | 400 | A first name, last name, workspace name, company name, OAuth app name or mailbox display name broke the naming rules. The `message` names the field and the rule |
+| `invalid_name` | 400 | A first name, last name, workspace name, company name, client report name, brand name, OAuth app name or mailbox display name broke the naming rules. The `message` names the field and the rule |
 
 Names are shown to other people, including in invitation and notification emails, so they carry plain text only. The same rules apply to the dashboard, the API, the setup page and `warmblyctl`:
 
-- a first or last name is at most 50 characters and contains a letter; a workspace or company name is at most 64 characters and contains a letter or a number; a mailbox display name keeps its own 2 to 100 character bound
+- a first or last name is at most 50 characters and contains a letter; a workspace, company or client report name is at most 64 characters and contains a letter or a number; a mailbox display name keeps its own 2 to 100 character bound
 - no links, web addresses or email addresses: nothing with `@`, `//`, `www.` or a scheme such as `https:`, no hostname such as `example.com`, and no IP address. Full-width and ideographic dots count as dots
 - no control characters, invisible formatting characters (zero-width and bidirectional overrides), `<`, `>`, `` ` `` or `\`, and no more than three stacked combining marks
 - leading and trailing spaces are trimmed and runs of spaces become one, and that is the form stored
@@ -416,6 +456,9 @@ The [inbox vendor](/guides/mailbox-import/#import-from-an-inbox-vendor) routes (
 | `mailbox_vendor_unknown` | 400 | `vendor` is not one of the supported vendors |
 | `mailbox_vendor_rate_limited` | 429 | The vendor is rate limiting Warmbly's requests. Try again in a minute |
 | `mailbox_vendor_unavailable` | 400 | The vendor answered with something unexpected, did not answer, or no longer has the mailbox. Try again shortly |
+| `mailbox_vendor_reconnect_unavailable` | 400 | `POST /emails/vendors/:id/reconnect` on an instance without Google sign-in for new mailboxes (`gmail_oauth_connect`), so no vendor can sign in for Warmbly |
+| `mailbox_vendor_reconnect_unsupported` | 400 | `POST /emails/vendors/:id/reconnect` for a vendor that cannot sign in to mailboxes through its API. InboxKit and Zapmail can |
+| `mailbox_vendor_reconnect_none` | 404 | `POST /emails/vendors/:id/reconnect` found no Google mailbox imported from this vendor account, or `email_account_id` names a mailbox that is not one. Also answers `400` when one request names more than 1,000 mailboxes |
 | `mailbox_grant_not_configured` | 400 | This instance has no Google service account or no Microsoft app for admin grants. An operator sets them up; see [configuration](/development/configuration/#whole-domain-connects). `GET /emails/grants/config` names the settings still unset in `google_missing` and `microsoft_missing` |
 | `google_delegation_unauthorized` | 400 | Google refused the domain-wide delegation, or accepted it and refused the call: the client ID or a scope is missing from the Admin console entry, an OAuth client ID was entered instead of the service account's numeric one, or the admin address is not a super administrator. Admin console changes can take a few minutes to apply. See [when Google refuses](/development/whole-domain-connect/#when-google-refuses) |
 | `microsoft_consent_missing` | 400 | The Microsoft 365 organization has not granted admin consent, does not exist, or the consent lacks `Mail.ReadWrite`, `Mail.Send` or `User.Read.All`; or the consent sign-in did not complete or name the organization. A Global Administrator connects it again, and again after the app's permissions change. See [when Microsoft refuses](/development/whole-domain-connect/#when-microsoft-refuses) |
@@ -449,7 +492,7 @@ The [inbox vendor](/guides/mailbox-import/#import-from-an-inbox-vendor) routes (
 | `pool_link_oauth_unknown` | 409 | The provider exchange has no confirmed committed mailbox. Do not retry the authorization code or infer success; remove the pending connection before starting new explicit consent |
 | `cli_auth_scopes_role` | 403 | Approving a [CLI sign-in](/api/cli/#scopes): your role in the chosen workspace allows none of the scopes the CLI asked for. Pick another workspace, or ask for narrower scopes with `--scopes` |
 | `sending_domain_bulk_invalid` | 400 | A bulk setup named no domain, more than 100, neither a `tracking_label` nor a `redirect_url`, a `tracking_label` that is not one DNS label, or a `served_by` other than `instance` or `cloud` |
-| `forms_domain_taken` | 409 | Another workspace on this instance has already verified this domain, as its forms domain, a tracking domain or a redirect. Returned when saving or verifying the workspace's custom forms domain. Nothing changes |
+| `forms_domain_taken` | 409 | Another workspace on this instance has already verified this domain, as its forms domain, a tracking domain or a redirect, or an agency holds it as its portal domain. Returned when saving or verifying the workspace's custom forms domain. Nothing changes |
 | `lead_sync_target_not_found` | 400 | Creating or editing a [lead sync](/guides/contacts-crm/) source named a target campaign or a category that does not exist in this workspace. Nothing is saved |
 | `tracking_domain_taken` | 409 | Another workspace on this instance has already verified this tracking domain, on a mailbox, as a campaign's override, or as its forms domain. Returned when saving or verifying a mailbox's tracking domain, applying one to a sending domain (including bulk setup), and verifying a campaign's override. Nothing changes |
 | `tracking_host_not_configured` | 400 | This instance has no tracking host (`TRACKING_DOMAIN`), so it cannot serve a tracking domain or a redirect |
@@ -470,7 +513,7 @@ The [inbox vendor](/guides/mailbox-import/#import-from-an-inbox-vendor) routes (
 | `code` | Status | Meaning |
 |--------|--------|---------|
 | `app_password_invalid` | 400 | `app_password` is not 16 letters once spaces are removed. Create one at myaccount.google.com/apppasswords and send it as Google shows it |
-| `mailbox_not_google_signin` | 409 | The mailbox is not connected with per-mailbox Google sign-in: it is already on an app password or an admin grant, is an Outlook or SMTP/IMAP mailbox, or its sign-in is held by Warmbly Cloud. A repeat of a switch that succeeded answers this |
+| `mailbox_not_google_signin` | 409 | The mailbox is not a Google mailbox on its own Google sign-in or an admin grant: it is already on an app password, is an Outlook or SMTP/IMAP mailbox, or its sign-in is held by Warmbly Cloud. A repeat of a switch that succeeded answers this |
 
 #### Placement test refusals
 
@@ -479,7 +522,7 @@ The [inbox placement test](/guides/placement-tests/) routes (`/placement/*` and 
 | `code` | Status | Meaning |
 |--------|--------|---------|
 | `placement_not_entitled` | 402 | The workspace has no active trial or subscription, so it cannot start a test. Only the hosted product answers this |
-| `placement_quota_exceeded` | 402 | The workspace has used its free tests for the month on the instance panel, or the linked Warmbly Cloud workspace has used its free tests on Warmbly Cloud's panel. A tracking comparison needs two. On the instance panel of a paid workspace the `message` names the price in credits: send `max_credits` of at least that much to pay it. Monitors and trials cannot pay, and wait for the next month. Tests on the workspace's own seed inboxes are never counted |
+| `placement_quota_exceeded` | 402 | The workspace has used its free tests for the month on the instance panel, or the linked Warmbly Cloud workspace has used its free tests on Warmbly Cloud's panel. A tracking comparison needs two. On the instance panel of a paid workspace the `message` names the price in dollars: send `max_usd` of at least that much to pay it from the balance (`max_credits`, the legacy form, is read only when `max_usd` is absent). Monitors and trials cannot pay, and wait for the next month. Tests on the workspace's own seed inboxes are never counted |
 | `placement_too_many_running` | 429 | The workspace already has `3` tests running, counting each half of a tracking comparison. Wait for one to finish |
 | `placement_sender_busy` | 409 | The sending mailbox still has copies of another test waiting to be sent. One test sends from a mailbox at a time |
 | `placement_sender_unavailable` | 409 | The sending mailbox is not connected and active, or it is itself a seed inbox, which receives tests and cannot send one |
@@ -497,7 +540,7 @@ The [inbox placement test](/guides/placement-tests/) routes (`/placement/*` and 
 | `placement_too_many_batches` | 429 | The workspace already has `5` batches running. Wait for one to finish, or cancel one |
 | `placement_batch_not_running` | 409 | `POST /placement/batches/:id/cancel` on a batch that has already finished or been cancelled |
 
-A batch runs every check that applies to the whole batch (the copy, the panel, the tracking, the allowance and the credits agreed) before it is created, and refuses with the codes above. The checks for each mailbox run when its turn comes: a mailbox refused then is deferred or skipped, and its sender row in `GET /placement/batches/:id/senders` carries the code as `reason` with its sentence as `detail`. Besides the single-test codes, a sender row can carry `placement_sender_deleted` (the mailbox was removed from the workspace), `placement_batch_retry_expired` (still unavailable when the seven-day retry window closed), `placement_batch_start_failed` (the test could not be started after several tries) and `placement_batch_copy_unavailable` (the campaign or step being tested was deleted, which skips every mailbox not started yet).
+A batch runs every check that applies to the whole batch (the copy, the panel, the tracking, the allowance and the spend agreed) before it is created, and refuses with the codes above. The checks for each mailbox run when its turn comes: a mailbox refused then is deferred or skipped, and its sender row in `GET /placement/batches/:id/senders` carries the code as `reason` with its sentence as `detail`. Besides the single-test codes, a sender row can carry `placement_sender_deleted` (the mailbox was removed from the workspace), `placement_batch_retry_expired` (still unavailable when the seven-day retry window closed), `placement_batch_start_failed` (the test could not be started after several tries) and `placement_batch_copy_unavailable` (the campaign or step being tested was deleted, which skips every mailbox not started yet).
 
 ```json
 {
@@ -532,7 +575,7 @@ A `400` without one of these codes is a malformed request: an unknown `panel` or
 | `oauth_token_not_allowed` | 403 | An OAuth app token called a route that manages credentials: creating, editing, revoking or deleting API keys, or anything under `/oauth/applications` and `/oauth/application-logo`. Use the dashboard or an API key |
 | `api_key_permissions_exceed_caller` | 403 | `POST /api-keys` or `PATCH /api-keys/{id}` would give a key more than its creator has: a permission the member's role does not cover, or, for an API key caller, a permission, mailbox or IP address the calling key does not have (a mailbox- or IP-limited key can only manage keys limited to a subset of its own). See [what a role can delegate](/api/permissions/#what-a-role-can-delegate) |
 | `api_key_holder_left` | 401 | The member who created this API key is no longer in the workspace, so the key no longer works. Create a new key from a current member |
-| `api_key_mailbox_limited` | 403 | An API key limited to some mailboxes called a surface that acts across the workspace: `/ai/tools` or `/mcp`, a campaign sender pool resolved from mailbox tags, or starting a campaign whose pool is not an explicit list of the key's mailboxes. See [email account restrictions](/api/authentication/#email-account-restrictions) |
+| `api_key_mailbox_limited` | 403 | An API key limited to some mailboxes called a surface that acts across the workspace: `/ai/tools` or `/mcp`, a campaign sender pool resolved from mailbox tags, or starting a campaign whose pool is not an explicit list of the key's mailboxes with no mailbox tags. See [email account restrictions](/api/authentication/#email-account-restrictions) |
 
 The OAuth consent and token endpoints answer in the [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749#section-5.2) shape (`error`, `error_description`) instead. `access_denied` from `GET /oauth/authorize/details` or `POST /oauth/authorize` means the approving member's role covers none of the requested scopes. `invalid_grant` on a refresh means the token is unknown, expired, revoked, was already used (which also revokes the grant), or its member no longer holds any of its scopes. `400` `invalid_request` from `POST /oauth/token` or `POST /oauth/revoke` includes a form that sends any parameter more than once ([RFC 6749 section 3.2](https://www.rfc-editor.org/rfc/rfc6749#section-3.2)). A failure inside the server is `500` `server_error` with a fixed description and a `request_id`.
 
@@ -591,15 +634,279 @@ The [Apollo](/guides/apollo/) and [Clay](/guides/clay/) endpoints answer with th
 | `apollo_key_missing` | 422 | The Apollo connection has no API key |
 | `apollo_rate_limited` | 429 | Apollo's rate limit for the account was reached. Retry later |
 
+#### Lead finder refusals
+
+The [lead finder](/guides/lead-finder/) endpoints answer with their own codes.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `lead_search_empty` | 400 | `POST /leads/search` named neither a `query` nor a `category` |
+| `lead_search_area` | 400 | The search `area` is not a usable rectangle, circle (50 m to 50 km) or shape (3 to 200 points), or it is larger than the source searches at once |
+| `lead_search_exhausted` | 400 | `POST /leads/search` asked for the next page of a search that has no more results |
+| `lead_provider_not_connected` | 400 | The chosen source needs an API key and neither the workspace nor the instance has one. Connect it under Integrations |
+| `lead_provider_key` | 400 | The source refused the API key. Replace the key on its integration |
+| `lead_selection_too_large` | 400 | A bulk call named more than 5,000 `lead_ids` |
+| `lead_person_no_domain` | 400 | A person was added or searched for without an `email` on a lead with no website, so there is no domain to work an address out at |
+| `lead_person_exists` | 409 | Renaming a person would give them the name of someone already on the lead |
+| `lead_provider_quota` | 429 | The source is rate limiting the key or its quota is used up. Retry later |
+| `lead_provider_unavailable` | 503 | The source did not answer, took too long, or (OpenStreetMap) every server is busy. Retry, or search a smaller area |
+
+A search through a source the instance pays for, or a person's email found on request, answers `402` with `insufficient_credits` when the balance is too low and `429` with `usage_cap_exceeded` past a spend limit, and charges nothing. An enrichment run charges as it reads each website; one that reaches either limit stops with `status: "error"` and the reason in `last_error`, and leaves the remaining leads untouched.
+
+#### Copy to workspace refusals
+
+`POST /campaigns/:id/copy-to` and `POST /templates/copy-to` refuse the whole request with these codes and copy nothing. A workspace the caller cannot write is reported inside the `200` answer instead, as that entry's `error`.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `copy_destinations_limit` | 400 | `organization_ids` named more than 10 workspaces |
+| `copy_templates_limit` | 400 | `template_ids` named more than 50 templates |
+| `cross_workspace_copy_requires_session` | 403 | An API key or OAuth token asked to copy into a workspace other than its own. Copy from the dashboard, signed in as a member of both |
+| `member_access_restricted` | 403 | A member restricted to selected campaigns asked to copy templates |
+| `not_found` | 404 | The campaign, or one of the `template_ids`, is not in this workspace or not shared with the caller |
+| `copy_destination_forbidden` | per workspace | In a result entry: the caller is not a member of that workspace with the Manage campaigns permission and access to the whole workspace |
+| `storage_limit_reached` | per workspace | In a result entry: the campaign's attachments would pass that workspace's storage quota |
+
+#### Client report refusals
+
+The [client report](/guides/client-reports/) routes answer these codes. The public report page answers `not_found` for a link that is unknown, expired, revoked or opened on another workspace's custom domain, and `invalid_range` for a `range` it does not offer.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `invalid_report_scope` | 400 | `access` named a campaign, campaign folder or mailbox outside the workspace, more than 500 of one kind, a `scope` other than `workspace` or `restricted`, or a `restricted` scope with nothing in it |
+| `invalid_report_range` | 400 | `date_range` or `range` is not `last_7_days`, `last_30_days`, `this_month` or `last_month` |
+| `invalid_report_sections` | 400 | Every section is off. Turn on at least one |
+| `invalid_report_link` | 400 | `expires_in_days` is outside 1 to 365 |
+| `invalid_report_schedule` | 400 | The schedule cannot run: no recipients or more than 10, an address with a display name or not an address, an unknown `cadence`, `weekday`, `month_day` or `hour` out of range, or a `timezone` that is not an IANA zone |
+| `invalid_name` | 400 | The report `name` is empty, too long, or contains a link or address. See [name refusals](#name-refusals) |
+| `report_not_found` | 404 | The report does not exist in the selected workspace |
+| `report_limit_reached` | 409 | The workspace already has 200 reports |
+| `report_links_unavailable` | 422 | The instance has no portal service (`PORTAL_DOMAIN`), so a link or a scheduled email would point nowhere |
+| `report_emails_unavailable` | 422 | The instance has no outgoing mail configured, so a schedule could not send |
+
+#### Agency refusals
+
+The [agency](/guides/agencies/) routes answer these codes.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `invalid_name` | 400 | The agency or client `name` is empty, too long, or contains a link or address. See [name refusals](#name-refusals) |
+| `invalid_email` | 400 | The staff `email` is not a plain address |
+| `invalid_agency_role` | 400 | `role` is not `admin` or `member` |
+| `invalid_monthly_send_limit` | 400 | `monthly_send_limit` is below 0 or above 100,000,000, or is not a whole number |
+| `invalid_monthly_ai_limit` | 400 | `monthly_ai_limit_usd` is below $0 or above $50,000, or is not a number |
+| `invalid_ai_amount` | 400 | `amount_usd` is outside $1 to $5,000 for a move into a client, or $5 to $5,000 for an AI balance purchase |
+| `invalid_ai_auto_topup` | 400 | `amount_usd` is outside $5 to $5,000, `threshold_usd` is outside $0 to $5,000, or `limit_usd` is below `amount_usd` or above $50,000 on the AI balance's automatic top-up |
+| `invalid_auto_topup` | 400 | `threshold_sends` is outside 0 to 10,000,000 or `max_packs` is outside 1 to 20 on the automatic top-up |
+| `agency_plan_unavailable` | 400 | The plan is not an agency plan, or has no price for that interval yet |
+| `agency_no_subscription` | 400 | A top-up, an AI balance purchase, a plan switch or the billing portal before the agency has a plan, or a plan switch while its subscription is not active |
+| `agency_pool_unlimited` | 400 | A top-up on a plan with no send pool cap |
+| `invalid_cursor` | 400 | `GET /agency/:agencyId/inbox` was given a `cursor` this API did not issue. Start again without one |
+| `invalid_limit` | 400 | `GET /agency/:agencyId/inbox` was given a `limit` outside 1 to 100 |
+| `agency_ai_balance_insufficient` | 402 | `POST /agency/:agencyId/clients/:orgId/ai-balance` asked to move more than the agency's AI balance holds. Nothing moves |
+| `agency_forbidden` | 403 | The caller's agency role cannot make this change: members change nothing, admins cannot make or change admins |
+| `agency_owner_fixed` | 403 | The owner cannot be removed or given another role |
+| `agency_client_not_owner` | 403 | Only a workspace's owner can bring it into an agency |
+| `agency_limit_reached` | 403 | The account already owns five agencies |
+| `agency_leave_not_owner` | 403 | `POST /organization/agency/leave` from someone other than the workspace's owner |
+| `agency_client_inbox_forbidden` | 403 | `GET /agency/:agencyId/inbox/thread` or `/inbox/messages/:messageId` for a client where the caller is not a member, lacks **Use unified inbox**, or is restricted to no mailboxes |
+| `agency_client_mailboxes_forbidden` | 403 | `PUT /agency/:agencyId/vendors/:id/clients/:orgId` for a client where the caller cannot manage mailboxes |
+| `agency_vendor_staff_only` | 403 | A workspace member who is not on the agency's staff listing, importing from, reconnecting through or removing a connection made from the agency's vendor account |
+| `agency_not_found` | 404 | The agency does not exist, or the caller is not on its staff |
+| `agency_staff_not_found` | 404 | The person is not on the agency's staff |
+| `agency_client_not_found` | 404 | The workspace is not one of this agency's clients, including an `organization_id` on the agency inbox routes |
+| `agency_client_taken` | 409 | The workspace already belongs to an agency |
+| `agency_vendor_managed` | 409 | `PATCH /emails/vendors/:id` on a connection made from an agency's vendor account. Its key is changed at the agency, with `PATCH /agency/:agencyId/vendors/:id` |
+| `agency_client_has_subscription` | 409 | The workspace pays for its own plan. Cancel it in the workspace's billing first |
+| `agency_already_subscribed` | 409 | The agency already has a plan; switch it with `POST /agency/:agencyId/billing/change` |
+| `agency_no_payment_method` | 409 | An automatic top-up, of sends or of the AI balance, turned on for an agency with no saved card |
+| `agency_plan_unchanged` | 409 | A plan switch to the plan and billing period the agency is already on |
+| `agency_plan_preview_expired` | 409 | The preview a plan switch was confirmed from no longer holds: `proration_date` is more than 30 minutes old, in the future or before the current billing period, or the subscription is no longer on `from_price_id`. Preview the switch again |
+| `agency_pool_exceeds_plan` | 409 | A switch to a plan whose send pool, with this period's top-ups, is smaller than what the period has already used. Switch after the period renews |
+| `agency_billed` | 409 | `POST /subscription/checkout` on a client workspace, whose plan comes from its agency |
+| `agency_leave_agency_owner` | 409 | `POST /organization/agency/leave` on a workspace whose owner also owns the agency. Detach it with `DELETE /agency/:agencyId/clients/:orgId` instead |
+| `agency_billing_disabled` | 503 | The instance does not bill agencies (`BILLING_PROVIDER=none`); every agency feature is already available. Also the answer to moving or buying AI balance where AI is not charged |
+
+#### Agency API key refusals
+
+An [agency API key](/api/authentication/#agency-api-keys) is refused with these codes, on top of the ordinary key codes (`unauthorized` for an unknown, revoked or expired key, `rate_limit_exceeded`, and `forbidden` for a missing permission bit).
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `agency_key_organization_required` | 400 | A workspace endpoint was called with an agency key and no valid client workspace id in the `Warmbly-Organization` header |
+| `invalid_agency_key_permissions` | 400 | `POST /agency/:agencyId/api-keys` with no permission, an unknown bit, `API_KEYS`, `REALTIME_SUBSCRIBE` or `CONNECT_EMAILS` |
+| `agency_key_holder_left` | 401 | The owner or admin who created the key is no longer an owner or admin of the agency, or no longer has a membership in the client workspace named. Create a new key |
+| `agency_key_not_client` | 403 | The workspace in `Warmbly-Organization` is not a client of the key's agency, including one that was detached |
+| `agency_key_not_allowed` | 403 | A route an agency key cannot call: session-only routes, agency billing and settings writes, workspace API key and OAuth app management, and the MCP server |
+| `agency_key_ip_not_allowed` | 403 | The request came from an address outside the key's `allowed_ips` |
+| `agency_credential_required` | 403 | An agency route was called with a workspace API key or an OAuth token. Use a session or an agency key |
+| `agency_api_key_not_found` | 404 | `PATCH` or `DELETE /agency/:agencyId/api-keys/:keyId` for a key this agency does not have (or, for `PATCH`, one already revoked) |
+
+#### White-label refusals
+
+`/organization/brand` and `/agency/:agencyId/brand` answer these codes. See [white-label](/guides/white-label/).
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `invalid_name` | 400 | The brand `display_name` contains a link or address, or is too long. See [name refusals](#name-refusals) |
+| `invalid_accent_color` | 400 | `accent_color` is not a six-digit hex colour like `#0284c7` |
+| `invalid_website_url` | 400 | `website_url` is not an absolute `https://` address with a domain, or carries a user name or password |
+| `invalid_portal_domain` | 400 | The agency portal `domain` is not a host name, or is one of this instance's own hosts |
+| `invalid_portal_sign_in` | 400 | `portal_sign_in` on `PUT /agency/:agencyId/brand` is not `portal` or `warmbly` |
+| `invalid_theme` | 400 | A `theme` field on `PUT /agency/:agencyId/brand` holds a value outside its list: `font`, `corners`, `appearance`, `sign_in_layout` or `sign_in_background`. The `message` names the field and the values it takes. See [portal theme](/api/endpoints/#portal-theme) |
+| `invalid_brand_text` | 400 | `theme.sign_in_heading` is over 60 characters or `theme.sign_in_message` is over 200, or one of them contains a link, a web or email address, markup or control characters, or no letter or number. The content rules are the [name rules](#name-refusals). The `message` names the field and the rule |
+| `invalid_brand_link` | 400 | `theme.support_url`, `theme.terms_url` or `theme.privacy_url` is not an absolute `https://` address with a domain, or `theme.support_email` is not a plain email address like `help@example.com`. The `message` names the field |
+| `image_unreadable`, `image_format_not_allowed`, `image_too_large`, `image_dimensions_too_large` | 400 | The logo is not a PNG or JPG up to 2 MB and 1024px on each side, the agency's tab icon is not a PNG up to 1 MB and 512px on each side, or its sign-in image is not a PNG or JPG up to 4 MB and 2560px on each side. The `message` says which image and what is accepted |
+| `white_label_not_entitled` | 403 | Turning `hide_powered_by` on without Agency Pro, Agency Scale or Enterprise. A value already stored saves unchanged |
+| `agency_forbidden` | 403 | Agency staff other than the owner and admins changing the agency's brand |
+| `agency_not_found` | 404 | The agency does not exist, or the caller is not on its staff |
+| `portal_domain_taken` | 409 | Another agency or workspace on this instance holds the portal domain. Nothing changes |
+
+#### Portal session refusals
+
+A session signed in on an agency's [portal domain](/guides/white-label/#where-clients-sign-in) reaches only that agency's client workspaces. These codes answer what it cannot reach, and the sign-in that hands such a portal its session.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `portal_handoff_invalid` | 400 | `POST /auth/portal/exchange` with a code that expired, was already spent, or came from an origin other than the portal it was issued for. Every attempt spends the code. Sign in again from the portal |
+| `portal_session_restricted` | 403 | A portal session called an account-level route (password, two-factor, passkeys, sign-in methods, sessions, account deletion, creating a workspace or an agency, accepting an invitation to a workspace outside the agency, OAuth consent, CLI and pool link approvals, workspace and agency API key creation, the Warmbly Cloud link or the admin routes), switched to or named a workspace that is not a current client of the agency, or named another agency. The message names the main address, where signing in reaches everything the account can |
+| `portal_registration_closed` | 403 | `POST /auth/register` or `/auth/register/confirm` sent from a portal domain without an invitation. Accounts there are set up from the link in an invitation; an invitation for a different address answers `invitation_invalid` |
+| `portal_sign_in_elsewhere` | 403 | A sign-in sent from a portal whose agency signs its clients in on the main address. Sign in there; it returns you to the portal |
+| `portal_handoff_origin` | 403 | `POST /auth/portal/handoff` from anywhere but the main dashboard address, or from a session signed in on a portal |
+| `portal_not_found` | 404 | `POST /auth/portal/handoff` for a host that is not a verified portal whose agency signs its clients in on the main address |
+
+#### Fleet cap refusals
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `fleet_max_out_of_range` | 400 | `PATCH /admin/fleet/scale` asked for a cap below the running fleet or the group's minimum, or above its `warmbly:max-ceiling` tag. The message names the allowed range |
+
 #### Automation refusals
 
 | `code` | Status | Meaning |
 |--------|--------|---------|
 | `action_provider_mismatch` | 400 | `POST /automations`, `PATCH /automations/:id` or `POST /integrations/connections/:id/events` paired an action with a connection whose provider does not run it, such as a Slack message on a HubSpot connection. Each action runs only on the integration it belongs to; the provider's actions are listed under `capability.actions` in `GET /integrations/catalog` |
 
+#### Domain and mailbox store refusals
+
+The [Buy mailboxes](/guides/buy-mailboxes/) routes (`/store/*`, see [domains and mailboxes](/api/endpoints/#domains-and-mailboxes)) answer these codes, in the usual `{error, message, code, request_id}` shape. Nothing is charged when one of them comes back from `POST /store/quotes` or `POST /store/orders`, except where a row says so, and nothing changes when one comes back from any other store route.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `contact_invalid` | 400 | The registrant is incomplete or a field is malformed: `phone` must be `+CC.NUMBER` and `country` an ISO 3166-1 alpha-2 code. `details.fields` names the refused fields |
+| `store_items_invalid` | 400 | The quote's `items` are empty, too many, or malformed: an unknown `type` or `provider`, a domain name that is not one, mailbox names that cannot be used, more than one `admin` mailbox on a line, `admin` on a domain that already has an admin, or a mailbox `signature` with an unknown `template`, a phone or website that cannot be used, or an address the quote does not buy. `POST /store/domains/connect` answers it for a `domain` that is not a domain name. The `message` says which |
+| `invalid_query` | 400 | `GET /store/domains/search` with a `q` that is not a word or a domain name |
+| `invalid_cursor` | 400 | A store list route was sent a `cursor` it did not issue |
+| `invalid_limit` | 400 | A store list route was sent a `limit` outside 1 to 100 |
+| `forwarding_url_invalid` | 400 | `forwarding_url` is not a full `https://` address |
+| `local_part_invalid` | 400 | A mailbox address (the part before `@`) is empty, too long, or uses characters an address cannot hold. Use letters, digits, dots, dashes or underscores |
+| `invalid_name` | 400 | A mailbox's first or last name broke the naming rules, or one of them is empty: every mailbox needs both. See [name refusals](#name-refusals) |
+| `dns_record_invalid` | 400 | `POST /store/domains/:id/dns` or `PATCH .../dns/:record_id` with a record that cannot be published: check its `type`, `name`, `content`, `ttl` and, for MX and SRV, `priority` |
+| `payment_method_required` | 402 | `POST /store/orders` when the balance does not cover the order and the workspace has no saved card. The body carries `setup_url`, a card-setup page that returns to the dashboard's buy page (an empty string when one could not be made); order again from a fresh quote afterwards |
+| `card_declined` | 402 | The saved card was refused while covering the order's shortfall. Nothing is charged |
+| `authentication_required` | 402 | The card's bank asked to confirm the payment, which cannot happen on a saved card. Nothing is charged |
+| `payment_failed` | 402 | The saved card could not be charged for another reason. Nothing is charged |
+| `insufficient_balance` | 402 | The balance cannot cover the order or a renewal and no card could cover the rest |
+| `plan_required` | 402 | `POST /store/quotes`, `POST /store/orders` or `POST /store/domains/connect` from a workspace without an active paid plan, which buying needs. `GET /store/status` shows it in advance as `plan_active: false`. Choose a plan under **Settings > Billing** and try again. An instance that does not bill its users, the self-host default, never answers it |
+| `reauth_required` | 403 | The change needs a recent confirmation: paying, renewing, transferring out, cancelling or resuming a mailbox, showing a mailbox's sign-in, or changing a domain's `auto_renew`. Confirm with `POST /auth/reauth` and retry. Only a dashboard session gets it; an API key or OAuth token passes this check |
+| `store_managed_by_partner` | 403 | A write to the store from a workspace a partner manages. Its domains and mailboxes are bought through the partner, and `GET /store/status` answers `enabled: false` |
+| `store_sales_paused` | 503 | `POST /store/quotes`, `POST /store/orders` for a quote that has not made an order yet, or `POST /store/domains/connect` while the instance operator has [paused new purchases](/development/configuration/#pausing-new-purchases). Nothing is charged. `GET /store/status` shows it in advance as `sales_paused: true`, and everything already bought keeps working. Try again once buying is back |
+| `store_disabled` | 404 | The instance has no GraphKit API key configured, so nothing can be bought or changed. The message says an instance admin adds the key under **Setup and health > Integrations** in the admin panel. `GET /store/status` answers `enabled: false` with `reason: not_configured` instead, and the list reads keep answering |
+| `store_configured_by_environment` | 409 | `PUT`, `DELETE /admin/store/connection` or `POST /admin/store/connection/test` while `GRAPHKIT_API_KEY` (or `GRAPHKIT_API_URL=fake`) is set. The environment takes precedence; change it there |
+| `store_sealing_unavailable` | 409 | `PUT /admin/store/connection` on an instance without `CREDENTIALS_ENCRYPTION_KEY`. The GraphKit API key is stored sealed under it, so set it first |
+| `graphkit_url_invalid` | 400 | The GraphKit API URL given to `/admin/store/connection` is not an `https` address |
+| `graphkit_key_required` | 400 | `PUT` or `POST /admin/store/connection/test` with no API key, and none stored |
+| `graphkit_key_reentry_required` | 400 | `PUT` or `POST /admin/store/connection/test` with a different API URL from the stored one and no API key. The stored key is only sent to the URL it was saved with; enter it again |
+| `graphkit_key_rejected` | 400 | GraphKit refused the API key when it was tested or saved. Nothing was stored |
+| `graphkit_unreachable` | 503 | GraphKit could not be reached at the API URL when the key was tested or saved. Nothing was stored |
+| `quote_not_found` | 404 | `POST /store/orders` with a `quote_id` this workspace does not hold: never issued to it, or expired long enough ago to be cleared. Request a new quote |
+| `price_changed` | 409 | `POST /store/orders` when the total, priced again for an expired quote, differs from `expected_due_now_micros`. Nothing is charged. `details.quote` is a fresh quote at the current prices: show its total and, once the person confirms, order again with its `id` |
+| `payment_processing` | 409 | The card payment for the shortfall has not settled yet. Nothing was ordered; try again in a minute |
+| `charge_in_progress` | 409 | Another payment for this workspace is still going through, or `POST /store/mailboxes/:id/resume` while the mailbox's own monthly payment is. Try again in a minute |
+| `store_purchases_active` | 409 | Deleting a workspace, or an account that owns one, while it still has purchased mailboxes that are not cancelled, purchased domains set to renew, or an order in progress. Cancel them first |
+| `domain_unavailable` | 409 | The domain was registered by someone else after the search, or cannot be registered. Pick another. From `POST /store/domains/connect`, the body carries a top-level `reason` when one is known: `already_added` (the domain is already in this workspace), `registered` (another workspace bought it here) or `connected_elsewhere` (another workspace is connecting it) |
+| `domain_registered_elsewhere` | 409 | Renewing, transferring out or changing `auto_renew` on a domain the workspace connected. It is registered elsewhere, so renew or transfer it at its registrar |
+| `domain_registered_here` | 409 | `DELETE /store/domains/:id` on a domain bought here. A purchased domain leaves by `POST /store/domains/:id/transfer-out` |
+| `domain_in_use` | 409 | `DELETE /store/domains/:id` on a connected domain that still has mailboxes. Cancel them first |
+| `dns_record_conflict` | 409 | From a DNS write: the record clashes with one Warmbly keeps for mail, so change its name or type. From a quote or order: the domain has records in the way of mail, listed in its `dns_conflicts`; remove them first |
+| `dns_record_managed` | 409 | Editing or deleting a `managed` DNS record, which Warmbly keeps for mail delivery and forwarding |
+| `dns_not_hosted` | 409 | A DNS write on a domain connected with `method` `manual`. Its DNS provider holds the records, so change them there |
+| `sign_in_unavailable` | 409 | `POST /store/mailboxes/:id/sign-in` for a mailbox that has no sign-in to show |
+| `photo_invalid` | 400 | `POST /store/photos`: the upload is not a PNG or JPG photo the store can use (up to 2 MB and 2048 px on each side) |
+| `photo_not_found` | 400 | A quote's `photo_id`, or `PUT /store/mailboxes/:id/photo`, names a photo this workspace does not have, or one deleted because nothing used it for 24 hours. Upload it again |
+| `profile_photo_missing` | 404 | `POST /store/photos` with `{"from": "profile"}` when the caller has no uploaded profile photo |
+| `photo_limit_reached` | 429 | More than 200 photos uploaded in a day |
+| `photo_storage_unavailable` | 503 | The instance has no file storage, so it cannot keep photos |
+| `store_state_conflict` | 409 | The domain or mailbox is not in a state that allows the change right now. Refresh it and try again |
+| `mailbox_exists` | 409 | An address in the order already exists on that domain |
+| `domain_not_ready` | 409 | Mailboxes were added to a purchased domain that is still being set up, or to a connected domain whose `connection.status` is not `active` yet, or a change was asked of a domain in a state that does not allow it. Try again once it is active |
+| `domain_not_renewable` | 409 | `POST /store/domains/:id/renew` for a domain in a state that cannot be renewed, such as one transferred out |
+| `renewal_in_progress` | 409 | The domain is already being renewed |
+| `transfer_locked` | 409 | The domain cannot be transferred out yet, typically because it was registered or transferred within the last 60 days |
+| `mailbox_not_cancellable` | 409 | `DELETE /store/mailboxes/:id` for a mailbox that cannot be cancelled now, or `POST .../resume` for one that is not set to cancel |
+| `purchased_mailbox` | 403 | Removing a mailbox bought in the store (`DELETE /emails/:id`, a row of `POST /emails/bulk/delete`) or signing it in again (`/emails/onboarding/oauth/reauth/:id`, `/emails/onboarding/smtp-imap/:id`, `/emails/onboarding/app-password/:id`) while it is still live. Removing it would not stop its billing: cancel it with `DELETE /store/mailboxes/:id`, which ends it at the end of the paid month, or switch it off to pause it. Once it is cancelled it can be removed. While the instance has no GraphKit API key it cannot be cancelled either, and the message says so |
+| `registrant_required` | 422 | `POST /store/quotes` with a domain in it before a registrant is saved. Save one with `PUT /store/registrant` |
+| `domain_premium` | 422 | The domain is a premium name, priced by its registry above the standard rate. Premium names are not sold |
+| `tld_unsupported` | 422 | The store does not sell that domain extension |
+| `provider_mixed` | 422 | A domain's mailboxes must all use one provider, Google or Microsoft |
+| `mailbox_orders_paused` | 503 | `POST /store/quotes` or `POST /store/orders` with mailboxes while new mailbox orders are paused for a while. Nothing is charged. `GET /store/status` shows it in advance as `mailbox_orders_paused: true`. Domains without mailboxes can still be bought, and everything already bought keeps working. Try again later |
+| `provider_unavailable` | 422 | Mailboxes from a provider that is not offered right now. Only the providers `GET /store/status` lists in `providers` can be ordered. Nothing is charged |
+| `mailbox_limit` | 422 | The order would put more mailboxes on one domain than `limits.mailboxes_per_domain_max` |
+| `renewal_not_due` | 422 | `POST /store/domains/:id/renew` before the domain's renewal window opens |
+| `renewal_window_closed` | 422 | The domain can no longer be renewed. Any charge for the attempt was refunded to the balance |
+| `rate_limited` | 429 | The store is taking too many requests. Wait for `Retry-After` and try again |
+| `store_unavailable` | 503 | The store could not complete the request right now. Nothing changed; retry in a few minutes, with the same `Idempotency-Key` where the route takes one |
+
+`payment_method_required` from the store is a `402`, while the same code from `POST /subscription/balance/top-up` is a `409` (see [409 Conflict](#409-conflict)). Both mean save a card first.
+
+Store charges and refunds also appear on the balance ledger, and `GET /subscription/credits/transactions?category=store` lists only those. A `category` other than `store` answers `400` `invalid_category`.
+
+A key or OAuth token whose member lacks `manage_billing` gets `403` `forbidden` on the routes that charge, the same answer the member gets in the dashboard.
+
+#### Social refusals
+
+The [social accounts](/guides/social/) routes (`/social/*`, see [social](/api/endpoints/#social)) answer these codes. Payment refusals on a connection (`payment_method_required`, `insufficient_balance`, a card decline) are the store's, above, and nothing is charged when one comes back; the AI search builder answers the usual AI balance refusals.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `social_invalid_request` | 400 | A value is malformed or out of range: a `query` that is not a JSON object, a time zone that is not one, an empty sign-in, or a limit above its ceiling (`details.fields` names those). The `message` says which |
+| `social_acknowledgement_required` | 400 | `POST /social/connections` without `acknowledged: true` |
+| `invalid_social_handle` | 400 | A handle in a contact's `social` map does not fit its channel, or names a consent basis the channel does not take. Send a LinkedIn profile address or public id; an Instagram username, profile address or numeric id; a WhatsApp phone number in international format (`+` and the country code); a Telegram `@username`, `t.me` link or numeric id (not a phone number); or a Facebook numeric id, `profile.php?id=` address or `/people/…/<id>` address (not a vanity name). Also answered by contact create, update and import |
+| `social_plan_required` | 402 | Connecting an account Warmbly bills needs a Warmbly plan. Choose a plan, or link a GraphKit workspace |
+| `social_checkout_required` | 402 | The linked GraphKit workspace's plan has no free seat. `details.url` is GraphKit's billing page |
+| `social_unpaid` | 402 | `POST /social/accounts/:id/resume` on an account paused because its month went unpaid. Paying the month resumes it |
+| `store_managed_by_partner` | 403 | The workspace's seats are bought through its partner |
+| `social_mode_conflict` | 409 | Linking a GraphKit workspace while accounts Warmbly bills are connected. Remove them first |
+| `social_accept_required` | 409 | The connection is charged and `accept` was not `true`. `details.quote` is what it costs: `{"monthly_micros", "currency", "billed_by"}`, `billed_by` being `warmbly` or `linked_workspace` |
+| `social_session_expired` | 409 | The connection expired or was never paid for. Start a new one |
+| `social_state_conflict` | 409 | The connection or account changed while the request was in flight. Read it again and retry |
+| `capability_unavailable` | 409 | The account cannot do that action on its channel (the provider has it switched off for the account, or a written voice note on an account with no voice). The `message` says why |
+| `licence_required` | 409 | The search needs an account with a Sales Navigator or Recruiter licence |
+| `search_limit_reached` | 409 | The account used its searches for the day; `usage.resets_at` says when they return |
+| `stale_cursor` | 409 | The query changed since the cursor was issued. Search again from the first page |
+| `account_unavailable` | 409 | The account cannot be used now (restricted, reconnect required, removed), or the workspace has no account and no linked workspace to search with |
+| `social_sign_in_failed` | 422 | The network refused the sign-in. The session takes at most 5 attempts |
+| `recipient_invalid` | 422 | The profile does not exist or cannot be reached |
+| `consent_required` | 422 | A WhatsApp, Telegram or Facebook message without a consent basis for the contact on that channel. Record one on the contact first |
+| `social_too_many_sign_ins` | 429 | Too many refused sign-ins for the account today. Wait for `Retry-After` |
+| `linkedin_email_finder_unavailable` | 503 | `POST /social/search/import` with `find_emails: true` on an instance without the lead finder. Import without it |
+| `social_unavailable` | 503 | The instance has no GraphKit connection, or social accounts are unavailable right now. Retry after `Retry-After` when it is sent |
+| `search_busy` | 503 | LinkedIn search is busy. Wait for `Retry-After` and try again |
+| `ai_unavailable` | 503 | The AI search builder is unavailable. Nothing was charged |
+
+A social step that GraphKit passes over is not an error: the action ends `skipped` with a `skip_reason` (see `GET /social/contacts/:contact_id/activity`). The reasons are `no_recent_post`, `not_connected`, `no_skills`, `recipient_unavailable`, `consent_missing` and `already_commented`, alongside LinkedIn's `already_connected`, `invite_pending` and `no_inmail_credits`. A failed one carries `error_code`, which can be `capability_unavailable` or `consent_required` with GraphKit's message.
+
+#### `google_personal_app_password`
+
+A `400` with `code: "google_personal_app_password"` comes from `POST /emails/onboarding/oauth/start` with `provider: "gmail"` and a `login_hint` on `gmail.com` or `googlemail.com`. Personal Gmail connects with an app password, not with Google sign-in. Nothing was started and nothing was stored.
+
+**How to fix:**
+- Turn on 2-Step Verification for the Google account, create an app password, and connect the mailbox through `POST /emails/onboarding/smtp-imap` with `smtp.gmail.com:587` (STARTTLS) and `imap.gmail.com:993` (TLS). See [personal Gmail](/guides/mailboxes/#personal-gmail)
+- A Google Workspace mailbox signs in with Google once its administrator trusts Warmbly; see [Google Workspace with Google sign-in](/guides/mailboxes/#google-workspace-with-google-sign-in)
+
 #### `mailbox_oauth_return_origin`
 
-A `400` with `code: "mailbox_oauth_return_origin"` means a Google or Microsoft mailbox connect or reauthorization came from a dashboard origin the backend does not allow. Add its exact HTTP(S) origin to `CORS_ALLOW_ORIGINS`, as in [shared-backend dashboard configuration](/development/configuration/#google-sign-in-per-dashboard-deployment). A wildcard is not an OAuth return allowlist.
+A `400` with `code: "mailbox_oauth_return_origin"` means a Google or Microsoft mailbox connect or reauthorization came from a dashboard origin the backend does not allow. Add its exact HTTP(S) origin to `CORS_ALLOW_ORIGINS`, as in [shared-backend dashboard configuration](/development/configuration/#multiple-dashboards-on-one-backend). A wildcard is not an OAuth return allowlist.
 
 ### 401 Unauthorized
 
@@ -645,22 +952,44 @@ Two more `401` variants are not about API keys at all. `setup_token_invalid` is 
 
 ### 402 Payment Required
 
-Returned when an AI action, or a placement test paid in credits, is requested but the organization does not have enough credits. The response carries the stable code `insufficient_credits`.
+Returned when an AI action, or a placement test paid from the balance, is requested but the workspace balance is too low to cover it. The check runs before any work starts, so nothing is charged. The response carries the stable code `insufficient_credits`, kept from before the balance was in dollars.
 
 ```json
 {
   "error": "Payment Required",
-  "message": "You're out of AI credits. Add more to keep using the assistant.",
+  "message": "The workspace balance is too low. Add funds to keep using AI features.",
   "code": "insufficient_credits",
   "request_id": "req_..."
 }
 ```
 
 **How to fix:**
-- Wait for the monthly allowance to reset, or buy a top-up pack (see [AI credits](/guides/ai-credits/))
-- Related: a `429` with code `usage_cap_exceeded` means a short-term AI usage cap was hit; retry later
+- Add money to the balance, turn on automatic reload, or wait for the monthly allowance to reset (see [Balance and usage](/guides/ai-credits/))
+- Related: a `429` with code `usage_cap_exceeded` means a spend limit or a short-term AI usage cap was hit; retry when the window rolls over
 
-Placement tests answer `402` too, with `placement_not_entitled` or `placement_quota_exceeded`; see [placement test refusals](#placement-test-refusals). A paid placement test past the credit balance answers `insufficient_credits`, and one past a spend limit answers `429` with `usage_cap_exceeded`; neither charges anything.
+Two more `402` codes come from the workspace's own choice about AI spending money it added, not from an empty balance. Nothing is charged for either.
+
+| Code | Meaning | How to fix |
+|------|---------|------------|
+| `ai_allowance_used` | This month's included AI usage is spent and **Let AI use my balance** is off, so AI does not touch money the workspace added | Turn **Let AI use my balance** on under **Settings > Billing > Balance** (`PATCH /subscription/credits/settings` with `ai_overage_enabled: true`), or wait for the allowance to reset |
+| `ai_overage_limit_reached` | AI took the workspace's monthly limit from money it added (`ai_overage_monthly_limit_usd`) | Raise or remove the limit, or wait for the next calendar month (UTC) |
+
+```json
+{
+  "error": "Payment Required",
+  "message": "This month's included AI usage is used up. To keep using AI, let it use your balance under Settings > Billing > Balance.",
+  "code": "ai_allowance_used",
+  "request_id": "req_..."
+}
+```
+
+The same two codes reach Remie's stream as an `error` event and MCP tool calls as an `isError` result carrying the message.
+
+`POST /subscription/balance/top-up` answers `402` when the saved card was not charged: `card_declined` (the card was refused), `authentication_required` (the bank asked to confirm the payment) or `payment_failed`. Nothing was added. Offer Stripe Checkout instead with `POST /subscription/balance/checkout`. See [balance and usage](/api/endpoints/#balance-and-usage).
+
+Placement tests answer `402` too, with `placement_not_entitled` or `placement_quota_exceeded`; see [placement test refusals](#placement-test-refusals). A paid placement test past the balance answers `insufficient_credits`, and one past a spend limit answers `429` with `usage_cap_exceeded`; neither charges anything.
+
+Writing a lead's AI copy ahead ([write one lead's AI copy now](/api/reference/campaigns/#write-one-leads-ai-copy-now)) checks the balance before each AI block, so its `insufficient_credits` can follow blocks of the same email already written and charged. Those stay saved, and a retry after a top-up writes only the rest.
 
 ### 403 Forbidden
 
@@ -672,6 +1001,7 @@ Returned when authenticated but lacking necessary permissions.
 - Email account not in allowlist
 - Organization access restricted
 - The member is restricted to selected resources (`member_access_restricted`)
+- The workspace would pass its contact limit (`contact_limit_reached`)
 
 **Example:**
 
@@ -704,7 +1034,15 @@ A `403` whose `code` is `mailbox_gmail_oauth_disabled` comes from `POST /emails/
 
 **How to fix:**
 - Connect the mailbox through `POST /emails/onboarding/smtp-imap` with `smtp.gmail.com:465` and `imap.gmail.com:993`, both TLS, and a Google app password. See [Gmail and Google Workspace](/guides/mailboxes/#gmail-and-google-workspace)
-- An instance with its own Google app must set both `BOX_GOOGLE_CLIENT_ID` and `BOX_GOOGLE_CLIENT_SECRET`. Leave `BOX_GOOGLE_OAUTH_CONNECT` unset or set it to `true`, then enable the [dashboard visibility flag](/development/configuration/#google-sign-in-per-dashboard-deployment) on the deployments that should offer Google sign-in
+- An instance with its own Google app must set both `BOX_GOOGLE_CLIENT_ID` and `BOX_GOOGLE_CLIENT_SECRET`. Leave `BOX_GOOGLE_OAUTH_CONNECT` unset or set it to `true`; the dashboard then offers Google sign-in
+
+#### `google_delegation_retired`
+
+A `403` with `code: "google_delegation_retired"` comes from `POST /emails/grants/google/start` or `POST /emails/grants/google/finish` for a domain the workspace holds no Google grant for. New Google Workspace domain-wide delegation grants are no longer set up. A grant the workspace already holds keeps working: it can be proved again, checked, used to connect more mailboxes and removed. Microsoft whole-organization consent is unaffected.
+
+**How to fix:**
+- Have a Workspace administrator mark Warmbly as a trusted app, then sign in each mailbox with Google. See [Google Workspace with Google sign-in](/guides/mailboxes/#google-workspace-with-google-sign-in)
+- Or connect the mailbox with an app password over IMAP and SMTP
 
 #### `plan_offer_required`
 
@@ -746,6 +1084,19 @@ Signup and invitation refusals carry their own `code`, so a client can branch on
 ```
 
 **How to fix:** on a self-hosted deployment these are configuration, not faults. See [accounts and access](/development/accounts-and-access/#registration-modes).
+
+#### Workspaces a partner manages
+
+A workspace a [partner](/development/partners/) manages and bills has its own refusals. They answer dashboard sessions and API keys alike.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `organization_suspended` | 403 | The partner paused the workspace. It is read-only until the partner resumes it: reads work, changes and sending wait |
+| `organization_cancelled` | 403 | The partner cancelled the workspace. It is read-only and is deleted after 30 days unless the partner restores it |
+| `partner_managed` | 403 | A billing change (checkout, plan change, cancellation, top-up) in a workspace the partner bills. It is made with the partner |
+| `partner_account` | 403 | An account the partner signs in tried to set a password or add a passkey or second factor. It signs in only through the partner |
+| `partner_login_invalid` | 400 | `POST /auth/partner/exchange` with a sign-in link that expired, was already used, or is not one. Open it again from the partner |
+| `partner_managed_mailbox` | 403 | Removing a mailbox (`DELETE /emails/:id`, `POST /emails/bulk/delete`) or signing it in again (`/emails/onboarding/oauth/reauth/:id`, `/emails/onboarding/smtp-imap/:id`, `/emails/onboarding/app-password/:id`) while the partner holds it. It is removed or reconnected through the partner |
 
 #### Account and workspace standing
 
@@ -810,11 +1161,11 @@ Turning on two-factor authentication (`POST /auth/2fa/enroll/start` and `/confir
 
 #### Member access scope
 
-A member restricted to [selected resources](/guides/team-roles/#access-scope), and any API key or OAuth app acting for one, reaches only the read routes that filter to their grants. The scope's own refusals:
+A member restricted to [selected resources](/guides/team-roles/#access-scope), and any API key or OAuth app acting for one, reaches only the routes that filter to their grants, and writes only through a [client role](/guides/team-roles/#client-roles) that acts in scope. The scope's own refusals:
 
 | `code` | Status | Meaning |
 |--------|--------|---------|
-| `member_access_restricted` | 403 | The caller's selected-resource scope does not cover this route. Resource writes and workspace-wide surfaces such as contacts and settings are refused. Workspace creation is refused to accounts with only restricted memberships, except instance administrators; limit-request operations require an unrestricted membership in the target workspace |
+| `member_access_restricted` | 403 | The caller's selected-resource scope does not cover this route. Workspace-wide surfaces such as contacts and settings are refused, and so is a write without a role that acts in scope, a reply outside a conversation held in granted mailboxes, a campaign edit to its senders, folders, tracking domain, copied addresses or status, a step that acts on contacts, the CRM or automations, and a campaign edit, step change or start on a campaign that does not send only from granted mailboxes in an explicit list with no mailbox tags. Workspace creation is refused to accounts with only restricted memberships, except instance administrators; limit-request operations require an unrestricted membership in the target workspace |
 | `invalid_access_resource` | 400 | `PUT /organization/members/:id/access` or an invitation named a campaign folder, campaign or mailbox that is not in this workspace |
 | `invalid_access_scope` | 400 | The scope is neither `workspace` nor `restricted` |
 | `too_many_access_grants` | 400 | More than 500 folders, campaigns or mailboxes in one list |
@@ -921,10 +1272,16 @@ A few conflicts carry their own `code`. The mailbox import's are under [mailbox 
 | `contact_email_taken` | 409 | The address given to [update a contact](/api/reference/contacts/#update-a-contact) already belongs to another contact |
 | `lead_cc_lead_is_copied` | 409 | [Set a lead's CC](/api/reference/campaigns/#set-a-leads-cc) on a lead that is itself copied on another lead in the campaign, so it sends nothing of its own to copy anyone on |
 | `lead_cc_has_copies` | 409 | [Set a lead's CC](/api/reference/campaigns/#set-a-leads-cc) names a contact that has copies of their own in the campaign |
+| `lead_step_sent` | 409 | [Personalize](/api/reference/campaigns/#personalize-one-email-for-one-lead), [reset](/api/reference/campaigns/#reset-one-leads-email) or [rewrite the AI copy of](/api/reference/campaigns/#write-one-leads-ai-copy-now) one lead's email after the lead already received it. Nothing changed |
 | `mailbox_is_seed` | 409 | Warmup was started or resumed on a placement seed inbox. See [placement test refusals](#placement-test-refusals) |
-| `mailbox_not_google_signin` | 409 | `POST /emails/onboarding/app-password/:id` on a mailbox that is not connected with per-mailbox Google sign-in. See [app password switch refusals](#app-password-switch-refusals) |
+| `mailbox_not_google_signin` | 409 | `POST /emails/onboarding/app-password/:id` on a mailbox that is not a Google mailbox on its own sign-in or an admin grant. See [app password switch refusals](#app-password-switch-refusals) |
+| `scheduled_send_not_pending` | 409 | [Cancel a scheduled send](/api/reference/unibox/#cancel-a-scheduled-send) named a send that is no longer pending: it has started sending, was sent, failed, or was already cancelled. Nothing changed |
 | `approval_not_pending` | 409 | `POST /ai/sessions/:id/approve` named a tool call the conversation is not waiting on: it was already decided, in another tab or in Slack, or a newer message replaced it |
+| `payment_method_required` | 409 | `POST /subscription/balance/top-up`, or turning on automatic reload with `PATCH /subscription/balance/auto-reload`, with no saved card. Save one with `POST /subscription/balance/payment-method`, or pay through `POST /subscription/balance/checkout` |
+| `charge_in_progress` | 409 | `POST /subscription/balance/top-up` while another payment for the workspace is still going through. Try again in a minute |
+| `idempotency_outcome_unknown` | 409 | The request that first used this `Idempotency-Key` ended in a server error or never finished, so whether it took effect is unknown and it is not run again while the key is kept (24 hours). Retry with a new key only once you have established that the change did not happen. See [retry safety](/api/endpoints/#retry-safety) |
 | `mailbox_cloud_unenroll_failed` | 409 | The mailbox is linked to [Warmbly Cloud](/guides/warmbly-cloud/) and its link could not be released, so `DELETE /emails/{id}` would leave Warmbly Cloud holding its credential or its claim on it. The mailbox record remains, and restoration onto its worker is attempted |
+| `fleet_max_ceiling_missing` | 409 | `PATCH /admin/fleet/scale` on a worker Auto Scaling Group without a `warmbly:max-ceiling` tag. Apply the workers Terraform root, which sets it |
 
 `mailbox_cloud_unenroll_failed` is a self-hosted instance losing contact with Warmbly Cloud mid-delete. Deleting an enrolled mailbox has to revoke its enrollment before the record goes, because the pool holds the mailbox's own SMTP/IMAP credentials and that record is the only thing that knows the enrollment exists. The same call releases a cloud-managed mirror before the record goes, so the mailbox returns to the cloud workspace and can be adopted again instead of staying claimed by an instance that no longer keeps it. The mailbox record remains. Warmbly attempts to restore it onto its worker immediately, and the worker reconciler may restore it later if that attempt fails. Retry the delete once the instance can reach the cloud again. Unenrolling under **Settings > Warmbly Cloud** first does not help: it makes the same call.
 
@@ -948,6 +1305,13 @@ Returned when validation fails on the request data.
   "request_id": "4bbbd1b2-8f86-47dd-8a7f-9476501ad20e"
 }
 ```
+
+`PATCH /subscription/balance/auto-reload` has two codes of its own:
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `recharge_too_small` | 422 | `amount_usd` is not more than `threshold_usd`, so a reload would not lift the balance back above the point that triggers it |
+| `monthly_limit_too_small` | 422 | `monthly_limit_usd` is below one reload (`amount_usd`) or above $50,000 |
 
 ### 500 Internal Server Error
 
@@ -998,6 +1362,8 @@ Every endpoint that checks a password, an emailed or two-factor code, or a sign-
 }
 ```
 
+Writing one lead's AI copy ahead ([write one lead's AI copy now](/api/reference/campaigns/#write-one-leads-ai-copy-now)) answers `ai_unavailable` on an instance with no AI provider, which charges nothing, and `ai_generation_failed` when the provider did not answer. A step's blocks are written one at a time, so after `ai_generation_failed` the blocks written before the failure stay written and charged, as can a web lookup the failed block already made. A retry writes only the blocks still missing.
+
 Other temporary failures answer the generic form:
 
 **Example:**
@@ -1032,6 +1398,10 @@ A `503` whose `code` is `mailbox_provider_not_configured` is not transient and r
 - Set `BOX_GOOGLE_CLIENT_ID` and `BOX_GOOGLE_CLIENT_SECRET`, or `BOX_OUTLOOK_CLIENT_ID` and `BOX_OUTLOOK_CLIENT_SECRET`, in the `.env` at your install root, then restart
 - Or connect the mailbox over SMTP and IMAP instead, which needs no configuration
 - Full walkthrough: [connect mailboxes](/development/deployment-guide/#connect-mailboxes)
+
+#### `fleet_autoscaling_not_configured`
+
+`/admin/fleet/scale` on an instance whose backend does not set `FLEET_AUTOSCALING_GROUP`. Only an instance running the [AWS worker fleet](/development/aws-workers/#change-the-fleet-cap) sets it.
 
 #### `ai_not_configured`
 
@@ -1071,7 +1441,7 @@ Those request URLs answer `401` `unauthorized` to a request whose Slack signatur
 
 #### `mailbox_allowance_reached`
 
-A `403` whose `code` is `mailbox_allowance_reached` comes from every path that connects a mailbox: `POST /emails/onboarding/oauth/start`, `POST /emails/onboarding/oauth/finish`, `POST /emails/onboarding/smtp-imap`, and per row inside `POST /emails/onboarding/smtp-imap/bulk`. A [mailbox import](/guides/mailbox-import/) does not answer it over HTTP: the rows past the allowance fail with the `cause` `allowance_reached` and can be retried once it is raised. It is not a permission problem: the workspace holds its whole [mailbox allowance](/guides/mailboxes/#mailbox-allowance), which on a paid plan is one mailbox for every send a day the plan includes, `0` on a workspace without a paid plan, and `10` on a workspace that kept the earlier free plan. On a workspace without a plan the message says a plan is needed to connect mailboxes. Nothing was connected.
+A `403` whose `code` is `mailbox_allowance_reached` comes from every path that connects a mailbox: `POST /emails/onboarding/oauth/start`, `POST /emails/onboarding/oauth/finish`, `POST /emails/onboarding/smtp-imap`, and per row inside `POST /emails/onboarding/smtp-imap/bulk`. A [mailbox import](/guides/mailbox-import/) does not answer it over HTTP: the rows past the allowance fail with the `cause` `allowance_reached` and can be retried once it is raised. It is not a permission problem: the workspace holds its whole [mailbox allowance](/guides/mailboxes/#mailbox-allowance), which on a paid plan is one mailbox for every send a day the plan includes, `2` during a workspace's free trial, `0` on a workspace without a paid plan after it, and `10` on a workspace that kept the earlier free plan. On a workspace without a plan the message says a plan is needed to connect mailboxes. Nothing was connected.
 
 ```json
 {
@@ -1088,13 +1458,31 @@ A `403` whose `code` is `mailbox_allowance_reached` comes from every path that c
 - Submit a limit-increase request for `max_email_accounts` via `POST /organization/:orgId/limit-requests`, or move to a plan with more daily sends. An approved request raises the allowance immediately; retry the connect then
 - Reconnecting an existing mailbox never returns this code
 
+#### `contact_limit_reached`
+
+A `403` whose `code` is `contact_limit_reached` comes from `POST /contacts` and from starting a contact import. A Google Sheets sync refused this way records the same message as its last error, and a Salesforce import fails with it. It is not a permission problem: the new contacts would take the workspace past its contact limit. The limit and the count are the workspace's, whichever member adds the contacts, and an address the workspace already holds is an update, not a new contact. The limit is the plan's (`100` on the free trial), unless an approved limit increase raised it. The import preview reports the same refusal in `problem` before anything is uploaded. A form submission over the limit is still stored, without becoming a contact. Nothing was added.
+
+```json
+{
+  "error": "Forbidden",
+  "message": "Adding 20 contacts would take this workspace past its limit of 100 (it has 90). Remove contacts, request an increase, or upgrade your plan.",
+  "code": "contact_limit_reached",
+  "request_id": "4bbbd1b2-8f86-47dd-8a7f-9476501ad20e"
+}
+```
+
+**How to fix:**
+- Read `limits.max_contacts` and `counts.total_contacts` from `GET /organization/current/limits` to see how much room is left
+- Submit a limit-increase request for `max_contacts` via `POST /organization/:orgId/limit-requests`, or move to a plan with more contacts. An approved request raises the limit immediately
+- Import fewer new contacts, or remove contacts you no longer need, then retry
+
 #### `invalid_attachment`
 
 A `400` from `POST /campaigns/:id/attachments` means the new file is unsupported, malformed, outside the [documented format limits](/guides/campaigns/#campaign-attachments), or does not match its final filename extension. Supported extensions are PDF, DOCX, XLSX, PPTX, CSV, TSV, TXT, PNG, JPG/JPEG, GIF, WebP and ZIP. New CSV/TSV attachments allow at most 4096 fields per logical record, including a trailing empty field; quoted separators and newlines stay within their field. Export the file in a supported profile with its matching extension and try again. Changing the client MIME header does not change the detected type. This refusal stores no object and reserves no storage quota. Existing stored files and portable archive restoration keep their compatibility policy.
 
 #### `storage_limit_reached`
 
-A `400` whose `code` is `storage_limit_reached` comes from `POST /campaigns/:id/attachments`, from `POST /email-images`, and from a campaign duplicate that would copy attachments. The workspace's stored bytes, its attachments across every campaign plus its email image library, would pass the quota. The check and the write happen together under one per-workspace lock shared by both, so two uploads racing for the last of the quota cannot both get in. Nothing was stored.
+A `400` whose `code` is `storage_limit_reached` comes from `POST /campaigns/:id/attachments`, from `POST /email-images`, and from a campaign duplicate that would copy attachments. A copy to another workspace reports it per workspace, inside its `200` answer. The workspace's stored bytes, its attachments across every campaign plus its email image library, would pass the quota. The check and the write happen together under one per-workspace lock shared by both, so two uploads racing for the last of the quota cannot both get in. Nothing was stored.
 
 ```json
 {
@@ -1313,31 +1701,41 @@ For transient errors (5xx, 429), implement exponential backoff:
 
 ```javascript
 async function requestWithRetry(url, options, maxRetries = 3) {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+  const backoff = (attempt) =>
+    new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+
+  for (let attempt = 0; ; attempt++) {
+    let response;
     try {
-      const response = await fetch(url, options);
-
-      if (response.ok) {
-        return response.json();
-      }
-
-      // Don't retry client errors (4xx) except rate limits
-      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-        throw new Error(`Client error: ${response.status}`);
-      }
-
-      // Retry server errors and rate limits
-      if (attempt < maxRetries - 1) {
-        const delay = Math.pow(2, attempt) * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-    } catch (error) {
-      if (attempt === maxRetries - 1) throw error;
+      response = await fetch(url, options);
+    } catch (networkError) {
+      if (attempt === maxRetries - 1) throw networkError;
+      await backoff(attempt);
+      continue;
     }
+
+    if (response.ok) {
+      return response.json();
+    }
+
+    // Retry server errors and rate limits; every other 4xx is final
+    const retryable = response.status === 429 || response.status >= 500;
+    if (retryable && attempt < maxRetries - 1) {
+      await backoff(attempt);
+      continue;
+    }
+
+    // Carry the machine-readable code, e.g. idempotency_outcome_unknown
+    const body = await response.json().catch(() => ({}));
+    const error = new Error(body.message || `HTTP ${response.status}`);
+    error.status = response.status;
+    error.code = body.code;
+    throw error;
   }
 }
 ```
+
+A retry of a write that carries an `Idempotency-Key` answers with whatever the first attempt recorded. A `429` leaves the key as it was, so the same key runs the request unless an earlier attempt already recorded an outcome. A `5xx` from a request that reached the operation makes the same key answer `409 idempotency_outcome_unknown` instead of running it again; a `5xx` from a gateway the request never got past leaves the key unused, so the retry runs it for the first time. On `idempotency_outcome_unknown`, stop retrying and use a new key only once you have established that the change did not happen. See [retry safety](/api/endpoints/#retry-safety).
 
 ### Parse error responses
 
@@ -1397,6 +1795,65 @@ Attempt budgets use existing `rate_limit_exceeded`. Auth/MFA/reauth and
 dependency failures keep existing codes. Redis failures never authorize a
 single-factor or anonymous admin. [Node diagnostics](/api/endpoints/#platform-node-diagnostics)
 use generic errors and explicit unavailable/stale coverage, not outage inference.
+
+## Client connect link errors
+
+[`POST /emails/client-links`](/api/endpoints/) refuses its input with:
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `client_link_invalid_providers` | 400 | `providers` is empty or names something other than `gmail`, `outlook`, `smtp_imap` and `vendor` |
+| `client_link_invalid_max_mailboxes` | 400 | `max_mailboxes` is outside 1 to 500 |
+| `client_link_invalid_expiry` | 400 | `expires_in_days` is outside 1 to 90 |
+| `client_link_invalid_tags` | 400 | More than 20 `tag_ids` |
+| `invalid_name` | 400 | The `label` contains a link, an address or characters that are not allowed |
+| `client_links_unavailable` | 503 | The instance has no portal service (`PORTAL_DOMAIN`), so there is nowhere to serve the page |
+
+The client's connect page shows these, each in its own words:
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `client_link_not_found` | 404 | No link has this address, or it is opened on another workspace's custom domain |
+| `client_link_expired` | 403 | The link is past its expiry |
+| `client_link_revoked` | 403 | The link was revoked, or the member who made it can no longer manage mailboxes |
+| `client_link_exhausted` | 409 | The link has connected every mailbox it allows |
+| `client_link_provider_not_allowed` | 400 | The link does not accept that kind of mailbox |
+| `client_link_provider_unavailable` | 400 | That sign-in is not configured on this instance |
+| `client_link_signin_expired` | 400 | The provider sign-in took longer than 10 minutes or was already used |
+| `client_link_signin_declined` | 400 | The client cancelled the sign-in at the provider |
+| `client_link_captcha_failed` | 400 | The security check on the server-details or vendor account form did not pass |
+| `client_link_no_mailboxes` | 400 | A client started a vendor import through a connect link without picking a mailbox, or none of the ones picked is in the account any more |
+| `client_link_too_many_mailboxes` | 409 | A client picked more vendor mailboxes than the connect link still allows |
+| `mailbox_vendor_hold_expired` | 400 | The ticket a connect page holds for a client's vendor key was already used or is older than 15 minutes. The client enters the key again |
+| `client_link_rate_limited` | 429 | Too many attempts through this link in the last hour |
+
+A workspace at its mailbox allowance refuses the connect with the usual `mailbox_allowance_reached`, which the page words for the client.
+
+## Tool migration refusals
+
+The [migration](/guides/migrate-from-another-tool/) routes (`/migrations` and `/agency/:agencyId/migrations`) answer these. Problems inside a running migration are not HTTP errors: the migration or the source workspace carries them in `error`, and what did not carry over is listed in each target's `followup.notes`.
+
+| `code` | Status | Meaning |
+|--------|--------|---------|
+| `tool_migration_provider_unknown` | 400 | `provider` is not one of the tools `GET /migrations/providers` lists |
+| `tool_migration_key_rejected` | 422 | The other tool refused a key, or the key lacks the access the migration needs. The `message` is the tool's reason, and names which key (`Key 2: ...`) when there are several. Nothing is stored |
+| `tool_migration_provider_unavailable` | 503 | The other tool did not answer in time or could not be read. Try again in a few minutes |
+| `tool_migration_limit` | 409 | 5 migrations are already scanning or running in this workspace or agency. Wait for one to finish, or cancel one |
+| `tool_migration_not_ready` | 409 | `POST /migrations/:id/start` on a migration whose scan has not finished, failed, or that already finished or was canceled. Wait for `ready`, or start a new migration |
+| `tool_migration_running` | 409 | `DELETE /migrations/:id` on a migration that is still scanning or running. Cancel it first |
+| `tool_migration_target_invalid` | 400 | A `targets` entry names a source workspace the scan did not find, names one twice, names one that could not be read, maps to a workspace that is not one of the agency's clients, or gives both or neither of `organization_id` and `create_name`. A workspace's own migration accepts only `skip` |
+| `tool_migration_in_flight_unsupported` | 400 | `in_flight` is `continue`, which is not available. Choose `skip` or `restart` |
+| `tool_migration_permission` | 403 | The caller lacks a permission the migration needs: `manage_contacts`, plus `manage_campaigns` for campaigns and `manage_emails` for mailboxes, in the workspace or in each client it writes to. Also answered to a member restricted to selected resources, to agency staff who are not the owner or an admin, and to staff without an accepted membership in a client |
+| `tool_migration_not_found` | 404 | No migration with that id in this workspace or agency |
+
+```json
+{
+  "error": "Unprocessable",
+  "message": "Key 2: the API key was not accepted.",
+  "code": "tool_migration_key_rejected",
+  "request_id": "4bbbd1b2-8f86-47dd-8a7f-9476501ad20e"
+}
+```
 
 ## Admin send hold errors
 

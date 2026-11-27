@@ -40,7 +40,7 @@ func TestFillPath(t *testing.T) {
 // and no leftovers, or the command is dead on arrival at runtime.
 func TestEverySpecPathMatchesItsArguments(t *testing.T) {
 	seen := map[string]bool{}
-	for _, r := range resourceSpecs() {
+	for _, r := range flattenResources(resourceSpecs(), "") {
 		if seen[r.Name] {
 			t.Errorf("two resources are called %q", r.Name)
 		}
@@ -60,8 +60,16 @@ func TestEverySpecPathMatchesItsArguments(t *testing.T) {
 				t.Errorf("%s %s path %q must be /v1-relative", r.Name, e.Name, e.Path)
 			}
 			placeholders := strings.Count(e.Path, "{")
-			if placeholders != len(e.Args) {
-				t.Errorf("%s %s has %d placeholders and %d arguments", r.Name, e.Name, placeholders, len(e.Args))
+			pathArgs := 0
+			for _, a := range e.Args {
+				if a.Field == "" {
+					pathArgs++
+				} else if a.Toggle && e.Method == http.MethodGet {
+					t.Errorf("%s %s toggles a query parameter", r.Name, e.Name)
+				}
+			}
+			if placeholders != pathArgs {
+				t.Errorf("%s %s has %d placeholders and %d path arguments", r.Name, e.Name, placeholders, pathArgs)
 			}
 			args := make([]string, len(e.Args))
 			for i := range e.Args {
@@ -92,6 +100,17 @@ func TestEverySpecPathMatchesItsArguments(t *testing.T) {
 			}
 		}
 	}
+}
+
+// flattenResources lists nested resources alongside their parents, named by their full path.
+func flattenResources(rs []resource, parent string) []resource {
+	var out []resource
+	for _, r := range rs {
+		r.Name = strings.TrimSpace(parent + " " + r.Name)
+		out = append(out, r)
+		out = append(out, flattenResources(r.Children, r.Name)...)
+	}
+	return out
 }
 
 // Building the whole command tree catches the failures cobra reports by

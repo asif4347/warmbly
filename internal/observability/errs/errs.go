@@ -20,9 +20,14 @@ package errs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Config is what a service knows about itself at boot.
@@ -255,4 +260,103 @@ func build(opts []Option) scope {
 		opt(&s)
 	}
 	return s
+}
+
+// DatabaseConnectError stands in for a failed database connection on its way to
+// a remote backend, because pgconn's own message names the database user and
+// every address it tried. The local log keeps the original.
+type DatabaseConnectError struct {
+	// Code is the server's SQLSTATE when it answered, empty when it never did.
+	Code string
+}
+
+func (e *DatabaseConnectError) Error() string {
+	if e.Code == "" {
+		return "failed to connect to the database"
+	}
+	return "failed to connect to the database (SQLSTATE " + e.Code + ")"
+}
+
+// Sensitive hides an error whose text can carry connection details or
+// credentials behind public; the original stays reachable through Unwrap.
+func Sensitive(err error, public string) error {
+	if err == nil {
+		return nil
+	}
+	return &sensitiveError{err: err, public: public}
+}
+
+type sensitiveError struct {
+	err    error
+	public string
+}
+
+func (e *sensitiveError) Error() string { return e.public }
+func (e *sensitiveError) Unwrap() error { return e.err }
+
+func redact(err error) error {
+	var connect *pgconn.ConnectError
+	if !errors.As(err, &connect) {
+		var sensitive *sensitiveError
+		if errors.As(err, &sensitive) {
+			return errors.New(sensitive.Error())
+		}
+		return withoutURLQuery(err)
+	}
+	out := &DatabaseConnectError{}
+	var server *pgconn.PgError
+	if errors.As(connect, &server) {
+		out.Code = server.Code
+	}
+	return out
+}
+
+// querylessError is an error whose request URL lost its query string, keeping the original's type for the issue title.
+type querylessError struct {
+	typeName string
+	msg      string
+}
+
+func (e *querylessError) Error() string { return e.msg }
+
+// reportedURL is a URL in error text: a backslash escape (url.Error quotes its URL) stays inside it.
+var reportedURL = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://(?:[^\s"'<>\\]|\\.)+`)
+
+// withoutURLQuery drops every URL's query, fragment and credentials, whose ids would otherwise make every call its own issue.
+func withoutURLQuery(err error) error {
+	msg := err.Error()
+	cleaned := reportedURL.ReplaceAllStringFunc(msg, bareURL)
+	if cleaned == msg {
+		return err
+	}
+	return &querylessError{typeName: fmt.Sprintf("%T", err), msg: cleaned}
+}
+
+// bareURL keeps a URL's scheme, host and path, as text, so a URL that will not parse is cut the same way.
+// Credentials go first: a password may hold the "?" or "#" the query and fragment are cut at.
+func bareURL(raw string) string {
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok {
+		bare, _, _ := strings.Cut(raw, "?")
+		bare, _, _ = strings.Cut(bare, "#")
+		return bare
+	}
+	authorityEnd := strings.Index(rest, "/")
+	if authorityEnd < 0 {
+		authorityEnd = len(rest)
+	}
+	if at := strings.LastIndex(rest[:authorityEnd], "@"); at >= 0 {
+		rest = rest[at+1:]
+	}
+	rest, _, _ = strings.Cut(rest, "?")
+	rest, _, _ = strings.Cut(rest, "#")
+	return scheme + "://" + rest
+}
+
+// exceptionType names the Go type an issue is titled with.
+func exceptionType(err error) string {
+	if q, ok := err.(*querylessError); ok {
+		return q.typeName
+	}
+	return fmt.Sprintf("%T", err)
 }

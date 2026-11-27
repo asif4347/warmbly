@@ -44,6 +44,7 @@ override_data {
       runtime = {
         vpc_id            = "vpc-1"
         public_subnet_ids = ["subnet-a", "subnet-b"]
+        tasks_sg_id       = "sg-tasks"
       }
     }
   }
@@ -55,6 +56,40 @@ variables {
   operator_ssh_cidrs      = ["203.0.113.0/24"]
   cache_security_group_id = "sg-cache"
   workers                 = {}
+}
+
+run "backend_internal_port_is_opt_in" {
+  command = plan
+  variables {
+    fleet_enabled      = true
+    fleet_instance_url = "https://app.example.com"
+  }
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.backend_internal) == 0
+    error_message = "Workers reach the backend's private listener only once backend_internal_port is set."
+  }
+}
+
+run "backend_internal_port_admits_fleet_and_hosts" {
+  command = plan
+  variables {
+    fleet_enabled         = true
+    fleet_instance_url    = "https://app.example.com"
+    backend_internal_port = 8443
+    workers               = { warmbly-a = { image = "r/worker@sha256:0000000000000000000000000000000000000000000000000000000000000000", zone_index = 0 } }
+  }
+  assert {
+    condition     = toset(keys(aws_vpc_security_group_ingress_rule.backend_internal)) == toset(["fleet", "hosts"]) && alltrue([for rule in aws_vpc_security_group_ingress_rule.backend_internal : rule.security_group_id == "sg-tasks" && rule.from_port == 8443 && rule.to_port == 8443])
+    error_message = "Fleet and fixed workers reach the tasks' TLS port and nothing else."
+  }
+}
+
+run "backend_internal_port_rejects_a_privileged_port" {
+  command = plan
+  variables {
+    backend_internal_port = 443
+  }
+  expect_failures = [var.backend_internal_port]
 }
 
 run "fleet_is_opt_in" {
@@ -95,6 +130,10 @@ run "fleet_without_public_ipv4" {
   assert {
     condition     = aws_autoscaling_group.fleet[0].min_size == 2 && aws_autoscaling_group.fleet[0].health_check_type == "EC2" && contains(aws_autoscaling_group.fleet[0].suspended_processes, "AZRebalance")
     error_message = "The fleet keeps two workers by default and never rebalances zones."
+  }
+  assert {
+    condition     = one([for t in aws_autoscaling_group.fleet[0].tag : t.value if t.key == "warmbly:max-ceiling"]) == "100" && output.fleet.max_ceiling == 100
+    error_message = "The group carries the ceiling the admin panel may raise its cap to."
   }
   assert {
     condition     = one(aws_autoscaling_group.fleet[0].initial_lifecycle_hook).heartbeat_timeout == 900 && aws_autoscaling_group.fleet[0].instance_refresh[0].preferences[0].min_healthy_percentage == 100 && aws_autoscaling_group.fleet[0].instance_refresh[0].preferences[0].max_healthy_percentage == 101
@@ -187,6 +226,32 @@ run "fleet_scale_in_sits_under_scale_out" {
     fleet_scale_in_memory_below = 70
   }
   expect_failures = [aws_launch_template.fleet[0]]
+}
+
+run "fleet_max_size_stays_under_the_ceiling" {
+  command = plan
+  variables {
+    fleet_enabled      = true
+    fleet_instance_url = "https://app.example.com"
+    fleet_max_size     = 60
+    fleet_max_ceiling  = 50
+  }
+  expect_failures = [aws_launch_template.fleet[0]]
+}
+
+# Runs against the group fleet_without_public_ipv4 applied with a cap of 10, so the edit is also reported.
+run "fleet_ceiling_follows_a_cap_above_the_default" {
+  command = plan
+  variables {
+    fleet_enabled      = true
+    fleet_instance_url = "https://app.example.com"
+    fleet_max_size     = 200
+  }
+  expect_failures = [check.fleet_cap]
+  assert {
+    condition     = one([for t in aws_autoscaling_group.fleet[0].tag : t.value if t.key == "warmbly:max-ceiling"]) == "200" && output.fleet.max_ceiling == 200
+    error_message = "With no ceiling set, a cap above 100 becomes the ceiling, so an existing configuration keeps planning."
+  }
 }
 
 run "fleet_needs_instance_url" {

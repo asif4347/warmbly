@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -70,8 +71,10 @@ type Client struct {
 	// read state: the caller dedupes, hydrates (FetchMessage) and stores as
 	// budget allows, and returns false for a message it left on the server,
 	// which pins the folder cursor before that page.
-	OnMessageSeen        func(ctx context.Context, folder, providerID string, seen bool) (stored bool, err error)
-	OnMessageRemove      func(ctx context.Context, providerID string) error
+	OnMessageSeen   func(ctx context.Context, folder, providerID string, seen bool) (stored bool, err error)
+	OnMessageRemove func(ctx context.Context, providerID string) error
+	// OnPage is told every id on a delta page before its items are offered, so lookups can be batched.
+	OnPage               func(ctx context.Context, ids []string)
 	OnDelta              func(ctx context.Context, folder, deltaLink string) error
 	OnTokenRefresh       func(ctx context.Context, token *oauth2.Token) error
 	OnFolderReconcile    func(ctx context.Context, folder string) (bool, error)
@@ -167,7 +170,7 @@ func (c *Client) doJSON(ctx context.Context, method, url string, in, out any) er
 			if errors.As(err, &networkError) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				return transportError(err)
 			}
-			return err
+			return unreadableResponse(resp, err)
 		}
 		var trailing json.RawMessage
 		if err := decoder.Decode(&trailing); err != io.EOF {
@@ -186,6 +189,22 @@ func (c *Client) doJSON(ctx context.Context, method, url string, in, out any) er
 }
 
 var errGraphTrailingJSON = errors.New("graph: response contains extra JSON data")
+
+// ErrUnreadableResponse is a success status whose body is not the JSON Graph
+// promised. It says nothing about the mailbox or reachability, so the pass
+// retries without reporting either.
+var ErrUnreadableResponse = errors.New("graph: success response could not be decoded")
+
+// unreadableResponse logs the response shape and decoder error type, never text that can quote mail content.
+func unreadableResponse(resp *http.Response, err error) error {
+	log.Warn().
+		Str("decode_error", fmt.Sprintf("%T", err)).
+		Int("status", resp.StatusCode).
+		Str("content_type", resp.Header.Get("Content-Type")).
+		Str("content_encoding", resp.Header.Get("Content-Encoding")).
+		Msg("graph: success response could not be decoded")
+	return fmt.Errorf("%w (%T)", ErrUnreadableResponse, err)
+}
 
 // transportError classifies a failure of the HTTP call itself. The client's
 // token source runs inside it, so a grant the provider has revoked arrives

@@ -121,6 +121,14 @@
                           "type": "record"
                         }
                       ]
+                    },
+                    {
+                      "default": null,
+                      "name": "full_mail_access",
+                      "type": [
+                        "null",
+                        "boolean"
+                      ]
                     }
                   ],
                   "name": "warmbly.events.AddWorkerEmailGoogleData",
@@ -323,6 +331,7 @@
                         "backfill_days": 0,
                         "backfill_messages": 0,
                         "daily_messages": 0,
+                        "full_check_seconds": 0,
                         "org_daily_messages": 0,
                         "skip_folders": []
                       },
@@ -356,6 +365,11 @@
                               "items": "string",
                               "type": "array"
                             }
+                          },
+                          {
+                            "default": 0,
+                            "name": "full_check_seconds",
+                            "type": "int"
                           }
                         ],
                         "name": "warmbly.events.SyncPolicy",
@@ -1065,11 +1079,6 @@
             {
               "default": "",
               "name": "filing_id",
-              "type": "string"
-            },
-            {
-              "default": "",
-              "name": "command_id",
               "type": "string"
             },
             {

@@ -57,7 +57,7 @@ Every field is optional; an empty body matches all contacts in the organization.
 
 ### Response
 
-Returns a `data` array of contacts plus a `pagination` envelope. Paginate by passing `pagination.next_cursor` back as `cursor` until `has_more` is `false`; `pagination.total` is the count for the whole filtered set and is only sent on the first page.
+Returns a `data` array of contacts plus a `pagination` envelope. `social` holds the contact's handle on each channel that has one, with its consent basis; channels without a handle are left out. Paginate by passing `pagination.next_cursor` back as `cursor` until `has_more` is `false`; `pagination.total` is the count for the whole filtered set and is only sent on the first page.
 
 ```json
 {
@@ -70,6 +70,7 @@ Returns a `data` array of contacts plus a `pagination` envelope. Paginate by pas
       "company": "Acme",
       "phone": "+15551234567",
       "custom_fields": { "title": "VP Sales" },
+      "social": { "linkedin": { "handle": "dana-reyes", "consent_basis": null } },
       "subscribed": true,
       "campaigns": [{ "id": "c1...", "name": "Q3 Outbound" }],
       "categories": [{ "id": "6f1c...", "title": "VIP", "color": "#0ea5e9" }],
@@ -177,6 +178,7 @@ A JSON array of contact objects (at least one, up to the per-request maximum; an
 | `categories` | string[] | No | Label IDs to put on the contact. |
 | `segments` | string[] | No | Segment IDs to pin the contact into, as a manual include override, so it belongs whether or not the conditions match it. An unknown id is rejected with `400` before any contact is written, and the override is written in the same transaction as the contact, so a success response always means the membership exists. |
 | `custom_fields` | object | No | String key/value custom fields. Keys may use letters, numbers, underscores, spaces, and dashes. |
+| `social` | object | No | Handles by channel, each `{"handle", "consent_basis"}`, for example `{"linkedin": {"handle": "jane-doe", "consent_basis": null}, "whatsapp": {"handle": "+447700900123", "consent_basis": "opt_in"}}`. Channels are `linkedin`, `instagram`, `whatsapp`, `telegram` and `facebook`; `consent_basis` is `opt_in`, `existing_conversation`, `imported_with_consent` or (Facebook only) `friend`. A handle that does not fit its channel answers `400` `invalid_social_handle`; see [social on contacts](/guides/social/#social-on-contacts) for the forms each takes. |
 | `subscribed` | boolean | No | Marketing-consent flag. Omit it to let a new contact default to subscribed and an existing one keep whatever it already had. |
 | `verification_status` | string | No | A verdict you already hold for the address, in Warmbly's vocabulary (`valid`, `risky`, `invalid`, `unknown`) or any known service's (`ok`, `catch-all`, `do_not_mail`, `deliverable`, `ok_for_all`, ...). Stored as an imported verdict that the background check leaves alone. A value no known service writes is rejected with `unknown_verification_status`. |
 | `verification_provider` | string | No | The vocabulary `verification_status` is written in: `zerobounce`, `millionverifier`, `cleanmylist`, `neverbounce`, `bouncer`, `kickbox`, `emailable`, `debounce`, `clearout`, `emaillistverify`, or `warmbly`. Omit it to have the value recognised by itself. An unknown name is rejected with `unknown_verification_provider`. |
@@ -245,7 +247,7 @@ Every endpoint that acts on a set of contacts (`PATCH /contacts`, `DELETE /conta
 }
 ```
 
-A filter selection that matches more than 250,000 contacts is refused with `selection_too_large` rather than truncated; narrow it and repeat. One that matches nothing is a `400`. `POST /integrations/connections/:id/push` and `POST /contacts/research/batch` accept the same shape and answer the same way, but still cap the resolved set at 500: a push calls the CRM once per contact inside the request, and each research run spends AI credits.
+A filter selection that matches more than 250,000 contacts is refused with `selection_too_large` rather than truncated; narrow it and repeat. One that matches nothing is a `400`. `POST /integrations/connections/:id/push` and `POST /contacts/research/batch` accept the same shape and answer the same way, but still cap the resolved set at 500: a push calls the CRM once per contact inside the request, and each research run is charged to the workspace balance.
 
 ## Bulk update contacts
 
@@ -539,7 +541,7 @@ Reads a draft under a mapping and writes nothing. `409` once the import has star
 }
 ```
 
-Every row lands in exactly one of `new`, `existing`, `duplicates_in_file`, `invalid`, or `conflicts` (an address the caller holds as a contact in another organization). `invalid_samples` lists up to 25 of the invalid and conflicting rows. `problem`, when present, is why starting would be refused as a whole: the plan's contact limit, or too many distinct labels.
+Every row lands in exactly one of `new`, `existing`, `duplicates_in_file`, `invalid`, or `conflicts` (an address the caller holds as a contact in another organization). `invalid_samples` lists up to 25 of the invalid and conflicting rows. `problem`, when present, is why starting would be refused as a whole: the workspace's contact limit ([`contact_limit_reached`](/api/error-codes/#contact_limit_reached)), or too many distinct labels.
 
 ### Start an import
 
@@ -775,6 +777,7 @@ Auth: **Scope** `WRITE_CONTACTS` · **Org permission** `manage_contacts`
 | `company` | string | No | Company. |
 | `phone` | string | No | Phone. |
 | `custom_fields` | object | No | Replaces the custom-fields map. |
+| `social` | object | No | Handles by channel, in the shape create takes. Only the channels you send change; `null` for a channel clears its handle and consent basis. |
 | `subscribed` | boolean | No | Subscription status. |
 | `campaigns` | string[] | No | Set the full campaign membership (nil leaves as-is). |
 | `categories` | string[] | No | Set the full list of label IDs (nil leaves as-is). |
@@ -960,6 +963,8 @@ Returns a `data` array and the standard `pagination` envelope. Paginate by passi
 `type` is one of `email_sent`, `email_opened`, `email_clicked`, `email_replied`, `email_bounced`, `reply_received`, `deliverability`, `suppressed`, `note`, `meeting_booked`, `meeting_rescheduled`, `meeting_canceled`, `contact_created`, `campaign_added`, `campaign_removed`, `category_added`, `category_removed`, `form_submitted`, or `page_hit`. Fields not relevant to an event type are omitted.
 
 `email_opened` and `email_clicked` carry `machine`: `true` when an automated fetcher did it rather than the person (a mail privacy proxy, a fetch inside the instance's automated-engagement window, which starts when the step is dispatched to a worker, several links followed within seconds). Per-link `email_clicked` events carry `machine_reason` (`prefetch`, `instant`, `scanner` or `burst`), and per-event `email_opened` rows carry it too (`prefetch`, `instant` or `scanner`); an open summarised from the lead alone carries only the flag. Both kinds carry an `origin` object when the event was logged: `client` when the user agent names a mail client (`Gmail`, `Apple Mail`, `Outlook`, `Yahoo Mail`, `Thunderbird` and others); `client_type`, `app` for an installed mail app or `webmail` for a browser (on a click, `app` only when a mail app made the request itself, and never `webmail`); `device_hidden: true` when the mailbox provider's image proxy fetched the email (Gmail, Yahoo Mail, HEY, Fastmail, Seznam, and Apple Mail Privacy Protection, whose user agent is just `Mozilla/5.0`); `device_type` (`desktop`, `mobile` or `tablet`), `os`, `browser`, `browser_version`; and `country_code`, `region`, `city` when the consumer could resolve them. A hidden device omits the device, operating system and browser, which would describe the proxy, and the location too, except the country and region Apple's relay keeps. The stripped WebKit user agent that Mail on a Mac and the new Outlook for Windows both send is reported as `client: "Apple Mail or Outlook"`, `client_type: "app"`, with no device. On a click, `browser` and `device_type` are where the link opened, and `client` is set only when a mail app made the request itself. Opens appear once per event, so a contact who opened from two devices has two rows. Automated clicks are on the feed for the record but never count the step as clicked. An `email_clicked` event carries `link` with the link's `id`, `url`, `label` (its anchor text), the `utm_*` parameters the URL carried, and the `user_agent`; every link in an email is tracked on its own, so each link clicked is its own event. Clicks recorded before per-link attribution have no `link`.
+
+A `deliverability` event carries `source` (`bounce`, `complaint` or `unsubscribe`), `provider` and `reason`, and a bounce carries `bounce_cause` once it has been classified: `recipient_invalid` (the address cannot receive mail, the only cause that suppresses it), `mailbox_full`, `reputation_block` or `transient`. A bounce without `bounce_cause` could not be placed; it did not suppress the address. See [suppression](/guides/deliverability/#built-in-protections).
 
 A `form_submitted` event carries `form_id` and `form_name`. A `page_hit` event is a page view on your own site from a browser tied to the contact through an email-link ticket (see [Website tracking](/guides/website-tracking/)); `subject` is the page title, or its path when the page has none, and `page_hit` carries the full view: `url`, `path`, `title`, `referrer`, `referrer_domain`, `landing` (the first view of a session), the `utm_*` parameters, `device_type`, `os`, `browser`, `browser_version`, `device_brand`, `language`, `timezone`, `screen_width`, `screen_height`, and `country_code`, `region`, `city` when known.
 
@@ -1269,13 +1274,15 @@ Each condition names a `field`, an `operator`, and either a `value` (scalar oper
 | Kind | Fields | Operators | Value |
 | --- | --- | --- | --- |
 | text | `first_name`, `last_name`, `email`, `email_domain`, `phone`, `company`, `custom.*` | `equals`, `not_equals`, `contains`, `not_contains`, `starts_with`, `ends_with`, `is_empty`, `is_not_empty` | `value` string; comparisons ignore case |
-| enum | `source`, `verification_status`, `mail_host`, `esp_provider` | `in`, `not_in` | `values`, drawn from the field's `options`; `option_labels` names them for display |
-| bool | `subscribed`, `suppressed`, `is_catch_all` | `is_true`, `is_false` | none |
+| enum | `source`, `verification_status`, `mail_host`, `esp_provider`, `world_region`, `country`, `timezone` | `in`, `not_in` | `values`, drawn from the field's `options`; `option_labels` names them for display |
+| bool | `subscribed`, `suppressed`, `is_catch_all`, `location_known` | `is_true`, `is_false` | none |
 | date | `created_at`, `updated_at`, `last_sent_at`, `last_opened_at`, `last_clicked_at`, `last_replied_at` | `within_days`, `not_within_days` (`value` is a day count, 1 to 3650); `before`, `after` (`value` is `YYYY-MM-DD` or RFC 3339); `is_empty`, `is_not_empty` | see operators |
 | number | `campaign_count`, `emails_sent`, `emails_opened`, `emails_clicked`, `emails_replied`, `emails_bounced` | `equals`, `not_equals`, `gt`, `gte`, `lt`, `lte` | `value`, a whole number |
 | category | `category` | `in`, `not_in`, `is_empty`, `is_not_empty` | `values`, label ids |
 | campaign | `campaign` | `in`, `not_in`, `is_empty`, `is_not_empty` | `values`, campaign ids |
 | segment | `segment` | `in`, `not_in` | `values`, segment ids; at most five levels deep, no loops |
+
+The location fields read where Warmbly places the contact from its record (a timezone, state, city, country or location custom field, then the phone number, then a country-code email domain; see [how a contact's location is worked out](/guides/regions-and-timezones/#how-a-contacts-location-is-worked-out)). `world_region` is one of `north_america`, `latin_america`, `emea`, `apac`, or `none` for a contact with no country; `country` is an ISO 3166-1 alpha-2 code; `timezone` is an IANA name, `UTC`, or an `Etc/GMT` fixed offset; `location_known` is false for a contact nothing places. A contact is placed again within a minute of its record changing.
 
 Engagement counters add up every campaign the contact has been in, and opens count human opens only. Limits: 50 conditions per segment, 200 values per list condition, 200 segments per workspace. A condition that fails validation is rejected with `400` and a message naming the condition.
 

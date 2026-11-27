@@ -39,8 +39,11 @@ type CampaignService interface {
 	// will go out today and every limit that decided it, derived through the
 	// scheduler's own gates. Read-only.
 	SendPlan(ctx context.Context, orgID uuid.UUID, campaignID string) (*models.CampaignSendPlan, *errx.Error)
-	// WorkspaceCapacity is what the workspace's active mailboxes can send
-	// today between them, under the same clamps. Read-only.
+	// LeadTimezones is where one of orgID's campaigns' leads are, by resolved
+	// timezone, for checking the schedule before launch. Read-only.
+	LeadTimezones(ctx context.Context, orgID uuid.UUID, campaignID string) (*models.CampaignLeadTimezones, *errx.Error)
+	// WorkspaceCapacity is what the workspace's running campaigns can send
+	// today between them, each mailbox under its campaign's clamps. Read-only.
 	WorkspaceCapacity(ctx context.Context, orgID uuid.UUID) (*models.WorkspaceSendCapacity, *errx.Error)
 	// StartSendPlanSnapshotter runs the background loop that re-walks every
 	// active campaign's send plan on an interval and stores it, so SendPlan
@@ -246,7 +249,7 @@ func NewService(
 ) CampaignService {
 	return &campaignService{
 		planCache:          newReadCache[*models.CampaignSendPlan](15 * time.Second),
-		capacityCache:      newReadCache[*models.WorkspaceSendCapacity](60 * time.Second),
+		capacityCache:      newReadCache[*models.WorkspaceSendCapacity](30 * time.Second),
 		campaignRepository: campaignRepository,
 		taskRepo:           taskRepo,
 		emailRepo:          emailRepo,

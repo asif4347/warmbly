@@ -21,7 +21,7 @@ import {
 import toast from "react-hot-toast/headless";
 import type Sequence from "@/lib/api/models/app/campaigns/sequences/Sequence";
 import type { SequenceBranch, BranchCondition, BranchField } from "@/lib/api/models/app/campaigns/sequences/Branching";
-import { REPLY_INTENTS, isReplyBranchField, isInstantCapableField } from "@/lib/api/models/app/campaigns/sequences/Branching";
+import { REPLY_INTENTS, isSocialBranchField, isSocialStateField, isReplyBranchField, isInstantCapableField } from "@/lib/api/models/app/campaigns/sequences/Branching";
 import updateSequence from "@/lib/api/client/app/campaigns/sequences/updateSequence";
 import { useUserProfile } from "@/hooks/context/user";
 import useClickOutside from "@/hooks/useClickOutside";
@@ -40,8 +40,27 @@ import AssigneeTeamPicker, { type AssigneeValue } from "@/components/app/crm/Ass
 import DealStagePicker from "@/components/app/crm/DealStagePicker";
 import { CrmDealNote, CrmTaskNote } from "@/components/app/crm/crmMode";
 import { useReportDirty } from "@/components/app/flow/dirty";
-import { ACTION_META, ADD_ACTION_OPTIONS, AI_STEP_OPTION, BRANCH_PATH_OPTIONS, DEAL_NAME_VARIABLES, STOP_ON_REPLY_HELP, SWITCH_OPTION, defaultActionFor } from "./campaignActions";
+import {
+    ACTION_META,
+    ADD_ACTION_OPTIONS,
+    AI_STEP_OPTION,
+    BRANCH_PATH_OPTIONS,
+    DEAL_NAME_VARIABLES,
+    SOCIAL_OPTION,
+    STOP_ON_REPLY_HELP,
+    SWITCH_OPTION,
+    SocialStepIcon,
+    defaultActionFor,
+} from "./campaignActions";
+import { useSocialChannels, useSocialStatus } from "@/lib/api/hooks/app/social/useSocial";
+import { isSocialAction } from "@/lib/api/models/app/campaigns/sequences/Action";
+import type { SocialChannel } from "@/lib/api/models/app/social/Social";
+import ChannelMark from "@/components/app/social/ChannelMark";
+import { channelLabel, isChannel, orderedCatalog } from "@/lib/social/channels";
+import SocialStepEditor from "./SocialStepEditor";
 import { caseKey } from "./campaignGraph";
+import { fmtUsdAbout } from "@/lib/money";
+import { AI_ESTIMATE_USD } from "@/lib/aiEstimates";
 
 const stepName = (s: Sequence | undefined) => (s?.name?.trim() ? s.name : "Untitled step");
 
@@ -165,6 +184,11 @@ export function PathEditor({
     // the event lands by default; this lets the user opt out so the path routes
     // at the next step boundary instead.
     const [instant, setInstant] = React.useState<boolean>(branch.instant !== false);
+    // A social signal is checked inside a day window, or at any time before the check.
+    const [ever, setEver] = React.useState<boolean>(c0?.operator === "ever" && isSocialBranchField(c0.field));
+    // social_replied may name one channel; "" is any channel.
+    const [channel, setChannel] = React.useState<string>(c0?.channel ?? "");
+    const catalog = useSocialChannels(isSocialBranchField(c0?.field ?? ""));
 
     const isAlways = field === "always";
     const isRandom = field === "random";
@@ -174,9 +198,13 @@ export function PathEditor({
     const caseName = isCasePath ? (c0?.label ?? "").trim() : "";
     const isReply = isReplyBranchField(field as BranchField);
     const isIntent = field === "reply_intent";
+    // Invite pending and Open Profile are states now, so they have no window; the other social signals offer one.
+    const isSocialState = isSocialStateField(field);
+    const isSocial = isSocialBranchField(field) && !isSocialState;
+    const isSocialReply = field === "social_replied" || field === "not_social_replied";
     const isInstantCapable = !isCasePath && isInstantCapableField(field as BranchField);
     const instantVerb = field === "opened" ? "open" : field === "clicked" ? "click" : "reply";
-    const isNegative = field === "not_opened" || field === "not_clicked" || field === "not_replied";
+    const isNegative = field.startsWith("not_");
     const target = steps.find((s) => s.id === branch.target_step_id);
     const targetLabel = branch.target_step_id === null ? "the end of the sequence" : target ? `“${stepName(target)}”` : "a step that no longer exists";
     const aiSwitch = source.action?.switch_on !== "value";
@@ -188,10 +216,12 @@ export function PathEditor({
         // Reply-class conditions are checked once, ever (no day window / value).
         if (isReply) return [{ field: field as BranchField, operator: "ever" }];
         if (isIntent) return [{ field: "reply_intent", operator: "is", label: intent }];
-        return [{ field: field as BranchField, operator: "within_days", value }];
+        const ch = isSocialReply && isChannel(channel) ? { channel: channel as SocialChannel } : {};
+        if (isSocialState || (isSocial && ever)) return [{ field: field as BranchField, operator: "ever", ...ch }];
+        return [{ field: field as BranchField, operator: "within_days", value, ...ch }];
     };
     // Compared field by field: a server row can carry keys an edit never writes.
-    const sig = (cs: BranchCondition[], inst: boolean) => JSON.stringify([cs.map((c) => [c.field, c.operator, c.value ?? null, c.label ?? null]), inst]);
+    const sig = (cs: BranchCondition[], inst: boolean) => JSON.stringify([cs.map((c) => [c.field, c.operator, c.value ?? null, c.label ?? null, c.channel ?? null]), inst]);
     useReportDirty(sig(buildConditions(), isInstantCapable ? instant : branch.instant !== false) !== sig(branch.conditions ?? [], branch.instant !== false));
     const save = (target_step_id: string | null) => {
         onSave({
@@ -278,10 +308,39 @@ export function PathEditor({
                     <p className="rounded-md bg-slate-50 px-2 py-1.5 text-[11px] leading-relaxed text-slate-600 ring-1 ring-slate-200">
                         The “{caseName}” case of this switch: contacts take this path when{" "}
                         {aiSwitch ? "the AI picks" : "the value matches"} “{caseName}”. Rename or remove the case on the
-                        step itself; routing happens at the step boundary with no extra credits.
+                        step itself; routing happens at the step boundary at no extra cost.
                     </p>
                 )}
-                {!isAlways && !isRandom && !isReply && !isIntent && !isCasePath && (
+                {isSocialReply && (
+                    <div>
+                        <p className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400">On</p>
+                        <SelectMenu
+                            className="w-full"
+                            value={channel}
+                            onChange={setChannel}
+                            options={[
+                                { value: "", label: "Any channel" },
+                                ...orderedCatalog(catalog.data).map((c) => ({ value: c.channel, label: c.label, icon: <ChannelMark channel={c.channel} className="size-3.5" /> })),
+                                ...(channel && !catalog.data?.some((c) => c.channel === channel) ? [{ value: channel, label: channelLabel(channel) }] : []),
+                            ]}
+                        />
+                    </div>
+                )}
+                {isSocial && (
+                    <div className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
+                        {([false, true] as const).map((e) => (
+                            <button
+                                key={String(e)}
+                                type="button"
+                                onClick={() => setEver(e)}
+                                className={`h-6 rounded px-2 text-[11.5px] font-medium transition-colors ${ever === e ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                            >
+                                {e ? "Any time" : "Within a window"}
+                            </button>
+                        ))}
+                    </div>
+                )}
+                {!isAlways && !isRandom && !isReply && !isIntent && !isCasePath && !isSocialState && !(isSocial && ever) && (
                     <div className="flex flex-wrap items-center gap-1.5">
                         <span>within</span>
                         <NumberInput value={value} onChange={(v) => setValue(Math.max(1, Math.min(60, Math.round(v) || 1)))} min={1} max={60} className="w-16" align="center" />
@@ -347,9 +406,23 @@ export function PathEditor({
                         )}
                     </div>
                 )}
+                {isSocialState && (
+                    <p className="text-[10.5px] text-slate-400">
+                        {field === "social_invite_pending"
+                            ? "Takes this path when the contact reaches this point and the LinkedIn invite this campaign sent is still waiting for an answer."
+                            : field === "social_open_profile"
+                              ? "Takes this path when the contact has a LinkedIn Open Profile, so an InMail reaches them without using a credit. Checked when the contact reaches this point."
+                              : "Takes this path when the contact has no LinkedIn Open Profile. Checked when the contact reaches this point."}
+                    </p>
+                )}
+                {isSocialReply && (
+                    <p className="text-[10.5px] text-slate-400">A reply on any channel stops the contact&apos;s other social steps and emails, as an email reply does.</p>
+                )}
                 {isNegative && (
                     <p className="text-[10.5px] text-slate-400">
-                        We keep checking until {value} day{value === 1 ? "" : "s"} pass, then take this path if it still hasn’t happened.
+                        {isSocial && ever
+                            ? "Takes this path if it still hasn’t happened when the contact reaches this point."
+                            : `We keep checking until ${value} day${value === 1 ? "" : "s"} pass, then take this path if it still hasn’t happened.`}
                     </p>
                 )}
 
@@ -398,8 +471,9 @@ export function NodeTypeSwitcher({
     const [busy, setBusy] = React.useState(false);
     const current: "email" | SequenceActionType =
         sequence.kind === "email" ? "email" : sequence.action?.type ?? "add_tag";
+    const social = !!useSocialStatus().data?.available;
 
-    const items: { value: "email" | SequenceActionType; label: string; Icon: typeof MailIcon; tint: string }[] = [
+    const items: { value: "email" | SequenceActionType; label: string; Icon: React.ComponentType<{ className?: string }>; tint: string }[] = [
         { value: "email", label: "Send email", Icon: MailIcon, tint: "text-sky-600" },
         { value: "switch", label: SWITCH_OPTION.label, Icon: SplitIcon, tint: "text-purple-600" },
         { value: "ai_step", label: AI_STEP_OPTION.label, Icon: SparklesIcon, tint: "text-purple-600" },
@@ -409,6 +483,9 @@ export function NodeTypeSwitcher({
             Icon: ACTION_META[o.type].Icon,
             tint: ACTION_META[o.type].tint,
         })),
+        ...(social || isSocialAction(current)
+            ? [{ value: SOCIAL_OPTION.type, label: SOCIAL_OPTION.label, Icon: current === "social" ? ({ className }: { className?: string }) => <SocialStepIcon social={sequence.action?.social} className={className} /> : ACTION_META.social.Icon, tint: ACTION_META.social.tint }]
+            : []),
     ];
 
     const pick = async (value: "email" | SequenceActionType) => {
@@ -533,6 +610,7 @@ export function ActionEditor({
             <ActionConfigFields action={action} setAction={setAction} />
             {action.type === "switch" && <SwitchStepFields action={action} setAction={setAction} />}
             {action.type === "ai_step" && <AIStepFields action={action} setAction={setAction} />}
+            {isSocialAction(action.type) && <SocialStepEditor campaignId={campaignId} action={action} setAction={setAction} />}
 
             <div className="flex items-center justify-end pt-1">
                 <button
@@ -1094,8 +1172,8 @@ function AIStepFields({
                 )}
                 <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
                     The agent decides which of these to use for each contact, writes any task or deal details itself, and
-                    can chain several. It only takes the actions you enable, never sending or replying. Billed 1 credit
-                    per step it takes.
+                    can chain several. It only takes the actions you enable, never sending or replying. Each step it takes
+                    is charged to the workspace balance by what it uses, usually {fmtUsdAbout(AI_ESTIMATE_USD.agentIteration)}.
                 </p>
             </div>
         </div>
@@ -1126,7 +1204,7 @@ function SwitchStepFields({
                                 mode: true,
                                 Icon: SparklesIcon,
                                 title: "AI prompt",
-                                detail: "A model reads the contact and picks a case. 1 credit per contact.",
+                                detail: `A model reads the contact and picks a case. ${fmtUsdAbout(AI_ESTIMATE_USD.aiNode)} per contact.`,
                             },
                             {
                                 mode: false,
@@ -1181,15 +1259,15 @@ function SwitchStepFields({
                     />
                     <p className="mt-1 text-[11px] text-slate-400">
                         One model call per contact reaching this step picks exactly one case. Supports the same{" "}
-                        {"{{.FirstName}}"} / {"{{.Company}}"} variables as your email copy. Costs 1 credit per contact
-                        plus usage on long calls.
+                        {"{{.FirstName}}"} / {"{{.Company}}"} variables as your email copy. Costs {fmtUsdAbout(AI_ESTIMATE_USD.aiNode)} per
+                        contact, more on long calls.
                     </p>
                     <div className="mt-3">
                         <Label>Capabilities</Label>
                         <div className="space-y-1">
                             <AIContextToggle
                                 label="Web search"
-                                detail="Looks up the contact's company on the web before deciding. +1 credit when results are found"
+                                detail={`Looks up the contact's company on the web before deciding. Adds ${fmtUsdAbout(AI_ESTIMATE_USD.webSearch)} when results are found`}
                                 on={!!action.ai_web_search}
                                 onToggle={() => setAction((a) => ({ ...a, ai_web_search: !a.ai_web_search || undefined }))}
                             />
@@ -1220,7 +1298,7 @@ function SwitchStepFields({
                         Rendered per contact and matched to the case names. Matching ignores casing and extra spaces
                         (“ VIP  Customer” matches the case “vip customer”); wrap a case in slashes for a regex, e.g.{" "}
                         <code className="font-mono">/^(vip|enterprise)/</code>. First matching case wins. No model call,
-                        no credits.
+                        no charge.
                     </p>
                 </div>
             )}

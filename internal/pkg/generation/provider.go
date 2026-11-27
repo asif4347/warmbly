@@ -35,6 +35,8 @@ type ToolDef struct {
 	// InputSchema is a JSON Schema object describing the tool's arguments.
 	InputSchema map[string]any
 	Risk        RiskClass
+	// Deferred keeps the tool off the request until the model finds it through tool search.
+	Deferred bool
 	// Handler executes the tool for the given JSON args and returns a result
 	// string (usually JSON) fed back to the model as the tool result. An error
 	// is surfaced to the model as a tool error so it can recover or stop.
@@ -134,9 +136,12 @@ type AgentResult struct {
 	// caller can persist it and resume.
 	Messages []AgentMessage
 	Model    string
-	// TokensUsed is the summed input+output tokens across all iterations.
-	TokensUsed int
-	Iterations int
+	// TokensUsed is the summed input+output tokens across all iterations;
+	// InputTokens and OutputTokens split it, since they are priced apart.
+	TokensUsed   int
+	InputTokens  int
+	OutputTokens int
+	Iterations   int
 	// StopReason is "stop", "max_iterations", "approval_required", "stopped", or "error".
 	StopReason string
 	// Pending is set only when StopReason == "approval_required".

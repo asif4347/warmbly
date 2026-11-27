@@ -145,27 +145,110 @@ func reconcileDue(rows []repository.MailboxAssignment, seen map[uuid.UUID]reconc
 	return due
 }
 
-// ReloadWorkerAccounts publishes every active mailbox assigned to workerID
-// back onto it. Called from the boot heartbeat, so a restarted worker is
-// sending and syncing again within seconds rather than after the reconciler's
-// next republish window.
-func (s *emailService) ReloadWorkerAccounts(ctx context.Context, workerID uuid.UUID) {
-	ids, err := s.emailRepository.ListActiveAccountsByWorker(ctx, workerID)
-	if err != nil {
-		log.Warn().Err(err).Str("worker_id", workerID.String()).Msg("worker boot reload: list accounts failed")
+// workerReloadTimeout bounds one reload pass; a full worker is a thousand or more mailboxes loaded one by one.
+const workerReloadTimeout = 10 * time.Minute
+
+// workerReload is what one worker has asked for and not yet been given: everything, or the named mailboxes.
+type workerReload struct {
+	running bool
+	full    bool
+	ids     map[uuid.UUID]struct{}
+}
+
+// RequestWorkerReload re-ships a worker's mailboxes in the background: all of them when it booted, else the named ones.
+// One pass runs per worker at a time and requests arriving meanwhile join the next, so a worker that keeps asking
+// cannot stack reloads of its whole inventory on top of each other.
+func (s *emailService) RequestWorkerReload(workerID uuid.UUID, full bool, ids []uuid.UUID) {
+	if !full && len(ids) == 0 {
 		return
 	}
-	loaded := 0
+	s.reloadMu.Lock()
+	if s.reloads == nil {
+		s.reloads = make(map[uuid.UUID]*workerReload)
+	}
+	r := s.reloads[workerID]
+	if r == nil {
+		r = &workerReload{ids: make(map[uuid.UUID]struct{})}
+		s.reloads[workerID] = r
+	}
+	r.full = r.full || full
 	for _, id := range ids {
+		r.ids[id] = struct{}{}
+	}
+	start := !r.running
+	r.running = true
+	s.reloadMu.Unlock()
+	if start {
+		go s.runWorkerReloads(workerID, r)
+	}
+}
+
+func (s *emailService) runWorkerReloads(workerID uuid.UUID, r *workerReload) {
+	for {
+		s.reloadMu.Lock()
+		full, ids := r.full, r.ids
+		if !full && len(ids) == 0 {
+			r.running = false
+			delete(s.reloads, workerID)
+			s.reloadMu.Unlock()
+			return
+		}
+		r.full, r.ids = false, make(map[uuid.UUID]struct{})
+		s.reloadMu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), workerReloadTimeout)
+		unreached := s.reloadWorkerAccounts(ctx, workerID, full, ids)
+		cancel()
+		// A pass that ran out of time leaves the rest for the next one.
+		if len(unreached) > 0 {
+			s.reloadMu.Lock()
+			for _, id := range unreached {
+				r.ids[id] = struct{}{}
+			}
+			s.reloadMu.Unlock()
+		}
+	}
+}
+
+// reloadWorkerAccounts publishes the active mailboxes assigned to workerID back onto it: all of them, or those in only.
+// It returns the mailboxes it did not get to before ctx ran out.
+func (s *emailService) reloadWorkerAccounts(ctx context.Context, workerID uuid.UUID, full bool, only map[uuid.UUID]struct{}) []uuid.UUID {
+	assigned, err := s.emailRepository.ListActiveAccountsByWorker(ctx, workerID)
+	if err != nil {
+		log.Warn().Err(err).Str("worker_id", workerID.String()).Msg("worker boot reload: list accounts failed")
+		return nil
+	}
+	ids := assigned
+	if !full {
+		// A worker may name only mailboxes placed on it.
+		ids = ids[:0:0]
+		for _, id := range assigned {
+			if _, ok := only[id]; ok {
+				ids = append(ids, id)
+			}
+		}
+	}
+	loaded := 0
+	var unreached []uuid.UUID
+	for i, id := range ids {
+		if ctx.Err() != nil {
+			unreached = append(unreached, ids[i:]...)
+			break
+		}
 		if err := s.LoadAccountOntoWorker(ctx, id); err != nil {
+			if ctx.Err() != nil {
+				unreached = append(unreached, ids[i:]...)
+				break
+			}
 			log.Warn().Err(err).Str("email_id", id.String()).Str("worker_id", workerID.String()).Msg("worker boot reload: load account failed")
 			continue
 		}
 		loaded++
 	}
 	if len(ids) > 0 {
-		log.Info().Str("worker_id", workerID.String()).Int("loaded", loaded).Int("assigned", len(ids)).Msg("worker boot reload: mailboxes re-shipped")
+		log.Info().Str("worker_id", workerID.String()).Bool("full", full).Int("loaded", loaded).Int("requested", len(ids)).Int("unreached", len(unreached)).Int("assigned", len(assigned)).Msg("worker boot reload: mailboxes re-shipped")
 	}
+	return unreached
 }
 
 // loadAccountBestEffort loads a freshly onboarded account onto its worker without
@@ -354,7 +437,7 @@ func (s *emailService) preloadAddWorkerEmail(ctx context.Context, acc *models.Em
 	if err != nil {
 		return nil, err
 	}
-	syncData, err := s.syncDataFor(ctx, acc.ID, false)
+	syncData, err := s.syncDataFor(ctx, acc.ID, acc.OrganizationID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -425,7 +508,7 @@ func (s *emailService) buildAddWorkerEmailSnapshot(ctx context.Context, acc *mod
 		sync = &copy
 	} else {
 		var err error
-		sync, err = s.syncDataFor(ctx, acc.ID, true)
+		sync, err = s.syncDataFor(ctx, acc.ID, acc.OrganizationID, true)
 		if err != nil {
 			return nil, err
 		}
@@ -442,7 +525,7 @@ func (s *emailService) buildAddWorkerEmailSnapshot(ctx context.Context, acc *mod
 		Sync:                sync,
 		// Only SMTP/IMAP acts on this; Gmail and Graph file their own copy.
 		SaveToSent: &saveToSent,
-		Push:       s.push.For(ctx, acc.ID, provider),
+		Push:       s.push.For(ctx, acc.ID, provider, acc.AuthMethod),
 	}
 	if provider == models.InboxProviderOutlook {
 		var links map[string]string
@@ -508,13 +591,27 @@ func (s *emailService) buildAddWorkerEmailSnapshot(ctx context.Context, acc *mod
 			return nil, cerr
 		}
 		out.Google = &models.AddWorkerEmailGoogleData{
-			Token:         oauthToken(creds),
-			LastHistoryID: s.workerHistoryID(ctx, userID, acc, preload),
+			LastHistoryID:  s.workerHistoryID(ctx, userID, acc, preload),
+			FullMailAccess: models.FullMailAccess(creds.GrantedScopes),
 		}
+		// Only the backend holds a workspace client's secret, so it refreshes that grant.
+		if creds.OAuthAppID != nil {
+			out.Brokered = true
+			// Gmail watches only a topic in the client's own Google project.
+			if out.Push != nil {
+				out.Push.GmailTopic = ""
+			}
+			return out, nil
+		}
+		out.Google.Token = oauthToken(creds)
 	case models.InboxProviderOutlook:
 		creds, cerr := repo.GetOAuthCredentials(ctx, acc.ID)
 		if cerr != nil {
 			return nil, cerr
+		}
+		if creds.OAuthAppID != nil {
+			out.Brokered = true
+			return out, nil
 		}
 		out.Graph.Token = oauthToken(creds)
 	case models.InboxProviderSMTPIMAP:
@@ -599,7 +696,7 @@ func (s *emailService) lastHistoryFor(ctx context.Context, userID, emailID uuid.
 // state a previous worker left behind. Policy comes from instance settings
 // (compiled defaults when none are wired), so an operator's change applies at
 // the next load: onboarding, reassignment, or the reconciler's republish.
-func (s *emailService) syncDataFor(ctx context.Context, emailID uuid.UUID, readFolders bool) (*models.AddWorkerEmailSyncData, error) {
+func (s *emailService) syncDataFor(ctx context.Context, emailID uuid.UUID, orgID *uuid.UUID, readFolders bool) (*models.AddWorkerEmailSyncData, error) {
 	budget := instancesettings.DefaultSync()
 	if s.syncBudget != nil {
 		budget = s.syncBudget.SyncBudget(ctx)
@@ -610,6 +707,7 @@ func (s *emailService) syncDataFor(ctx context.Context, emailID uuid.UUID, readF
 			BackfillMessages: budget.BackfillMessages,
 			DailyMessages:    budget.DailyMessagesPerMailbox,
 			OrgDailyMessages: budget.DailyMessagesPerOrg,
+			FullCheckSeconds: int(s.fullCheckInterval(ctx, budget, orgID) / time.Second),
 		},
 	}
 	// The skip list is part of the policy a republish replaces on the loaded
@@ -628,6 +726,7 @@ func (s *emailService) syncDataFor(ctx context.Context, emailID uuid.UUID, readF
 		if linked, err := s.poolLink.GetMailboxByAccount(ctx, emailID); err == nil && linked != nil {
 			data.Policy.BackfillDays = 1
 			data.Policy.BackfillMessages = 25
+			data.Policy.FullCheckSeconds = config.SyncFullCheckFastSeconds
 		}
 	}
 	// A seed receives every workspace's test copies, so the per-mailbox budget
@@ -639,6 +738,7 @@ func (s *emailService) syncDataFor(ctx context.Context, emailID uuid.UUID, readF
 			data.Policy.OrgDailyMessages = max(data.Policy.OrgDailyMessages, config.PlacementSeedDailySyncMessages)
 			data.Policy.BackfillDays = 1
 			data.Policy.BackfillMessages = 25
+			data.Policy.FullCheckSeconds = config.SyncFullCheckFastSeconds
 		}
 	}
 	if s.syncState != nil {

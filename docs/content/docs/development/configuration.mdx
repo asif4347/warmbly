@@ -39,6 +39,7 @@ Anything flagged on [Instance health](/development/instance-health/) links back 
 | `DEPLOYMENT_MODE` | `self_hosted` or `cloud`. Picks the auth defaults in [authentication](#authentication); every one stays individually overridable. A joining node receives the mode its control plane resolved | `self_hosted` under compose | yes |
 | `ALLOW_INSECURE_DEFAULTS` | `true` lets the backend boot even when a secret still holds its published default. Only for a throwaway instance | unset | yes |
 | `GIN_MODE` | `debug` or `release` | `release` | yes |
+| `LOG_LEVEL` | Lowest level of the structured log lines the Go services (backend, consumer, worker, forms) write: `debug`, `info`, `warn` or `error`. Startup messages and the HTTP access log are not filtered by it. `debug` adds a line for every event a service reads or publishes, so leave it off unless you are tracing something | `debug` when `APP_ENV=dev`, `info` otherwise | yes |
 | `ENV_LABEL` | A label the admin panel shows next to the instance name | unset | yes (container start) |
 | `WARMBLY_CLOUD_URL` | The Warmbly Cloud API an already linked self-hosted instance talks to for the hosted warmup pool ([guide](/guides/warmbly-cloud/)). Warmbly Cloud links no new instances. Outbound HTTPS only | `https://api.warmbly.com` | no |
 | `INSTANCE_NAME` | The name an instance gave Warmbly Cloud when it linked. Warmbly Cloud no longer links new instances, so it has no effect on one that is not linked | the hostname | no |
@@ -119,8 +120,10 @@ These settings are optional. An existing self-host keeps its current keys and be
 | `INTERNAL_API_PREVIOUS_UNTIL` | RFC3339 cutoff for previous internal tokens. Missing, malformed or elapsed deadlines reject previous tokens | unset |
 | `NODE_BROKER_PREVIOUS_TOKENS` | Previous bearer tokens for fleet broker routes, accepted only before the cutoff below. These retain broker privileges during the window | unset |
 | `NODE_BROKER_PREVIOUS_UNTIL` | RFC3339 cutoff for previous broker tokens. Missing, malformed or elapsed deadlines reject previous tokens | unset |
+| `PORTAL_EDGE_PREVIOUS_TOKENS` | Previous bearer tokens for the portal service's routes, accepted only before the cutoff below | unset |
+| `PORTAL_EDGE_PREVIOUS_UNTIL` | RFC3339 cutoff for previous portal service tokens. Missing, malformed or elapsed deadlines reject previous tokens | unset |
 
-Changing these settings requires restarting the affected service. Internal-token deadlines are checked on every request, so old tokens stop working at the cutoff without another restart. Tracking and forms overlap does not grant fleet broker access. JWT verification uses only `AUTH_SECRET`; encryption and unsubscribe read keys never authorize sessions.
+Changing these settings requires restarting the affected service. Internal-token deadlines are checked on every request, so old tokens stop working at the cutoff without another restart. Tracking and forms overlap does not grant fleet broker access, and portal service overlap opens only the portal service's routes. JWT verification uses only `AUTH_SECRET`; encryption and unsubscribe read keys never authorize sessions.
 
 For encryption rotation, first deploy a compatible release everywhere with the existing primary key and the replacement included in its read-key list. Confirm that all readers use that baseline before a later deployment activates the replacement primary and retains the old key for reads. Then reseal stored values with [`warmblyctl keys reseal`](/development/warmblyctl/#keys): run it once without `--apply` to see the counts, then with `--apply`, and repeat until `warmblyctl keys status` shows nothing left under a read key. It is resumable and never overwrites a value the backend changed meanwhile. `warmblyctl keys generate` prints replacement values in the right format. The supported rollback floor during rotation is that compatible baseline release, using keys that read both generations. A binary rollback keeps the current compatible key configuration; reverting a primary key alone does not migrate data.
 
@@ -157,15 +160,46 @@ Every emailed link (password reset, invitation, the first-run claim link) is bui
 | `API_HOST` | The listen address | `0.0.0.0:8080` | yes |
 | `PUBLIC_HOST` | Compose only. A hostname or LAN IP that every other URL derives from | `localhost` | yes |
 | `CORS_ALLOW_ORIGINS` | Comma separated origins allowed to call the API. Anything not listed gets `403` on preflight | derived from `PUBLIC_HOST` under compose | yes |
+| `ADMIN_URL` | The admin panel's origin. The dashboard links an instance admin to it, for example to [add the GraphKit API key](#adding-the-key-in-the-admin-panel), and `warmblyctl` prints it | guessed from the `CORS_ALLOW_ORIGINS` entry on an `admin.` host or port `5174`, else unset (no link) | no (read per request) |
 | `WEBSOCKET_URL` | The websocket URL the dashboard connects to | derived under compose | yes (container start) |
 | `PHX_HOST` | The realtime service's own hostname | `localhost` | yes |
 | `TRACKING_DOMAIN` | The host that serves open pixels, click links and the unsubscribe pages for workspaces that verified their own domain against it, and the `CNAME` value those customers point their tracking subdomain at. Use a separate, neutral domain in production. Unset means campaign mail ships with no pixel and unwrapped links, no custom tracking domain can verify, and every opt-out is served from `API_PUBLIC_URL` | `localhost:3000` under compose, otherwise unset | no |
 | `TRACKING_SERVICE_URL` | Where the backend reaches the tracking service internally | unset | yes |
 | `FORMS_DOMAIN` | The host hosted form pages and embeds are served on (`forms.example.com`, routed to the forms service). The backend builds share links and embed codes from it; unset leaves forms without a public URL | unset | no (read per request) |
+| `PORTAL_DOMAIN` | The shared address of the [portal service](#portal-service) (`portal.warmbly.com` on Warmbly Cloud), with a port if it has one. Every connect link and shared report of a workspace without a verified agency portal domain is built on it, and agency portal domains `CNAME` to its host. Set it on the backend and the portal service. Unset, connect links and report links are refused (`client_links_unavailable`, `report_links_unavailable`) and no portal domain can verify; forms and everything else are unaffected | unset | no (read per request) |
 
 <Callout type="warn" title="Setting PUBLIC_HOST turns localhost off">
 Once `PUBLIC_HOST` is set, every derived URL uses it and `http://localhost:5173` stops working, because a `localhost` origin is no longer in `CORS_ALLOW_ORIGINS`. To keep both, list them yourself in `CORS_ALLOW_ORIGINS`.
 </Callout>
+
+### Customer domains behind Cloudflare for SaaS
+
+Optional, and only for an instance whose `TRACKING_DOMAIN` is on a Cloudflare for SaaS zone. Cloudflare refuses a customer domain pointed at that host (error `1000` at a root, `1014` at a `CNAME`) until the domain is one of the zone's custom hostnames. With both values set, the backend registers a root redirect (and its `www`) as a custom hostname the moment it verifies and a verified tracking host within two minutes, rechecks a pending one every two minutes, and removes one a day after nothing on the instance serves it any more. While Cloudflare still needs proof of a domain, the redirect lists its `_cf-custom-hostname` record. The root record a redirect asks for also changes from the tracking host's addresses, which are Cloudflare's shared ones, to a `CNAME` to the tracking host. Unset, nothing is registered and the records are unchanged.
+
+| Variable | What it does | Default | Restart needed |
+|---|---|---|---|
+| `CLOUDFLARE_SAAS_ZONE_ID` | The Cloudflare zone `TRACKING_DOMAIN` is on | unset | yes |
+| `CLOUDFLARE_SAAS_API_TOKEN` | A token with `SSL and Certificates: Edit` on that zone. Treat it as a secret | unset | yes |
+| `CLOUDFLARE_SAAS_ORIGIN` | Origin server for the hostnames the backend creates, when it differs from the zone's fallback origin | the zone's fallback origin | yes |
+
+The origin has to route a request for any registered name to the tracking service with its Host header intact. On the AWS Fargate deployment that is `tracking_serves_unmatched_hosts`; see [AWS Fargate](/development/aws-fargate/).
+
+### Agency portal domains behind Cloudflare for SaaS
+
+Optional, and only for an instance that serves agency portal domains from a Cloudflare for SaaS zone of their own, usually the zone `PORTAL_DOMAIN` is on, as Warmbly Cloud does. Agency portal domains `CNAME` to `PORTAL_DOMAIN`, not to the tracking host, so they get their own zone and their own settings. With both values set, the backend registers a portal domain as a custom hostname on that zone the moment it verifies (and every verified one within two minutes), rechecks a pending one every two minutes, and removes one a day after it stops being verified. While Cloudflare still needs proof of a domain, the agency brand's `portal_domain` lists the `_cf-custom-hostname` `TXT` record in `edge_records`. Workspace forms domains are never registered on this zone; they keep pointing at `FORMS_DOMAIN`. The tracking zone above is unaffected. Unset, no portal domain is registered anywhere, which is the self-host default: the instance issues their certificates on demand and its own portal service serves them.
+
+| Variable | What it does | Default | Restart needed |
+|---|---|---|---|
+| `CLOUDFLARE_SAAS_PORTAL_ZONE_ID` | The Cloudflare zone `PORTAL_DOMAIN` is on | unset | yes |
+| `CLOUDFLARE_SAAS_PORTAL_API_TOKEN` | A token with `SSL and Certificates: Edit` on that zone. Treat it as a secret | unset | yes |
+| `CLOUDFLARE_SAAS_PORTAL_ORIGIN` | Origin server for the hostnames the backend creates, when it differs from the zone's fallback origin | the zone's fallback origin | yes |
+| `CLOUDFLARE_SAAS_PORTAL_WORKER` | Name of the portal Worker on that zone. Each portal domain then gets its own Worker route (`<domain>/*`) when it is registered, removed with it. The token also needs `Workers Routes: Edit` on the zone | unset: the zone routes its custom hostnames itself | yes |
+
+Set `CLOUDFLARE_SAAS_PORTAL_WORKER` when the zone also holds other customer hostnames, such as tracking or redirect domains: one route for every custom hostname would send those to the portal too, and a route for each portal domain touches nothing else. A portal domain reads as registered only once its route to that Worker exists. A domain whose pattern already goes to another Worker is refused, and that route is never changed or removed. On a zone that holds portal domains only, leave it unset and route every custom hostname to the Worker once.
+
+Moving a zone that already serves portal domains from one route for every hostname to a route for each: set the variable first and keep the old route for a day. A domain that is already active gets its own route at its next daily check, not at once, so removing the old route sooner would leave it unanswered until then.
+
+On Warmbly Cloud the [portal service](#portal-service) is a Cloudflare Worker on that zone, configured by `deploy/cloudflare/portal/wrangler.jsonc`; its deployment is in `deploy/cloudflare/README.md`.
 
 ## Network and proxy
 
@@ -264,11 +298,13 @@ The proxy forwards only what PostHog needs to read the request. Cookies and `Aut
 | `TURNSTILE_BYPASS_TOKEN` | A token that skips verification. Only honoured when `APP_ENV=dev` | unset | yes |
 | `APP_ATTEST_APP_IDS` | Comma-separated `<team id>.<bundle id>` App IDs whose App Attest proofs the backend accepts in place of a captcha. Unset with no `APPLE_TEAM_ID`, App Attest is off | `APPLE_TEAM_ID` + `.` + `APPLE_IOS_BUNDLE_ID` when `APPLE_TEAM_ID` is set | yes |
 | `APP_ATTEST_ALLOW_DEVELOPMENT` | Accept App Attest proofs from development-signed builds (an Xcode install on a device). Leave it off in production | `false` | yes |
-| `TURNSTILE_SITE_KEY` | The public Turnstile widget key. The backend hands it to the forms service, which renders it on hosted form pages that enable spam protection. The frontends carry their own copy in `WARMBLY_TURNSTILE_KEY` | unset | no (read per request) |
+| `TURNSTILE_SITE_KEY` | The public Turnstile widget key. The backend hands it to the forms service, which renders it on hosted form pages that enable spam protection, and renders it itself in the security check the dashboard on an agency portal domain embeds (see below). The frontends carry their own copy in `WARMBLY_TURNSTILE_KEY` | unset | no (read per request) |
 
 `CAPTCHA_PROVIDER` has no constant default. Unset, it resolves to `turnstile` when `TURNSTILE_SECRET` holds a value, whether from the environment or from AWS Secrets Manager, and to `none` when it does not, so configuring the secret is what turns captcha on and clearing it is what turns captcha off. The panel reports the resolved value with source `derived`.
 
 Setting `CAPTCHA_PROVIDER=turnstile` explicitly while `TURNSTILE_SECRET` is empty is the one combination that breaks: every verification fails, which means nobody can sign in. Set the secret or set the provider back to `none`.
+
+A Turnstile widget only renders on the hostnames listed for its site key in Cloudflare, and an agency's portal domain cannot be listed in advance. The dashboard on a [portal domain](/guides/white-label/#the-dashboard-on-your-portal-domain) therefore embeds a small page from the API's own host (`/v1/auth/captcha-frame`), which the API lets only a verified portal domain frame, and that page hands the token back to the portal page. The token is checked by the backend exactly as on the main address. For it to work, `TURNSTILE_SITE_KEY` must be set on the backend and the API's hostname must be on the site key's hostname list. Without them the portal sign-in asks people to sign in at the main address.
 
 The native iOS app never renders Turnstile. It proves it is a genuine copy of the app with Apple [App Attest](/api/reference/account-org/#app-attest-native-apps), which stands in for the captcha on sign-in, registration and password reset. With `CAPTCHA_PROVIDER=none` the app sends nothing. With Turnstile on, the app offers email and password sign-in only when `APP_ATTEST_APP_IDS` names its App ID; otherwise it offers Sign in with Apple, Google and passkeys, which never need a captcha. A self-hosted instance that runs Turnstile and wants the iOS app to sign in with a password sets `APP_ATTEST_APP_IDS` to the iOS app's App ID. Verification needs no Apple account and makes no outbound call: it checks against Apple's App Attest root certificate, which ships in the binary. Each install's key is stored in the `app_attest_keys` table, which belongs to the instance and is not part of a [workspace export](/guides/workspace-export-import/). The iOS simulator cannot use App Attest, so local development keeps using `TURNSTILE_BYPASS_TOKEN`.
 
@@ -540,10 +576,13 @@ Keep the copies private. GeoLite2 may not be redistributed, which is also why no
 | `WORKER_BIND_IP` | Source address to bind outbound connections to, and the seed for a derived `WORKER_ID` | unset | yes |
 | `WORKER_PUBLIC_IP` | Public IPv4 reported by the worker, never replaced by the backend-observed address, which may be a reverse proxy. Otherwise the node discovers HTTPS egress IPv4 using `api.ipify.org` every ten minutes. Set this explicitly when mail and HTTPS have different egress routes | detected | yes |
 | `WARMBLY_WORKER_CAPACITY` | Assigned-mailbox planning target for this worker. This guides placement and is not a mailbox-provider send limit. `auto` sizes it on every heartbeat from the machine's memory: 70% of it, less the process's own footprint, divided by what each mailbox the worker holds has been measured to use (1 MB until 50 are loaded) | `100` | yes |
-| `WORKER_COMMAND_CONCURRENCY` | Worker command lanes, from `1` to `64`, on both Kafka and NATS. Commands are grouped by the mailbox in the payload, including older task-keyed sends. Each mailbox stays in order; independent lanes run concurrently, so one slow mail server holds only its own lane. On NATS a command waiting in a lane is kept from being redelivered while it waits. Invalid values use the default | `8` | yes |
+| `WORKER_COMMAND_CONCURRENCY` | How many mailboxes a worker runs commands for at once, from `1` to `64`, on both Kafka and NATS. Commands are grouped by the mailbox in the payload, including older task-keyed sends. Each mailbox runs its own commands in order, and any free slot takes the next mailbox with work waiting, so one slow mail server holds only its own mailbox. On NATS a command waiting its turn is kept from being redelivered while it waits. Invalid values use the default | `32` | yes |
 | `WARMBLY_NODE_REGION` | Free-form label for where this node egresses from, e.g. `eu-central`. Placement prefers a worker near where a mailbox's provider expects sign-ins; unset scores neutral. Written by the join script from `--region` | unset | yes |
 | `ENCRYPTED_KEYS_BACKEND_URL` | Backend base the worker fetches organization keys from, and the address a joining node is told to call back on. On hosted production it should be `https`, or a private-network address nodes reach without crossing the internet; a plain `http` address that does not name this machine is logged as a warning on every join and env refresh. A self-host may use plain `http` on its own network | unset | yes |
 | `ENCRYPTED_KEYS_WORKER_TOKEN` | The worker's copy of `INTERNAL_API_TOKEN` | unset | yes |
+| `NODE_BACKEND_INTERNAL_URL` | Read by the backend: a private address nodes may call instead of `ENCRYPTED_KEYS_BACKEND_URL`, such as the backend's own [TLS listener](#tls-listeners) on a network the nodes share. It is written into every node's env as `WARMBLY_BACKEND_INTERNAL_URL`, beside the public address rather than in its place. Must be `https` on hosted production, where an `http` value is not handed out and each join logs why. Unset, nodes are given the public address only | unset | yes |
+| `NODE_BACKEND_INTERNAL_CA` | Read by the backend with `NODE_BACKEND_INTERNAL_URL`: the PEM certificate or bundle nodes trust for that address and no other, written into their env base64-encoded as `WARMBLY_BACKEND_INTERNAL_CA_B64`. `NODE_BACKEND_INTERNAL_CA_FILE` reads it from a file instead; set one of the two. Unset, nodes verify the address against the system roots. A value with no PEM certificate withholds the private address. Read at backend start, like `NODE_BACKEND_INTERNAL_CA_FILE` | unset | yes |
+| `WARMBLY_BACKEND_INTERNAL_URL` | Read by a node at startup. It calls `/health` there (3 seconds at most), trusting only `WARMBLY_BACKEND_INTERNAL_CA_B64` for that address when set, and on a `200` sends every call to the control plane there: keys, blob signing, the message map and sync lookups, brokered tokens, the heartbeat and logs. Otherwise it logs `control plane: private address ... unusable` and keeps the public address until it restarts. Once on the private address, a call that fails before reaching it (refused, unreachable, DNS or TLS handshake failure) is sent once more to the public address, unless its body cannot be replayed; after 3 such failures in a row every call goes to the public address for 5 minutes, and each switch is logged once. A call that fails after it was sent is never resent. Connections are replaced every 2 minutes so that new backend instances behind the name receive their share. Written from the backend's `NODE_BACKEND_INTERNAL_URL` | unset | yes |
 | `MAIL_TLS_INSECURE` | Skips certificate verification on mailbox connections and lets SMTP continue on a server that offers no STARTTLS. A password is still only sent over TLS or to this machine. Honoured on a self-hosted or development instance and ignored on hosted production, where a server with a self-signed or private certificate is trusted through its mailbox's own [certificate choice](/guides/mailboxes/#servers-with-their-own-certificate) instead. A joining node receives the value its control plane resolved | `false` | yes |
 | `MAIL_ALLOW_PRIVATE_HOSTS` | Whether a mailbox's SMTP or IMAP server may resolve to a loopback, private, link-local, CGNAT, multicast or metadata address. Checked on every connection, against the address actually dialled. A hosted production instance always refuses them; a self-hosted or development instance allows them unless this is `false`. A joining node receives the value its control plane resolved | `true` on a self-host or in development, refused on hosted production | yes |
 | `WARMBLY_BACKEND_URL` | Backend base a joined node calls for its heartbeat, and the brokered key and blob providers, when `ENCRYPTED_KEYS_BACKEND_URL` is unset. Written by the join script | unset | yes |
@@ -552,6 +591,9 @@ Keep the copies private. GeoLite2 may not be redistributed, which is also why no
 | `WARMBLY_ENV_REFRESH` | Read by the host updater, not the node. `true` lets it replace `node.env` with what the control plane renders now whenever the heartbeat names a different env revision, then restart the node. `node.local.env` is never touched. Written by the join script on a new join and by `--adopt --env-refresh`; a node without it keeps its env until it rejoins | unset | no (read by the updater) |
 | `APP_INTERNAL_URL` | Read by the backend: the address a joining node is told to call back on when `ENCRYPTED_KEYS_BACKEND_URL` is unset on the backend. Instance health checks whichever of the two is set | unset | no (read per join) |
 | `FLEET_METRICS_CLOUDWATCH` | Read by the backend: the fleet name it publishes `Warmbly/Fleet` metrics under (dimension `Fleet`) every minute from the workers' heartbeats: `WorkerMemoryPercent` and `WorkerMemoryMaxPercent`, which the [AWS worker fleet](/development/aws-workers/#metric-contract) scales on, and `WorkerUtilizationPercent` for reading only. Set it to the workers root's `name`. Uses the AWS default credential chain, so the backend's role needs `cloudwatch:PutMetricData`. Leave it unset on any other deployment | unset | yes |
+| `FLEET_JOIN_TOKEN_PARAMETER` | Read by the backend: the Parameter Store SecureString the [AWS worker fleet](/development/aws-workers/#prepare-the-join-token) joins with. The backend checks it every hour and, when it is missing, no longer joins, or expires within 10 days, issues a 30-day join token and stores it there. Issuing revokes the previous token, so once this is set, read the token from the parameter rather than issuing one with `warmblyctl fleet join-token`. The new token is stored first and only then made the join token, so a failed write leaves the previous one working. Uses the AWS default credential chain, so the backend's role needs `ssm:GetParameter` and `ssm:PutParameter` on that parameter. Leave it unset on any other deployment | unset | yes |
+| `FLEET_JOIN_TOKEN_KMS_KEY` | Read by the backend with `FLEET_JOIN_TOKEN_PARAMETER`: the KMS key ID or ARN the parameter is encrypted with, the workers root's `fleet_join_token_kms_key_arn`. The backend's role then also needs `kms:Encrypt`, `kms:GenerateDataKey` (an Advanced-tier parameter is written with it) and `kms:Decrypt` on that key. Unset stores the parameter with `aws/ssm` | unset | yes |
+| `FLEET_AUTOSCALING_GROUP` | Read by the backend: the name of the [AWS worker fleet](/development/aws-workers/#change-the-fleet-cap)'s Auto Scaling Group. The admin panel then shows the fleet's size against its cap and can change the cap, between the running fleet and the group's `warmbly:max-ceiling` tag, and the backend logs a warning once an hour while the fleet is at its cap. Uses the AWS default credential chain, so the backend's role needs `autoscaling:DescribeAutoScalingGroups` and `autoscaling:UpdateAutoScalingGroup` on that group, the latter bounded by an `autoscaling:MaxSize` condition at the ceiling. Leave it unset on any other deployment | unset | yes |
 
 <Callout type="warn" title="An unset key URL is silent">
 An empty `ENCRYPTED_KEYS_BACKEND_URL` or `ENCRYPTED_KEYS_WORKER_TOKEN` lets the worker start, subscribe and never register. There is no log line. The `no_worker_heartbeat` check on [Instance health](/development/instance-health/#no_worker_heartbeat) is what surfaces it.
@@ -567,6 +609,7 @@ Workers hold no database connection by design. Everything relational they need a
 - **A worker never receives `PRIMARY_DB`, `CREDENTIALS_ENCRYPTION_KEY`, `CREDENTIALS_ENCRYPTION_READ_KEYS` or `KMS_LOCAL_MASTER_KEY`.** A consumer does, because it opens Postgres itself and seals stored credentials. A worker opens only what reaches it sealed under a workspace key. An instance that keeps its DSN in a secret manager rather than the environment has none to send, and the join script says so.
 - **`DEPLOYMENT_MODE`, `MAIL_ALLOW_PRIVATE_HOSTS` and `MAIL_TLS_INSECURE` are resolved.** A node cannot tell a hosted instance from a self-host on its own, so it receives the mode and the policies its control plane applies. On hosted production that means a node ignores `MAIL_TLS_INSECURE` and the other self-host-only opt-outs even when `node.local.env` sets them. A node that has not rejoined or refreshed its env since an upgrade keeps what it was given; on a hosted instance, rejoin existing nodes or write `DEPLOYMENT_MODE=cloud` in `node.local.env`.
 - **The backend address should be `https` on hosted production.** Join and env refresh log a warning when `ENCRYPTED_KEYS_BACKEND_URL` (or `APP_INTERNAL_URL`) is plain `http` and does not name this machine. Keep a cleartext address on a private network only. A self-host keeps whatever it uses on its own network.
+- **A private backend address is offered, never imposed.** With `NODE_BACKEND_INTERNAL_URL` set, a node is given it beside the public address and switches to it only when it answers at startup. A node on a release that does not read it keeps the public address. Joining and env refresh still use the public address, because they run before a node has an env to read.
 - **Each node gets credentials of its own.** `NODE_LOG_TOKEN` for log ingestion and `NODE_CREDENTIAL` for fetching its own env are issued per node on every join and never derived from the fleet-wide token.
 - **Addresses are inherited literally.** `NATS_URL`, `REDIS` and `ENCRYPTED_KEYS_BACKEND_URL` are used exactly as the backend has them, and a value that only resolves inside your container network produces a node that enrols cleanly and reaches nothing.
 
@@ -599,32 +642,16 @@ Needed on the backend **and** every worker: the backend starts the OAuth flow, a
 
 | Variable | What it does | Default |
 |---|---|---|
-| `BOX_GOOGLE_CLIENT_ID`, `BOX_GOOGLE_CLIENT_SECRET` | The Google app used by Gmail mailboxes connected with per-mailbox Google sign-in. Both are required to enable new connects. Keep them set while any mailbox uses Google sign-in. Also carries a Workspace administrator's domain proof when `GOOGLE_CLIENT_ID` is not set. Redirect URI is your API base plus `/addresses/google/callback` | unset |
-| `BOX_GOOGLE_OAUTH_CONNECT` | Optional backend kill switch for new Gmail OAuth connects. Unset enables the capability when both Google mailbox credentials are present; explicit `false` or an invalid value disables it. Existing Google sign-in mailboxes keep working and can re-authorize either way. Announced as `gmail_oauth_connect` on `GET /v1/auth/config` | enabled when configured |
+| `BOX_GOOGLE_CLIENT_ID`, `BOX_GOOGLE_CLIENT_SECRET` | The Google app used by Gmail mailboxes connected with per-mailbox Google sign-in. Both are required to enable new connects. Keep them set while any mailbox uses Google sign-in. Also carries a Workspace administrator's domain proof when `GOOGLE_CLIENT_ID` is not set. Redirect URI is your API base plus `/addresses/google/callback`. Until Google verifies the client it is limited to 100 new users, except on Workspace domains whose administrator marks it Trusted under App Access Control, and an **Internal** client in your own organization; members see the client ID in the connect dialog and as `google_mailbox_client_id` on `GET /emails/grants/config`. The consent screen needs `https://mail.google.com/` and `gmail.settings.basic` ([setup](/development/deployment-guide/#gmail-and-google-workspace)) | unset |
+| `BOX_GOOGLE_APP_NAME` | The app name on the consent screen of the `BOX_GOOGLE_*` client. An inbox vendor that signs in to Google mailboxes for Warmbly checks it against the client ID (Zapmail refuses a mismatch), so set it to the name your Google Cloud project shows | `Warmbly` |
+| `BOX_GOOGLE_OAUTH_CONNECT` | Optional backend kill switch for new Gmail OAuth connects. Unset enables the capability when both Google mailbox credentials are present; explicit `false` or an invalid value disables it. Existing Google sign-in mailboxes keep working and can re-authorize either way. Announced as `gmail_oauth_connect` on `GET /v1/auth/config`, which is what the dashboard reads to offer Google sign-in | enabled when configured |
 | `BOX_OUTLOOK_CLIENT_ID`, `BOX_OUTLOOK_CLIENT_SECRET` | Connect Outlook and Microsoft 365 mailboxes. Redirect URI is your API base plus `/addresses/outlook/callback` | unset |
 
 Plain SMTP and IMAP mailboxes need none of this. If a worker is missing these values, the mailbox connects fine and then silently stops about an hour later, when its first access token expires.
 
-### Google sign-in per dashboard deployment
+### Multiple dashboards on one backend
 
-The dashboard has a separate visibility flag. It affects only **per-mailbox Google sign-in** in the connect dialog and mailbox import, not Microsoft sign-in, Google dashboard login or Workspace whole-domain grants.
-
-| Variable | Where to set it | Default |
-|---|---|---|
-| `WARMBLY_GMAIL_OAUTH_CONNECT` | Dashboard container environment or Cloudflare Pages environment. Set to `true` to offer Google mailbox sign-in when the backend supports it | `false` |
-| `VITE_GMAIL_OAUTH_CONNECT` | `web/.env` for local Vite or a direct Vite build. Runtime configuration takes precedence | `false` |
-
-Two dashboard deployments can share one backend and set this flag differently. For example:
-
-```dotenv
-# Public dashboard environment
-WARMBLY_GMAIL_OAUTH_CONNECT=false
-
-# Assessment dashboard environment (a separate deployment)
-WARMBLY_GMAIL_OAUTH_CONNECT=true
-```
-
-Both dashboards point `WARMBLY_API_URL` at the same API and set `WARMBLY_APP_URL` to their own dashboard URL. Containers generate `/config.js` at startup, so no second image is needed. Cloudflare Pages renders it during `build:pages`; set the variable on the intended Pages project and redeploy.
+Several dashboard deployments can share one backend. Each points `WARMBLY_API_URL` at the same API and sets `WARMBLY_APP_URL` to its own dashboard URL. Containers generate `/config.js` at startup, so no second image is needed. Cloudflare Pages renders it during `build:pages`; set the variables on the intended Pages project and redeploy.
 
 The customer dashboard also generates a Content Security Policy from the same deployment settings. Static bootstrap scripts and styles use build-generated hashes; scripts and styles injected as markup are not generally allowed. API, Sentry and PostHog origins are derived from their configured URLs. Before nginx starts, the dashboard reads the public `/v1/auth/config` endpoint at its configured API URL and allows only the exact `websocket_url` origin. Existing backend `WEBSOCKET_URL` configuration therefore needs no duplicate CSP setting. If `WEBSOCKET_URL` is also passed into the web container, it supplies the origin directly without an HTTP request.
 
@@ -638,32 +665,15 @@ This proxy is display-only. Existing records need no migration, and saved and se
 
 On the shared backend, keep `APP_URL` as the primary dashboard and add both exact dashboard origins to `CORS_ALLOW_ORIGINS`, for example `https://app.example.com,https://assessment.example.com`. Google and Microsoft mailbox connects, reauthorization, whole-domain administrator grants, integration OAuth and Slack identity verification bind the initiating browser origin to their server-side OAuth state. The callback posts only to that allowlisted origin, and a popup without an opener returns to its `/oauth-return` page. Missing, expired or consumed routing state shows a retry notice instead of forwarding a code to another dashboard. Valid legacy states without an origin still use the primary dashboard. Wildcards are not accepted as OAuth return origins. Provider-registered callback URIs stay on the same API.
 
-Email/password login, OTP/2FA, signup, logout and ordinary dashboard navigation use local routes. Password-reset and invitation emails initiated from an allowlisted dashboard link back to that dashboard. Stripe checkout, credit top-ups, billing portal and warmup-plan returns use the initiating dashboard and retain safe same-origin paths. Referral share links use that dashboard's signup page too. Requests without a trusted browser origin use the primary dashboard.
+Email/password login, OTP/2FA, signup, logout and ordinary dashboard navigation use local routes. Password-reset and invitation emails initiated from an allowlisted dashboard link back to that dashboard. Stripe checkout, credit top-ups, billing portal and warmup-plan returns use the initiating dashboard and retain safe same-origin paths. Requests without a trusted browser origin use the primary dashboard.
 
-For Warmbly's hosted assessment dashboard, the shared backend needs both of these origins:
+Each additional dashboard also needs:
 
-```dotenv
-APP_URL=https://app.warmbly.com
-CORS_ALLOW_ORIGINS=https://app.warmbly.com,https://tac-security-assessment.warmbly.com
-```
+- its hostname allowed on the Cloudflare Turnstile widget. A widget restricted to one hostname does not cover a sibling. Keep CAPTCHA enabled.
+- its origin appended to the realtime service's `CHECK_ORIGIN_HOSTS`, preserving the existing origins. The API origin allowlist does not configure websocket origin checks.
+- the existing `WEBAUTHN_RP_ID`, unchanged. Changing it invalidates every registered passkey. If it is the primary dashboard's hostname, use email/password on a sibling hostname; if it is a shared parent domain and both origins are allowed for WebAuthn, existing passkeys work on both dashboards.
 
-This is an environment example, not a built-in allowlist. Preserve any other existing origins, such as the admin dashboard: append `https://tac-security-assessment.warmbly.com` to the current `CORS_ALLOW_ORIGINS` value rather than replacing the list. On Railway, update the backend service's variable and redeploy it; changing the frontend variable or merging code does not update the live backend environment. Keep `APP_URL` and `APP_ORIGIN` pointing at the primary dashboard, not the assessment dashboard. The assessment frontend sets `WARMBLY_APP_URL=https://tac-security-assessment.warmbly.com` and `WARMBLY_GMAIL_OAUTH_CONNECT=true`.
-
-Before giving assessors access:
-
-- Set the assessment frontend's `WARMBLY_API_URL` to the shared API, and use an exact `WARMBLY_APP_URL` origin without a trailing slash.
-- Allow the assessment hostname on the existing Cloudflare Turnstile widget. A widget restricted to `app.warmbly.com` does not cover its sibling assessment hostname. Keep CAPTCHA enabled.
-- Append the assessment origin to the realtime service's `CHECK_ORIGIN_HOSTS`, preserving its existing origins. The API origin allowlist does not configure websocket origin checks.
-- For password-only assessor accounts, use **Admin > Testers**, or turn on **Skip emailed sign-in code** on an existing account's page under **Users**. These accounts are exempt from the emailed login-code step, but still use CAPTCHA and existing permission checks. Accounts with 2FA enabled still need their second factor.
-- Keep the existing `WEBAUTHN_RP_ID` unchanged. An `app.warmbly.com` passkey RP ID cannot serve a sibling assessment hostname, and changing it invalidates existing credentials. Reviewers can use email/password; passkey support across both hosts needs a separate migration decision.
-
-This is not a global rewrite of every primary-dashboard link. Dashboard Google/Apple/OIDC login remains primary-dashboard routed; assessment reviewers should use email/password. Server-generated notifications, Slack-launched links, CLI/bootstrap links and self-hosted Cloud broker returns retain their canonical instance routing. Cloud broker return origins remain bound to the registered instance, not the hosted assessment dashboard.
-
-Existing Google OAuth mailboxes can still re-authorize with the frontend flag off. App-password and SMTP/IMAP options stay available. When linked to Warmbly Cloud, Google consent is brokered by Cloud rather than the local backend, but the frontend opt-in is still required.
-
-<Callout type="warn" title="Visibility is not authorization">
-Hiding the button does not prevent an authenticated client from calling the API. Use `BOX_GOOGLE_OAUTH_CONNECT=false` to disable new Google OAuth connects on the backend. A frontend flag does not change Google's restricted-scope verification or security assessment requirements, and a second dashboard on the same backend shares its data. Agree the assessment scope and reviewer account with your assessor before scanning.
-</Callout>
+This is not a global rewrite of every primary-dashboard link. Dashboard Google/Apple/OIDC login remains primary-dashboard routed. Server-generated notifications, Slack-launched links, CLI/bootstrap links and self-hosted Cloud broker returns retain their canonical instance routing. Cloud broker return origins remain bound to the registered instance.
 
 ### Optional hosted static edge
 
@@ -728,14 +738,14 @@ through the rollback window. A source merge alone does not attach a domain.
 
 ### Whole-domain connects
 
-A workspace can connect every mailbox on a [Google Workspace domain or Microsoft 365 organization](/guides/mailbox-import/#connect-a-whole-google-workspace-domain) through one administrator's grant (**Add account > Google > Whole Workspace domain**, **Add account > Microsoft > Whole organization**). These are read by the backend only: it mints every token for those mailboxes itself and hands them to workers per use, so workers need nothing here. The complete setup, step by step, is in [whole-domain mailbox connects](/development/whole-domain-connect/).
+A workspace can connect every mailbox on a [Microsoft 365 organization](/guides/mailbox-import/#connect-a-whole-microsoft-365-organization) through one administrator's grant (**Add account > Microsoft > Whole organization**). Google Workspace domain grants are legacy and no longer offered under **Add account**: a grant a workspace already holds keeps working and is reached from **View the grant** (**Check the grant** when the grant is invalid) in the drawer of a mailbox it connected, and a new domain is refused with `google_delegation_retired`. A self-host that configured only the delegation service account can no longer set up a new Workspace domain; configure the `BOX_GOOGLE_*` OAuth client instead, which each domain's administrator marks Trusted. A client with the **Internal** user type on your own Workspace organization is exempt from Google's 100-user cap for unverified apps ([Google's help](https://support.google.com/cloud/answer/13464323)). These are read by the backend only: it mints every token for those mailboxes itself and hands them to workers per use, so workers need nothing here. The complete setup, step by step, is in [whole-domain mailbox connects](/development/whole-domain-connect/).
 
 | Variable | What it does | Default |
 |---|---|---|
-| `GOOGLE_WORKSPACE_DELEGATION_KEY` | The JSON key of a Google Cloud service account with domain-wide delegation. Its `client_id` is what a Workspace super admin authorizes. Unset, Google Workspace grants are off. A value that is not a service account key logs one line at boot and leaves them off | unset |
+| `GOOGLE_WORKSPACE_DELEGATION_KEY` | The JSON key of a Google Cloud service account with domain-wide delegation. Its `client_id` is what a Workspace super admin authorized. It serves only the Google grants workspaces already hold; keep it set while any is in use. Unset, Google Workspace grants are off. A value that is not a service account key logs one line at boot and leaves them off | unset |
 | `GOOGLE_WORKSPACE_DELEGATION_KEY_FILE` | A path to the same key as a file, for a mounted secret. Read when `GOOGLE_WORKSPACE_DELEGATION_KEY` is empty | unset |
 
-Google, once per instance:
+Google, only for an instance whose workspaces already hold grants (a new one has no use for it):
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), create a project or pick the one you will keep. Its project ID is permanent.
 2. Under **APIs & Services > Library**, enable the **Gmail API** and the **Admin SDK API**.
@@ -764,14 +774,13 @@ Application permissions reach every mailbox in a consenting organization. We rec
 
 ## Mailbox sync
 
-How quickly a worker sees new mail. Workers poll every mailbox once a minute unless the provider announces changes; [realtime mailbox sync](/development/mailbox-push/) explains each channel and the Google Cloud and Microsoft setup. Gmail and Graph push are off until configured, and every mailbox keeps polling either way. A joined worker receives `IMAP_IDLE` and `SYNC_PUSH_FALLBACK_INTERVAL` from the control plane; a joined consumer that should read Gmail push needs the Gmail settings in its `node.local.env`.
+How quickly a worker sees new mail. Every mailbox gets a full check of all its followed folders every 15 to 60 minutes, set by the `sync.full_check_min_minutes` and `sync.full_check_max_minutes` [database settings](#settings-stored-in-the-database) and scaled by how many mailboxes the workspace holds against its plan. When the provider announces a change, the worker checks the inbox and junk folders (Gmail's change history) within seconds in between; [realtime mailbox sync](/development/mailbox-push/) explains each channel and the Google Cloud and Microsoft setup. Gmail and Graph push are off until configured; without a signal, a mailbox gets the same inbox and junk check every 5 minutes. A joined worker receives `IMAP_IDLE` from the control plane; a joined consumer that should read Gmail push needs the Gmail settings in its `node.local.env`.
 
 | Variable | What it does | Default | Restart needed |
 |---|---|---|---|
-| `IMAP_IDLE` | Read by workers. Holds each IMAP mailbox's INBOX in `IDLE` on a second connection and syncs within seconds of a change; other folders are then polled every 3 minutes. `false` keeps IMAP mailboxes on the one-minute poll | `true` | yes |
-| `SYNC_PUSH_FALLBACK_INTERVAL` | Read by workers. How often a mailbox with a live Gmail watch or Graph subscription is still polled, as a Go duration. Bounded to `2m` to `60m`; an invalid value uses the default | `10m` | yes |
+| `IMAP_IDLE` | Read by workers. Holds each IMAP mailbox's INBOX in `IDLE` on a second connection and checks INBOX and the junk folder within seconds of a change; every folder still gets the full check. `false` moves IMAP mailboxes to the 5-minute inbox and junk check | `true` | yes |
 | `GRAPH_PUSH` | Read by the backend. `true` has each Outlook and Microsoft 365 mailbox's worker open a Microsoft Graph change-notification subscription posting to `BACKEND_PUBLIC_URL` (else `API_PUBLIC_URL`) plus `/api/v1/mailbox-push/graph/<mailbox-id>`. Stays off unless that URL is `https` and reachable by Microsoft. Notifications are authenticated with a value derived from `AUTH_SECRET`. Unset again, workers close their subscriptions as mailboxes reload | `false` | yes |
-| `GMAIL_PUSH_TOPIC` | Read by the backend. The Cloud Pub/Sub topic, `projects/<project>/topics/<topic>`, each Gmail mailbox's worker watches into. Set alone it moves Gmail mailboxes to the push fallback poll, so set it with `GMAIL_PUSH_SERVICE_ACCOUNT` or a consumer's `GMAIL_PUSH_SUBSCRIPTION`. Unset again, workers stop their watches as mailboxes reload | unset | yes |
+| `GMAIL_PUSH_TOPIC` | Read by the backend. The Cloud Pub/Sub topic, `projects/<project>/topics/<topic>`, each Gmail mailbox's worker watches into. Create it in the project of `BOX_GOOGLE_CLIENT_ID`; whole-domain grant mailboxes watch it only when `GOOGLE_WORKSPACE_DELEGATION_KEY` belongs to the same project, and keep polling otherwise. Set alone it moves Gmail mailboxes to the push fallback poll, so set it with `GMAIL_PUSH_SERVICE_ACCOUNT` or a consumer's `GMAIL_PUSH_SUBSCRIPTION`. Unset again, workers stop their watches as mailboxes reload | unset | yes |
 | `GMAIL_PUSH_SERVICE_ACCOUNT` | Read by the backend. The service account a Pub/Sub push subscription signs its requests with. Set, the backend accepts Gmail notifications at `BACKEND_PUBLIC_URL` (else `API_PUBLIC_URL`) plus `/api/v1/mailbox-push/gmail`, checking each request's Google-signed token. Stays off unless that URL is `https` | unset | yes |
 | `GMAIL_PUSH_SUBSCRIPTION` | Read by the consumer. A pull subscription on that topic, `projects/<project>/subscriptions/<id>`, it reads notifications from instead of a push subscription. Needs no public endpoint | unset | yes |
 | `GOOGLE_APPLICATION_CREDENTIALS_JSON` | Read by the consumer for Gmail push: a Google service account key (JSON) holding **Pub/Sub Subscriber** on the subscription. Unset uses Application Default Credentials. The backend reads the same variable for Cloud Tasks callbacks when `TASKS_PROVIDER=gcloud` | unset | yes |
@@ -852,10 +861,17 @@ Salesforce reads `SALESFORCE_OAUTH_CLIENT_ID` and `SALESFORCE_OAUTH_CLIENT_SECRE
 | `AI_MODEL`, `AI_MODEL_TRIAL`, `AI_MODEL_PAID` | Model selection, optionally split by plan | provider preset |
 | `AI_BASE_URL` | Required for `custom`. Any OpenAI compatible endpoint | unset |
 | `AI_FREE` | Treats AI usage as uncharged | derived |
-| `SEARCH_PROVIDER`, `SEARCH_API_URL`, `SEARCH_API_KEY` | Web search for the assistant (`serper` or `searxng`) | unset |
+| `SEARCH_PROVIDER` | Web search for the assistant, contact research, AI variables and the lead finder: `serper`, `searxng`, `ddgs`, `jina`, `brave` or `tavily`. A comma-separated list (`ddgs,jina`) is tried in order, and a provider that errors or finds nothing hands the query to the next | unset |
+| `SEARCH_API_URL`, `SEARCH_API_KEY` | Endpoint and key of the first provider in `SEARCH_PROVIDER`. A single-provider setup needs nothing else | unset |
+| `SEARCH_<PROVIDER>_URL`, `SEARCH_<PROVIDER>_API_KEY` | Per-provider endpoint and key, for example `SEARCH_DDGS_URL=http://ddgs:4479` and `SEARCH_JINA_API_KEY`. `searxng` and `ddgs` need a URL (your own server); `serper`, `jina`, `brave` and `tavily` need a key and default to their public endpoints | unset |
+| `WEB_READER` | Reader services tried in order when a site answers `401`, `403`, `406`, `429` or `503` to the lead finder or the assistant's `fetch_url`: `crawl4ai`, `jina`, `ddgs`, `custom`. A comma-separated list (`crawl4ai,jina`). The lead finder still obeys robots.txt and never hands a reader a page it disallows; `fetch_url` reads only the page the assistant asked for, as it does without a reader | unset |
+| `WEB_READER_CRAWL4AI_URL`, `WEB_READER_CRAWL4AI_API_KEY` | A Crawl4AI server (`http://crawl4ai:11235`) and its bearer token, if it has one | unset |
+| `WEB_READER_JINA_URL`, `WEB_READER_JINA_API_KEY` | Jina Reader. Works without a key at Jina's free rate limit; the URL points at a self-hosted copy | `https://r.jina.ai` |
+| `WEB_READER_DDGS_URL` | A DDGS API server (`ddgs api`, port `4479` by default), read through its `/extract` endpoint | unset |
+| `WEB_READER_CUSTOM_URL`, `WEB_READER_CUSTOM_API_KEY` | Any reader that answers a GET with the page's HTML, or JSON carrying it (`html`, `content`, `data.html`). The URL is a template: `{url}` is replaced by the page address as is, `{url_encoded}` by its query-escaped form. The key is sent as a bearer token | unset |
 | `MAILHOST_ISPDB` | `true` lets mailbox server detection ask Mozilla's Thunderbird ISPDB (`autoconfig.thunderbird.net`) about a domain whose MX records and own autoconfig file name no known provider. Only the domain name is sent. See [data control](/development/data-control/#outbound-calls) | `false` on a self-host, `true` on Warmbly Cloud |
 | `MAILVENDOR_SANDBOX_URL` | Development only. Points every inbox vendor client at the [sandbox's mock vendor API](/development/sandbox/#mock-inbox-vendors) (`<url>/inboxkit`, `<url>/mailforge`) instead of the real vendors. Ignored unless `APP_ENV` is `dev` | unset |
-| `TYPESAFE_API_KEY` | TypeSafe API key. Turns on the typed judgments: reply classification, the copy judgment in the Advisor and the editor, warmup content review (otherwise performed by OpenAI when its generator is configured), bounce classification, import column mapping and per-form triage. Inbox tagging needs the switch below as well. See [data control](/development/data-control/#typesafe-judgments) for what each one sends | unset |
+| `TYPESAFE_API_KEY` | TypeSafe API key. Turns on the typed judgments: reply classification, the copy judgment in the editor, warmup content review (otherwise performed by OpenAI when its generator is configured), bounce classification, import column mapping and per-form triage. Inbox tagging needs the switch below as well. See [data control](/development/data-control/#typesafe-judgments) for what each one sends | unset |
 | `TYPESAFE_ENDPOINT` | URL the TypeSafe judgments are posted to, for a regional or proxied TypeSafe endpoint. Read by the backend, the consumer and `warmblyctl inbox-tag`; has no effect without `TYPESAFE_API_KEY`. Must be `https`, except `http` to a loopback or private-network host; any other value stops the service at startup | `https://api.typesafe.ai/v1/systemone` |
 | `INBOX_TAGGING_ENABLED` | `true` enables automatic inbox tagging when `TYPESAFE_API_KEY` is also set. Message subject, current body, and the previous outbound body are sent to TypeSafe | `false` |
 
@@ -869,7 +885,30 @@ The OpenAI-compatible agent loop also handles catalogs larger than 128 tools aut
 
 Set these on the backend and the consumer.
 
+A reader answers from its own network, so it can follow a site's redirect to anything that network reaches. Warmbly refuses a page when the reader reports it landed on a private address (Jina and Crawl4AI report where they landed; DDGS and most custom readers do not), and it only hands a reader pages on public addresses. Run a self-hosted reader where it cannot reach your private services.
+
+Workspaces can also bring their own: a Jina AI key under Integrations gives that workspace's lead finder Jina Reader and Jina Search, and a tool on a connected MCP server can be picked as the workspace's web search. See [the lead finder](/guides/lead-finder/#when-a-site-turns-the-finder-away).
+
 Automatic inbox tagging is read by the backend, consumer, and `warmblyctl`. Both inbox-tagging variables are required; a key by itself does not start classification. See [Automatic inbox tagging](/guides/inbox-tagging/).
+
+## Lead finder
+
+The [lead finder](/guides/lead-finder/) works with nothing set: OpenStreetMap through public Overpass servers, Komoot's public Photon geocoder for typed locations, and OpenFreeMap's keyless vector tiles for the map. Every variable here is optional and read by the backend.
+
+| Variable | What it does | Default |
+|---|---|---|
+| `LEAD_FINDER_OVERPASS_URL` | Overpass endpoints for OpenStreetMap searches, separated by commas and tried in order when one is busy. Point it at your own Overpass for dependable searches; the public ones are shared and often at capacity | `overpass-api.de`, `overpass.private.coffee` and `maps.mail.ru` mirrors |
+| `LEAD_FINDER_GEOCODER_URL` | A Photon-compatible `/api` endpoint for the **Where** box | `https://photon.komoot.io/api` |
+| `LEAD_FINDER_MAP_STYLE_URL`, `LEAD_FINDER_MAP_STYLE_DARK_URL` | MapLibre style JSON for the map in light and dark themes. The **Streets** style is offered only with the default styles | OpenFreeMap `positron` and `dark` |
+| `LEAD_FINDER_GOOGLE_PLACES_API_KEY` | An instance-wide Google Maps Platform key with Places API (New). Every workspace without its own Google Places connection can then search Google, at one credit a page | unset |
+| `LEAD_FINDER_FOURSQUARE_API_KEY` | An instance-wide Foursquare service key, used the same way | unset |
+| `LEAD_FINDER_OUTSCRAPER_API_KEY` | An instance-wide Outscraper key, used the same way | unset |
+
+A workspace's own key, connected under Integrations, always takes precedence over the instance's and costs no credits.
+
+The dashboard's content security policy allows `https://tiles.openfreemap.org`. A map style served from anywhere else, including your own tile server, also needs its origin (and the origins of its tiles, sprites and glyphs) in `WARMBLY_CSP_CONNECT_ORIGINS` on the web container, or the map stays blank.
+
+Reading websites for emails runs from the backend, opens only public addresses on ports 80 and 443, and identifies itself as `WarmblyBot/1.0`. See [data control](/development/data-control/#outbound-calls) for every call the lead finder makes.
 
 ## Tasks and billing
 
@@ -885,20 +924,122 @@ Per-mailbox `test_mode`, `test_send_enabled` and `test_receive_enabled` separate
 | `SEND_PLAN_SNAPSHOT_MAX_AGE` | How old a stored send plan may be before it counts as out of date. An out-of-date plan is still served, with `stale: true`, while a fresh one is computed in the background | three times `SEND_PLAN_SNAPSHOT_INTERVAL` (`3m`) |
 | `BILLING_PROVIDER` | `none` (every feature unlocked, no trial expiry; the dashboard reports the workspace as self-hosted rather than on a free tier and hides billing) or `stripe` | `none` |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PUBLISHABLE_KEY` | Required together when `BILLING_PROVIDER=stripe`. The backend exits at boot if any is missing | unset |
+| `DUB_API_KEY` | Read by the backend. Turns on the backend half of partner-program attribution through [Dub](https://dub.co), for the hosted service. Unset, the backend stores no referral and reports nothing to Dub, and a signup carrying a partner click is handled like any other. Whether the marketing site sends clicks to Dub is decided separately, by `PUBLIC_PARTNER_LINK_DOMAIN`. See [partner program](#partner-program), which also covers the site's `PUBLIC_PARTNER_LINK_DOMAIN` | unset |
 
 The local task dispatcher runs at most eight handlers at once, lowered to one third of the backend's effective Postgres pool ceiling with a minimum of one. This leaves room for API requests and reconciliation. Work beyond that limit stays pending in Postgres without a dispatch attempt or failure stamp. The ceiling applies across polling rounds, not separately to each batch, and does not change sending authority or unknown-outcome protections.
 
-Stripe Tax also needs account-side setup. In **Tax > Settings**, confirm the head office address, use the business-use SaaS product tax code (`txcd_10103001`) as the default, and choose whether prices include tax or have tax added at checkout. Apply the same tax code and an explicit tax behavior to every subscription and credit-pack product and price. A price set to inclusive or exclusive cannot be changed later, so replacing that choice requires a new Price and an update to the matching plan or `STRIPE_CREDIT_PACK_*_PRICE_ID` value.
+Stripe Tax also needs account-side setup. In **Tax > Settings**, confirm the head office address, use the business-use SaaS product tax code (`txcd_10103001`) as the default, and choose whether prices include tax or have tax added at checkout. Apply the same tax code and an explicit tax behavior to every subscription product and price. A price set to inclusive or exclusive cannot be changed later, so replacing that choice requires a new Price and an update to the matching plan. Money added to a workspace balance needs no product or price in Stripe: each payment is billed as an invoice, or a Checkout line, created for the amount. The `STRIPE_CREDIT_PACK_*_PRICE_ID` variables are no longer read and can be removed.
 
 Add a Tax registration only after the business is registered with that tax authority. Automatic tax returns zero with a `not_collecting` reason in jurisdictions where no active registration applies. Enabling Stripe Tax is not a substitute for registering or filing.
 
 Stripe Checkout always requests the billing address needed for tax and lets business buyers provide a legal name and business tax ID. The active default billing portal configuration must allow updates to payment methods, billing email, billing address, name, and tax ID, and must show invoice history. This lets a customer correct its tax location or registration before a renewal.
 
-Point the webhook endpoint at `/webhook/stripe` using API version `2026-08-26.dahlia`, matching stripe-go v86. Subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.expired`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `invoice.finalization_failed`, `payment_intent.succeeded` and `charge.refunded`. If you replace the endpoint, update `STRIPE_WEBHOOK_SECRET` to the new endpoint's signing secret before disabling the old endpoint. The handler accepts the previous webhook shape during an endpoint upgrade, but new endpoints should use the matching version.
+Point the webhook endpoint at `/webhook/stripe` using API version `2026-08-26.dahlia`, matching stripe-go v86. Subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.expired`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `invoice.finalization_failed`, `payment_intent.succeeded`, `charge.refunded` and `setup_intent.succeeded`. The last one makes a card saved in the mailbox checkout the workspace's default and retries anything unpaid at once; without it the newest saved card is still used. If you replace the endpoint, update `STRIPE_WEBHOOK_SECRET` to the new endpoint's signing secret before disabling the old endpoint. The handler accepts the previous webhook shape during an endpoint upgrade, but new endpoints should use the matching version.
 
 Turning on Stripe Tax does not update existing subscriptions. Review and migrate them from **Tax > Migrations** after setting the prices' tax behavior. Stripe applies the tax change from the next billing cycle without prorating it. The Dashboard migration does not operate on sandbox subscriptions, so update those individually when testing.
 
 Delayed sends run through the local poller, so the backend must be running for scheduled work to fire.
+
+### Partner program
+
+Warmbly Cloud runs its affiliate program on Dub Partners. A self-host needs none of this and should leave both settings unset.
+
+| Variable | Read by | What it does | Default |
+|---|---|---|---|
+| `DUB_API_KEY` | backend | Reports partner-referred signups to Dub and tags their subscription checkouts | unset |
+| `PUBLIC_PARTNER_LINK_DOMAIN` | `site/` build | The Dub link domain partner links belong to, such as `go.warmbly.com`. Set, `?via=<partner>` on any page of the site records a click; build-time, so unset produces a site with no partner-click code and a CSP that allows no Dub host | unset |
+
+A partner shares `https://warmbly.com/?via=<partner>`. The site posts the link key to Dub's `/track/click` from the visitor's browser (the only request that goes to Dub), then replaces `via` with the returned click id as `wb_click` in the address bar and carries it in its links to signup. Nothing is stored in the browser: a signup on a later visit that did not come through the partner's link is not credited, unless that visit opens an address still carrying `wb_click` (a bookmark or a copied link). A Dub short link on the same domain also works: Dub appends `dub_id`, which the site renames to `wb_click` the same way.
+
+With `DUB_API_KEY` set, the backend does two things, and Dub does the rest:
+
+- When a signup carries a click id, the new workspace is stored in `organization_partner_referrals` and reported to Dub's `POST /track/lead` as event `Sign up`. The customer's external id is the organization id, and the owner's email and name are sent with it so Dub's risk checks can catch self-referrals. This applies to password signups and to signups through Google, Apple or OIDC.
+- A subscription Checkout Session for that workspace carries `dubCustomerExternalId` in its metadata. A report that failed at signup is retried first.
+
+Dub's Stripe app then reads the payments from the Stripe account: each paid invoice becomes a sale, a refund voids its commission, a dispute holds it, and a cancelled subscription stops producing invoices. Commission rates, durations, payout holds and partner terms live in Dub, not in Warmbly.
+
+The key is a Dub workspace API key with conversion tracking write access. Rotate it in Dub and restart the backend; nothing stored depends on it. The referral table never travels with a [workspace export](/guides/workspace-export-import/), because the click and the customer belong to this instance's Dub workspace.
+
+## Domain and mailbox store
+
+The [Buy mailboxes](/guides/buy-mailboxes/) store lets workspaces buy domains and Google Workspace or Microsoft 365 mailboxes in the dashboard. It is fulfilled through the GraphKit infrastructure API: an operator with a GraphKit partner account gives the backend its API key, and GraphKit registers the domains, publishes their mail records and provisions the mailboxes. The API key is the only requirement. Add it in the admin panel, or set `GRAPHKIT_API_KEY`; with neither, the store is off and nothing is ever called. An existing self-host is unaffected by upgrading.
+
+While no key is configured, `GET /store/status` answers `enabled: false` with `reason: not_configured`, every other store route answers `404` `store_disabled`, and the dashboard shows buying as locked: **Add account** lists **Buy new mailboxes** with a lock, and the buy page says a GraphKit API key is needed. An instance admin holding `manage_settings` sees a button to the admin panel there (when [`ADMIN_URL`](#addresses) is known); everyone else is asked to send their operator a note. A workspace a partner manages never shows it. This locked state is self-host only: with `DEPLOYMENT_MODE=cloud` the status carries `locked: false` and the dashboard shows no store until a key is added.
+
+### Adding the key in the admin panel
+
+Open **Setup and health > Integrations** in the admin panel. The **Domains and mailboxes (GraphKit)** card takes:
+
+- **API key**, required: the partner key (`gk_live_...`, or `gk_test_...` against GraphKit's sandbox).
+- **Webhook secret**, optional: the signing secret of the webhook endpoint you register with GraphKit. The card shows the URL to register, `<backend public address>/v1/webhooks/graphkit` (from `BACKEND_PUBLIC_URL`, else `API_PUBLIC_URL`), with a copy button.
+- **API URL**, optional: `https://api.graphkit.com/v1/infrastructure` unless GraphKit gave you another. It must be `https`. A stored key is only sent to the URL it was saved with, so changing the URL means entering the API key again; testing or saving a new URL with the key left blank answers `400` `graphkit_key_reentry_required`.
+
+**Test connection** asks GraphKit for the partner balance and the price list with what you typed and saves nothing; it shows whether the key is live or test, the balance, and the `.com` price. **Save** runs the same check, refuses a key GraphKit does not accept, and then turns the store on at once, with no restart. **Disconnect** deletes the stored key and secrets and turns the store off at once. Purchases already made stay recorded and resume with the next key. Other backend replicas pick a change up within 30 seconds.
+
+The key and the secrets are write-only: the card and `GET /admin/store/connection` only say whether each is set. They are stored sealed under `CREDENTIALS_ENCRYPTION_KEY` in the `store_graphkit_connection` table, so saving is refused (`409` `store_sealing_unavailable`) on an instance without that key, and a key rotation reseals them like every other instance secret. A new webhook secret keeps the previous one verifying for 24 hours from the save, matching GraphKit's own overlap, so rotating it does not drop deliveries. After that only the current secret verifies. They are never logged, and the audit log records `store_connection_saved` and `store_connection_removed` without them.
+
+The routes behind the card need the `manage_settings` admin permission, and every change needs a recent confirmation of your identity: `GET`, `PUT` and `DELETE /admin/store/connection`, and `POST /admin/store/connection/test`.
+
+**The environment wins.** When `GRAPHKIT_API_KEY` is set (or `GRAPHKIT_API_URL=fake`), the card shows **Configured by the environment** read-only, and saving, testing or disconnecting there answers `409` `store_configured_by_environment`. A key saved in the panel is kept but unused until the variables are removed.
+
+### Purchases with no key
+
+If the key is removed while purchased mailboxes or unexpired domains exist, their renewals, monthly billing and Google mailbox connections are paused until a key is configured again. The backend logs a warning at boot, **Setup and health** lists an error (`store_purchases_without_graphkit`) with the counts, and each affected workspace sees a banner on its **Purchased** domains tab and in its purchased mailboxes' drawers. Their purchases stay listed. A Google mailbox whose access comes through GraphKit's token broker stops syncing and sending until then.
+
+### Pausing new purchases
+
+**Instance > Configuration > Settings > Domains and mailboxes > Pause new purchases** (`store.sales_paused`) stops the instance selling new domains and mailboxes without disconnecting GraphKit. It is off by default and takes effect within 30 seconds, with no restart.
+
+While it is on:
+
+- `POST /store/quotes` and `POST /store/domains/connect` answer `503` `store_sales_paused`, and so does `POST /store/orders` for a quote that has not made an order yet. A retry of an order that was already placed still finishes it.
+- `GET /store/status` keeps answering `enabled: true` and adds `sales_paused: true`.
+- In the dashboard, **Add account** keeps the **Buy new mailboxes** row, marked **Paused**, with the line "Will be available again soon", and it opens nothing. The buy page says the same, and the buy buttons elsewhere are not shown. **Orders** and every order already placed stay reachable.
+- Everything already bought is unaffected: domains renew, mailboxes are billed and connected, DNS, cancelling and resuming all work. [Social accounts](/guides/social/) are not part of the pause.
+
+Turning it off puts buying back as it was. A backend from before this setting ignores it and keeps selling, so finish the rollout before relying on it.
+
+### Rolling back
+
+The store and the partner API are off until an operator adds a key or a partner, so an instance that never turned them on has no purchased mailboxes and can roll back as before.
+
+Once purchases exist, the release that introduced the store is the oldest one you can roll back to without an interruption. An older release does not know about purchased grants. On it, a Google mailbox whose access comes through GraphKit's token broker stops syncing and sending, and its grant shows as not working. Purchases, billing records, Microsoft mailboxes and Google mailboxes connected through this instance's own service account carry on. Nothing is lost: when you roll forward again, the hourly grant check marks every purchased grant active again and reconnects each of its mailboxes that the token broker still reaches. To speed that up, open the grant in Settings and choose **Check again**.
+
+### Environment variables
+
+| Variable | What it does | Default |
+|---|---|---|
+| `GRAPHKIT_API_KEY` | The partner API key (`gk_live_...`, or `gk_test_...` against a sandbox). Setting it turns the store on. With `APP_ENV=development`, a `gk_test_` key is treated like the simulator when a Google mailbox connects: sandbox tokens are opaque placeholders, so the backend skips the Gmail check it makes on a real token. Outside development the check always runs | unset |
+| `GRAPHKIT_API_URL` | The infrastructure API's base URL. `fake` selects an in-process simulator that needs no key, for tests, `make dev`, the sandbox and proof recordings: search, quotes, orders whose steps finish over about 20 seconds, renewals and cancellation, with nothing bought. `make backend` sets `fake` unless you pass another value. The backend refuses to boot with `fake` unless `APP_ENV=development` | `https://api.graphkit.com/v1/infrastructure` |
+| `GRAPHKIT_WEBHOOK_SECRET` | The signing secret of the webhook endpoint you registered with GraphKit. Signed events are posted to `/v1/webhooks/graphkit` on the backend's public address; anything not signed with this secret (or the previous one), or more than five minutes old, is refused with `401`. With the store off the route answers `404` | unset |
+| `GRAPHKIT_WEBHOOK_SECRET_PREVIOUS` | The secret before a rotation, accepted alongside the current one for as long as it is set. Set it when you rotate, and remove it once the 24-hour overlap has passed and GraphKit signs only with the new secret | unset |
+
+The webhook endpoint is not registered for you. In your GraphKit partner account, add `https://<backend public address>/v1/webhooks/graphkit` as the endpoint, then paste the secret GraphKit gives you into the admin card, or set it as `GRAPHKIT_WEBHOOK_SECRET` and restart the backend. The secret is stable: GraphKit returns the same one every time the endpoint is registered or updated, so registering it again does not change it. Only a rotation does. When you rotate, GraphKit keeps signing with the old secret alongside the new one for 24 hours: move the old value to `GRAPHKIT_WEBHOOK_SECRET_PREVIOUS`, set the new one as `GRAPHKIT_WEBHOOK_SECRET`, restart, and clear the previous one after the overlap.
+
+Webhooks only make updates arrive sooner. The store's two loops run in the backend, not the consumer, because connecting a mailbox needs the backend's mailbox, delegation and billing services; with several backend replicas, one runs each loop at a time. `store_reconcile` runs every minute: it reads GraphKit's event feed (its cursor is kept in the database), refreshes any order still processing after two minutes, places or refunds an order left `charging` when GraphKit did not answer the charge, and connects mailboxes that are waiting. `store_billing` runs hourly: renewal notices, renewal charges, monthly mailbox charges and their retries. So an order never stalls on a missed delivery, and an instance that cannot receive webhooks (one with no public address) still works with `GRAPHKIT_WEBHOOK_SECRET` unset.
+
+Purchased mailboxes connect on their own, with warmup started on the workspace's defaults where its plan includes warmup:
+
+- **Google.** The mailbox is connected as a delegated mailbox under a grant marked as purchased, in one of two ways:
+  - **Through this instance's service account**, when `GOOGLE_WORKSPACE_DELEGATION_KEY` (or `_FILE`) is set, as for [whole-domain connects](#whole-domain-connects). The backend registers the key's `client_id` with GraphKit at boot and daily, with every scope a delegated mailbox and its grant check use, including the directory scope, and GraphKit authorizes it for domain-wide delegation in every purchased Workspace. The grant reads through the domain's admin mailbox, like any administrator's grant, and its **Users** picker in Settings works.
+  - **Through GraphKit's token broker** otherwise. Each mailbox's access tokens are minted by GraphKit, limited to the Gmail scopes a purchased mailbox runs on, which the backend registers per workspace. No service account is needed. A brokered grant cannot list its directory, so the grant's **Users** picker does not work for it; the store connects its mailboxes instead.
+- **Microsoft.** The mailbox is connected through the instance's own Microsoft application with a grant on the domain's tenant, so it needs `BOX_OUTLOOK_CLIENT_ID` and `BOX_OUTLOOK_CLIENT_SECRET`, with the app registration set up as for [whole-domain connects](#whole-domain-connects). The backend sends GraphKit the app id and the `Mail.ReadWrite`, `Mail.Send` and `User.Read.All` permissions at boot and daily.
+- **Otherwise**, a purchased mailbox connects over IMAP and SMTP, with credentials fetched once and sealed like any other mailbox password (an app password on Google). Microsoft has turned off password IMAP for most tenants, so on Microsoft this fallback usually fails.
+
+A connection that fails is retried up to five times with a growing wait; after that the workspace sees the mailbox as failed to connect, with a neutral message.
+
+Creating Google Workspace and Microsoft 365 mailboxes can take from a few hours to a couple of days at the provider. The order's `mailboxes` step stays running meanwhile and the reconciler carries the rest on; members are notified when the order completes.
+
+When GraphKit refuses this instance's partner account itself (the partner is suspended, `GRAPHKIT_API_KEY` is refused, or the partner balance is too low for orders and renewals), every workspace sees the store as unavailable (`503` `store_unavailable`, with nothing charged) and never the cause. The operator is told instead, through the `store.unavailable` [operator notification](/development/operator-notifications/), at most once an hour per cause, and the backend logs the same summary.
+
+With `BILLING_PROVIDER=stripe`, buying also needs a paid plan (`402` `plan_required` without one), and a workspace whose plan ends keeps its purchased mailboxes and the unified inbox while campaign sending and warmup follow the usual plan gates and the mailboxes keep billing. With `BILLING_PROVIDER=none` there is no plan gate and `GET /store/status` always reports `plan_active: true`. Workspaces a partner manages buy through the partner and see the store as off.
+
+What workspaces pay is decided by `BILLING_PROVIDER`:
+
+- **`stripe` (Warmbly Cloud, or a self-host that bills its users).** Each purchase, renewal and monthly mailbox charge is taken from the workspace balance, with the saved card covering a shortfall at checkout. Retail prices are the three `store.*` [settings stored in the database](#settings-stored-in-the-database). The partner balance at GraphKit pays GraphKit.
+- **`none` (the self-host default).** Workspaces are charged nothing. The operator's own GraphKit partner balance pays for every domain and mailbox anyone on the instance buys, so enable the store only where you are willing to pay for what members order.
+
+Purchased domains and mailbox subscriptions belong to this instance's partner account and do not travel in a [workspace export](/guides/workspace-export-import/). See [data control](/development/data-control/#purchased-domains-and-mailboxes) for what is stored.
 
 ## Observability
 
@@ -1040,6 +1181,57 @@ The public face of hosted forms (`cmd/forms`): it serves the React (TanStack) fo
 | `WARMBLY_SENTRY_DSN` | The Sentry half of the same stamping | unset |
 | `TRUSTED_PROXIES` | CIDRs whose `X-Forwarded-For` the service believes, same convention as the backend. Empty trusts nothing and uses the socket peer; set it behind a reverse proxy or the submit limiter throttles the proxy's address instead of the visitor's | empty |
 
+## Portal service
+
+The portal service serves what an agency's clients open: [client connect pages](/guides/agencies/#client-connect-links), [shared reports](/guides/client-reports/) and the `/embed.js` loader that puts either on a website. Its source is `portal/worker`, and it serves the page app built from `portal/`. It answers two kinds of host:
+
+- the shared address, `PORTAL_DOMAIN`: connect links and reports of any workspace, and nothing else. Every other path answers "not found"
+- every verified agency [portal domain](/guides/white-label/#your-own-domain): that agency's clients' connect links and reports, and the dashboard from `DASHBOARD_ORIGIN` on every other path. Any other host answers `404`, or goes to `FALLBACK_ORIGIN` when that is set
+
+It holds no database and no secret beyond `PORTAL_EDGE_TOKEN`: it asks the backend whether a host is a verified portal domain and resolves every link through the backend's internal portal routes. Connect links and report links need it. Without `PORTAL_DOMAIN` the backend mints neither and every other feature works as before.
+
+On Warmbly Cloud it is a Cloudflare Worker (see [above](#agency-portal-domains-behind-cloudflare-for-saas)). A self-hosted instance runs the same code as its own `portal` container, `ghcr.io/warmbly/warmbly/portal`, published with every release beside the other images. The image runs it on [workerd](https://github.com/cloudflare/workerd), the open-source runtime Cloudflare Workers run on, as a non-root user, listening on port `8095`. The [installer](/development/install/), the bundled `docker-compose.yml` and the [Coolify](/development/coolify/) compose file all include it. It reads its own environment:
+
+| Variable | What it does | Default |
+|---|---|---|
+| `API_ORIGIN` | Where it reaches the backend, as an `http(s)` origin such as `https://api.example.com` or `http://backend:8080`. **Required**: unset, it serves nothing | none |
+| `PORTAL_DOMAIN` | The same value the backend reads. **Required**: unset, it serves nothing | none |
+| `PORTAL_EDGE_TOKEN` | Its bearer token for the backend, the same value as the backend's. At least 32 characters; a shorter one answers `503` everywhere. **Required** | none |
+| `DASHBOARD_ORIGIN` | Where the dashboard build is served from, as an `http(s)` origin such as the Pages origin or `http://web:80`. Unset, a portal domain serves connect links and reports only | unset |
+| `CLIENT_IP_HEADER` | The header naming the visitor's address, for the per-visitor budgets and the address passed to the backend. Behind a proxy that appends, the last entry counts. The compose files set `X-Forwarded-For` | `CF-Connecting-IP` |
+| `FALLBACK_ORIGIN` | A plain `http://` origin, such as `http://tracking:3000`, that receives every request for a host that is neither `PORTAL_DOMAIN` nor a verified portal domain, with its method, path, query, headers, body and `Host` unchanged, and whose answer is returned as it is. A failed portal lookup still answers `503` and is never passed on. With `PORTAL_DOMAIN` or `PORTAL_EDGE_TOKEN` unset, every request is passed on. The compose files set `http://tracking:3000`; Warmbly Cloud leaves it unset | unset |
+
+`FALLBACK_ORIGIN` is what lets one proxy rule send every customer-owned domain through the portal. The installer's Caddyfile sends a custom domain's tracking paths (`/t/`, `/c/`, `/tracking.js`, `/p`, `/unsubscribe/`) to the tracking service and its form paths (`/f/`, `/forms.js`, `/api/forms/`) to the forms service, as before, and everything else to the portal. The portal serves an agency portal domain itself and hands any other host, such as a custom tracking domain's root or a [root redirect](/guides/sending-domains/#root-redirects), to tracking unchanged, so those answer exactly as they did before the portal existed.
+
+Per visitor and minute it allows 30 connect link lookups, 10 sign-in starts or server-details submits, 60 sign-in result polls and 60 report reads, counted by the platform's rate-limit bindings when it has them (`CONNECT_VIEWS`, `CONNECT_ACTIONS`, `CONNECT_POLLS`, `REPORT_VIEWS`) and in the process otherwise. The backend also limits attempts per link.
+
+The backend side:
+
+| Variable | What it does | Default | Restart needed |
+|---|---|---|---|
+| `PORTAL_EDGE_TOKEN` | The bearer token the portal service presents. It opens only the internal routes the portal service calls (the portal lookup, connect links and shared reports), and no other token opens them, `INTERNAL_API_TOKEN` included. At least 32 characters: the backend refuses to start with a shorter value. Treat it as a secret. `PORTAL_EDGE_PREVIOUS_TOKENS` and `PORTAL_EDGE_PREVIOUS_UNTIL` keep a replaced value working until a cutoff, like the [internal token overlap](#rotate-instance-keys). Unset, those routes open for nobody | unset | yes |
+
+### The dashboard on a portal domain
+
+For the dashboard an agency's portal domain serves (see [white-label](/guides/white-label/#the-dashboard-on-your-portal-domain)):
+
+1. Set `DASHBOARD_ORIGIN` on the portal service.
+2. Keep `CHECK_ORIGIN_HOSTS` set on the realtime service (the installer sets it for a domain install). Portal origins are only added to a configured list.
+3. The dashboard's `WARMBLY_API_URL` must be an absolute URL, such as `https://api.example.com`, because the dashboard on a portal domain calls the API on its own address.
+4. For the security check on portal sign-in, set `TURNSTILE_SITE_KEY` on the backend and list the API's hostname for that site key in Cloudflare (see [captcha](#captcha)).
+
+### Upgrading a self-hosted instance
+
+The portal is optional, and an instance upgraded without it keeps working: connect links and report links are refused (`client_links_unavailable`, `report_links_unavailable`) until both `PORTAL_DOMAIN` and the portal container exist, and nothing else changes. To turn it on:
+
+- **Installed with `install.sh`**: run the installer again. It adds the `portal` service, `PORTAL_DOMAIN` (`portal.<host>` by default) and a generated `PORTAL_EDGE_TOKEN` to an existing install without touching any other value, and the regenerated Caddyfile adds the portal's site block. Point the portal host's DNS at the machine. The admin panel's **Update and restart** pins a release and pulls it but does not regenerate the compose file, so it does not add the portal on its own.
+- **The bundled `docker-compose.yml`**: it already lists the `portal` service. Set `PORTAL_DOMAIN` and `PORTAL_EDGE_TOKEN` (`openssl rand -hex 32`) in `.env`, run `docker compose up -d`, and route the portal host to port `8095` with its `Host` header kept. With both unset the container serves nothing itself and passes every request to `FALLBACK_ORIGIN`.
+- **Coolify**: set the same two variables and give the `portal` service the portal host on port `8095`.
+
+The backend reads `PORTAL_DOMAIN` per request and `PORTAL_EDGE_TOKEN` at start, so it needs a restart after the token is set; `docker compose up -d` recreates it when `.env` changes. Start the portal before or with the backend that has `PORTAL_DOMAIN`, because links are built on that address from the first request. During a rolling update the order does not matter otherwise: a backend from before the portal ignores both variables and builds no link, so a new portal in front of it has nothing to serve and passes every other host to `FALLBACK_ORIGIN` as before.
+
+The on-demand certificate check (`/tls/authorize`) answers yes for `PORTAL_DOMAIN` and every verified portal domain. The API accepts cross-origin calls, and OAuth sign-ins return, only for portal domains that are verified at the time, checked against the database and cached for at most two minutes.
+
 ## Tracking service
 
 The Rust open and click service. It reads its own environment, so these have to be set on that container, and none of them appear in the admin panel.
@@ -1098,7 +1290,7 @@ The Elixir websocket service. Its runtime configuration is read only when the re
 | `REDIS_URL` | The Redis bridge the backend publishes events onto | `redis://localhost:6379/0` |
 | `PHX_HOST` | The service's own hostname | `localhost` |
 | `PORT` | Listen port | `4000` |
-| `CHECK_ORIGIN_HOSTS` | Origins a browser may open a socket from, comma separated, e.g. `https://app.example.com,https://admin.example.com`. Not this service's own host | unset |
+| `CHECK_ORIGIN_HOSTS` | Origins a browser may open a socket from, comma separated, e.g. `https://app.example.com,https://admin.example.com`. Not this service's own host. With it set, the `https` origin of any verified agency portal domain is accepted as well, looked up in Postgres and cached for two minutes | unset |
 | `CHECK_ORIGIN` | Legacy host-based form, consulted only when `CHECK_ORIGIN_HOSTS` is empty. `true` accepts an upgrade only from `PHX_HOST` | `false` |
 | `REALTIME_ALLOW_QUERY_CREDENTIALS` | `true` accepts an API key or OAuth token in the socket URL's `token` parameter, for an older client that cannot send the `x-warmbly-token` header. URLs reach proxy and access logs, so leave it off unless such a client still depends on it; the realtime service logs a warning at boot while it is on. Read in every environment, not only `prod` | `false` |
 | `PUBSUB_ENABLED` | `true` swaps the Redis bridge for Google Pub/Sub | `false` |
@@ -1133,11 +1325,13 @@ These are the only settings a browser can change, and no environment variable ow
 | `sync.backfill_messages` | integer, 1 to 100000 | `5000` | The most messages that import stores per mailbox |
 | `sync.daily_messages_per_mailbox` | integer, 1 to 100000 | `2000` | New (live) messages one mailbox may store per UTC day. Over it, mail waits for the next day; replies to the mailbox's own sends have a separate budget of the same size |
 | `sync.daily_messages_per_org` | integer, 1 to 2000000 | `25000` | New plus imported messages one organization may store per UTC day |
+| `sync.full_check_min_minutes` | integer, 5 to 180 | `15` | How often a mailbox gets a full check of every followed folder when its workspace holds a quarter of its plan's mailbox allowance or less, or has no mailbox limit |
+| `sync.full_check_max_minutes` | integer, 5 to 180 | `60` | How often a mailbox gets a full check when its workspace holds its whole allowance or more. In between, the interval is this value times mailboxes connected over the allowance, never below the minimum. A value below `sync.full_check_min_minutes` is raised to it. Placement-test seeds and pool-linked warmup mailboxes are checked every minute whatever these say. The instance health page reports a mailbox as stale after twice this interval without a complete check |
 | `retention.engagement_event_days` | integer, 1 to 3650 | `365` | How long the per-event open and click logs (client, device, approximate location) are kept. Campaign progress keeps its own summary that outlives them, so counts, filters and branching never change |
 | `retention.form_event_days` | integer, 1 to 3650 | `180` | How long form funnel events (views, starts, field-level drop-off) are kept. Funnel reports range up to 90 days, so anything shorter shortens the report too |
 | `retention.audit_log_days` | integer, 1 to 3650 | `90` | How long the audit trail is kept. It carries IP addresses, user agents and change payloads, so this is also how long that data is held |
 | `retention.warmup_mail_days` | integer, 3 to 3650 | `30` | How long warmup mail stays in each mailbox before Warmbly deletes it, wherever the mailbox's filing setting keeps it (Trash on Gmail), with the stored copy of its body. A mailbox can set its own window on the Warmup tab of its drawer or through `warmup_retention_days` on the API; this is what every other mailbox follows. The floor leaves room for the engagement and for a reply in the thread to finish |
-| `retention.warmup_event_days` | integer, 30 to 3650 | `365` | How long the per-message warmup records (tokens, receipts, tampering events, spam reports, warmup thread turns, and a linked instance's closed commands and reported arrivals) are kept. The pool health bands read the last 30 days, which is the floor. The daily sent and received counts behind the warmup analytics are separate and never pruned |
+| `retention.warmup_event_days` | integer, 30 to 3650 | `365` | How long the per-message warmup records (tokens, receipts, tampering events, spam reports, warmup thread turns, and linked instances' retired warmup commands and reports) are kept. The pool health bands read the last 30 days, which is the floor. The daily sent and received counts behind the warmup analytics are separate and never pruned |
 | `retention.campaign_log_days` | integer, 0 to 3650 | `0` | How long each campaign's activity feed keeps an entry. `0` keeps every entry. Campaign stats, progress and sent mail are separate and unaffected |
 | `retention.notification_days` | integer, 0 to 3650 | `0` | How long in-app notifications are kept, read or unread. `0` keeps them all. One still waiting to be emailed is kept until it is sent or skipped |
 | `retention.webhook_delivery_days` | integer, 0 to 3650 | `0` | How long a settled webhook delivery (delivered or abandoned) stays in its endpoint's delivery log. `0` keeps them all. A delivery still being retried is kept until it settles, and one past this window can no longer be redelivered |
@@ -1146,18 +1340,31 @@ These are the only settings a browser can change, and no environment variable ow
 | `tracking.machine_window_probable_seconds` | integer, 1 to 86400 | `600` | The window used instead of the two above when the tracking service recognised the source as a mail-security network that also renders clicked pages for people, which Proofpoint, Mimecast and Cisco do through browser isolation. Such a match cannot settle whether a person is behind the request, so it widens the window rather than deciding: inside it the event is the delivery-time scan, past it the recipient who got to the mail later. Never applied shorter than the window for the kind of event in hand, so naming a network can only ever catch more scans. Its ceiling reaches a day because how long a vendor takes to detonate a link is the vendor's property, not the instance's |
 | `deliverability.enforce_domain_auth` | boolean | `true` | Whether a sending domain that fails SPF or DMARC stops cold campaign sending and warmup sending from every mailbox on it. Off keeps the check running and still shows the state and the Advisor card, it just never blocks |
 | `deliverability.auth_grace_hours` | integer, 1 to 720 | `72` | How long a domain must stay failing before the gate applies. The clock starts when the background check first sees the failure, so this is also how much warning the owner gets |
+| `mailbox_signin.auto_vendor_reconnect` | boolean | `true` | Whether Warmbly has an inbox vendor that can sign in for it (InboxKit, Zapmail) [reconnect its Google Workspace mailboxes automatically](/guides/mailboxes/#automatic-reconnect-for-vendor-mailboxes): those on an app password, on the older Google sign-in without full mail access or on a legacy domain grant, with no click. A mailbox keeps its current sign-in until the new one is proven, and keeps it if the reconnect fails. At most one request per mailbox is open, and a mailbox is not asked again for a week after one ends. Off leaves the reconnect to a member's click. Needs Google sign-in configured on the instance; without it nothing is asked |
 | `warmup_generation` | object | Existing saved model and generation policy, with generation enabled and bounded control defaults | Effective model, cadence, stop, daily reservation cap, available-capacity targets and canonical reply-count controls. Provider selection uses `AI_PROVIDER` and `AI_API_KEY` from the AI environment variables above. A mailbox does not see the same conversation again within 30 days in either role while unseen ones remain; optional refresh defaults off to preserve usable stock; legacy AI selection share is retained for rollback. See [all supported fields and defaults](/development/warmup-generation/) before editing; do not remove credentials while batches drain |
 | `placement.tests_per_month_trial` | integer, 1 to 100000 | `3` | How many free [placement tests](/guides/placement-tests/) a workspace on a free trial may run per calendar month on the instance seed panel. Only an instance running with `DEPLOYMENT_MODE=cloud` meters; a self-hosted instance never counts its own tests. Tests on a workspace's own seed inboxes are never counted |
-| `placement.tests_per_month_paid` | integer, 1 to 100000 | `40` | The same free allowance for a workspace on a paid plan. Past it, a test costs `placement.credits_per_test` credits |
+| `placement.tests_per_month_paid` | integer, 1 to 100000 | `40` | The same free allowance for a workspace on a paid plan. Past it, a test is charged to the workspace balance at `usage.units.placement_test` plus the markup |
 | `placement.seeds_per_test` | integer, 1 to 100 | `20` | The most seed inboxes one test sends to. Every copy is a send from the sending mailbox's daily limit, so this is also how much of that limit one test takes. A test is sized down to what the mailbox has left that day, and refused below five seeds |
 | `placement.spacing_seconds` | integer, 5 to 600 | `60` | The average gap between two copies of a test from one mailbox, varied by up to a third either way. A test started as quick uses the smaller of this and 8 seconds |
-| `placement.credits_per_test` | integer, 0 to 10000 | `25` | What a test on the instance panel costs in credits once a paid workspace has used its free tests for the month. The workspace agrees to the price before each paid test, and a test that delivers no copy is refunded. `0` turns paid tests off. Only an instance running with `DEPLOYMENT_MODE=cloud` meters, so a self-hosted instance never charges |
+| `placement.credits_per_test` | integer, 0 to 10000 | `25` | Legacy, kept for the previous release; the admin panel no longer edits it. The price of a paid test is now `usage.units.placement_test`. A stored `0` still turns paid tests off |
 | `placement.batch_senders_max` | integer, 1 to 100000 | `10000` | The most sending mailboxes one [placement batch](/guides/placement-tests/#testing-a-fleet-with-batches) may hold. An infrastructure safeguard on batch size only; how many run at once is the next setting |
 | `placement.batch_sender_concurrency` | integer, 1 to 500 | `20` | How many of one workspace's batch mailboxes may be sending their copies at the same time, across all its batches. The next mailbox starts when one has sent every copy; each mailbox keeps its own daily limit and minimum gap |
 | `placement.batch_instance_concurrency` | integer, 1 to 5000 | `200` | The same limit across every workspace together. It bounds how much batch mail the instance seed panel takes in at once, so a seed never receives enough in an hour to trip the sync flood rule, which deactivates a mailbox |
 | `placement.batch_starts_per_minute` | integer, 1 to 600 | `10` | How many mailboxes one batch starts per minute, so a large batch ramps up instead of starting its whole concurrency at once |
+| `store.mailbox_monthly_micros` | integer micro-USD, 0 to 100000000 ($0 to $100) | `3000000` | What a workspace pays per [purchased mailbox](/guides/buy-mailboxes/) per month, Google or Microsoft alike ($3.00 by default). Applies to quotes made after the change; a mailbox already bought keeps the price it was bought at. See [domain and mailbox store](#domain-and-mailbox-store) |
+| `store.domain_markup_percent` | integer, 0 to 500 (0 to 500%) | `0` | Added to the wholesale price of every domain, for registration and renewal |
+| `store.domain_markup_fixed_micros` | integer micro-USD, 0 to 100000000 ($0 to $100) | `0` | Added to every domain price after the percent. The retail price is wholesale times (1 + percent / 100) plus this, rounded up to the cent. With both markups at `0` the dashboard shows domains as sold at cost |
+| `store.mailbox_bill_lead_days` | integer, 2 to 10 | `5` | How many days before a workspace's monthly billing day all its mailboxes are charged together. Each mailbox is paid before GraphKit starts its next month, and a payment that keeps failing cancels the unpaid mailboxes at GraphKit a day before that month would start, so a longer lead gives a failed card more time to be fixed |
+| `store.min_card_charge_micros` | integer micro-USD, 500000 to 100000000 ($0.50 to $100) | `10000000` | The least a store charge puts on a card when the balance falls short. The card tops the balance up by at least this (or by the workspace's automatic reload amount when that is larger), the store charge comes out of the balance, and the rest stays there for the next one. Fewer, larger card charges cost less in card fees. No card is charged when the balance covers the charge |
+| `store.sales_paused` | boolean | `false` | Pauses new purchases: a new domain, new mailboxes, or connecting a domain for new mailboxes is refused with `503` `store_sales_paused`, and the dashboard says buying will be available again soon. Everything already bought keeps renewing, billing and connecting. See [pausing new purchases](#pausing-new-purchases) |
+| `store.social_seat_monthly_micros` | integer micro-USD, 0 to 500000000 ($0 to $500) | `49000000` | What a workspace pays per [connected social account](/guides/social/#pricing) per month, on any channel, on every plan but the agency ones ($49.00 by default) |
+| `store.social_seat_agency_micros` | integer micro-USD, 0 to 500000000 ($0 to $500) | `32000000` | The same on the Agency plan, and for its client workspaces ($32.00 by default) |
+| `store.social_seat_agency_pro_micros` | integer micro-USD, 0 to 500000000 ($0 to $500) | `19000000` | The same on the Agency Pro plan, and for its client workspaces ($19.00 by default) |
+| `usage.markup_percent` | integer, 0 to 500 | `25` | The markup added to every provider price when a workspace balance is charged. See [usage pricing](#usage-pricing) |
+| `usage.models` | list of `{model, input_per_mtok, output_per_mtok}` | Sonnet 4 class $3 / $15, Haiku 4 class $1 / $5, Claude 3.5 Haiku $0.80 / $4, `gpt-6-luna` $0.10 / $0.50, `*` $3 / $15 | Provider price per million input and output tokens, in dollars before the markup. A `*` row is required and is added back if missing |
+| `usage.units` | map of unit to dollars | `web_search` $0.01, `placement_test` $0.40, `lead_website_read` $0.016, `lead_person_email` $0.016, `lead_search_page` $0.032 | Provider price of one unit, in dollars before the markup. `0` for `placement_test` turns paid placement tests off |
 
-The four `sync.*` values are read by the backend when a mailbox is loaded onto a worker (on connect, on reassignment, and by the reconciler's periodic republish), so a change reaches every mailbox within 30 minutes without a restart (the republish gives each mailbox one turn per 30 minutes, spread out so no worker gets them all at once). The fixed pacing numbers around them (burst per five minutes, hourly, backfill pace, the flood threshold and the chronic-overage rule) are compiled constants listed under **Instance > Configuration > Effective limits**; see [Mailboxes](/guides/mailboxes/#what-gets-synced) for how the budgets behave. The four `sync.*` values also have a companion read view on **Operations > Sync**, which shows each mailbox's backfill progress and fair-use throttle against them and can clear a throttle or restart a backfill.
+The six `sync.*` values are read by the backend when a mailbox is loaded onto a worker (on connect, on reassignment, and by the reconciler's periodic republish), so a change reaches every mailbox within 30 minutes without a restart (the republish gives each mailbox one turn per 30 minutes, spread out so no worker gets them all at once). The fixed pacing numbers around them (burst per five minutes, hourly, backfill pace, the flood threshold and the chronic-overage rule) are compiled constants listed under **Instance > Configuration > Effective limits**; see [Mailboxes](/guides/mailboxes/#what-gets-synced) for how the budgets behave. The four budget values also have a companion read view on **Operations > Sync**, which shows each mailbox's backfill progress and fair-use throttle against them and can clear a throttle or restart a backfill.
 
 The eight `retention.*` values are read by the pruning sweeps on every pass, so shortening one takes effect on the next sweep rather than at the next restart. Deletion is permanent and there is no grace period: what already sits outside a shortened window goes on that sweep. The warmup mail window is the one that reaches into customers' mailboxes: the consumer retires each message and the worker holding the mailbox deletes it there, so shortening it empties the warmup folders of the whole instance down to the new window within a few hours. See [data control](/development/data-control/#what-is-kept-and-for-how-long) for what each log holds and what a shorter window costs.
 
@@ -1173,7 +1380,23 @@ The two `deliverability.*` values are read on every scheduling pass and every wa
 
 The `placement.*` allowance, seed and spacing values are read when a test starts, so a change applies to the next test and never to one already sending. The four `placement.batch_*` values are read on every pass of the batch runner, about every 30 seconds, so a change reaches running batches within a minute; lowering the concurrency never stops a mailbox already sending, it only delays the next start. A value of zero or below resolves to the default, and one above the range to its ceiling. Which mailboxes form the instance seed panel is not a setting: an administrator marks them from the admin panel.
 
+The mailbox and domain `store.*` values are read when a quote is made, so a change applies to the next quote and never to one a workspace is already paying from. The three `store.social_seat_*` prices are read when each month of a social account is charged, so a change applies to the next month of every account, at the price of the plan the workspace has on that day. A value outside its range is clamped to the nearest end rather than refused. They only charge anything on an instance that bills (`BILLING_PROVIDER=stripe`); with billing off, workspaces pay nothing whatever they say. The admin panel edits them in dollars and percent and previews what a customer pays.
+
 Changing them is audited, and every value is validated and clamped server side on write as well as on read, so a row written by an older version still resolves.
+
+### Usage pricing
+
+The `usage` section is the price list a workspace balance is charged from. A charge is what the work used at these prices, plus `usage.markup_percent`, rounded up to the next millionth of a dollar. Edit it in the admin panel under **Instance > Configuration > Settings**, in the **Usage pricing** section, which shows what a workspace is charged for each row after the markup.
+
+- **Models** are matched on the model name that ran the call: a row with the exact name first, then the longest row the name starts with (so `claude-sonnet-4` prices `claude-sonnet-4-6`), then the `*` row, which prices every model without a row of its own and cannot be removed. Rows with an empty or repeated name or a negative price are dropped on save.
+- **Units** price work that is not tokens: `web_search` (one web search an AI feature makes), `placement_test` (one paid [placement test](/guides/placement-tests/#free-tests-and-the-balance)), and three for the [lead finder](/guides/lead-finder/): `lead_website_read` (one website read, including the people it names and their addresses), `lead_person_email` (one named person's email found on request) and `lead_search_page` (one page of a search through a source the instance pays for; the default is Google Places' Text Search list price, so set it to what your provider charges). A missing or negative unit falls back to its default.
+- A change applies to charges made after it, within the 30-second settings cache. Charges already made keep their price.
+
+Only an instance that bills (`BILLING_PROVIDER=stripe`) charges anything, so on a self-host with billing off this section has no effect. See [Balance and usage](/guides/ai-credits/) for what workspaces see. A partial patch replaces `usage.models` and `usage.units` whole when either is present:
+
+```json
+{"usage": {"markup_percent": 30, "units": {"web_search": 0.01, "placement_test": 0.5}}}
+```
 
 ## Variables that do not do what their name suggests
 

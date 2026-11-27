@@ -82,6 +82,29 @@ resource "aws_vpc_security_group_ingress_rule" "cache" {
   from_port                    = 6379
   to_port                      = 6379
 }
+variable "backend_internal_port" {
+  description = "The runtime root's target_tls_port; set, workers reach the backend's private TLS listener there instead of crossing the internet. Null adds no rule"
+  type        = number
+  default     = null
+  validation {
+    condition     = var.backend_internal_port == null || try(var.backend_internal_port >= 1024 && var.backend_internal_port <= 65535 && floor(var.backend_internal_port) == var.backend_internal_port, false)
+    error_message = "backend_internal_port is the runtime root's unprivileged target_tls_port."
+  }
+}
+locals {
+  backend_callers = var.backend_internal_port == null ? {} : merge(
+    length(var.workers) > 0 ? { hosts = aws_security_group.worker.id } : {},
+    local.fleet ? { fleet = aws_security_group.fleet[0].id } : {},
+  )
+}
+resource "aws_vpc_security_group_ingress_rule" "backend_internal" {
+  for_each                     = local.backend_callers
+  security_group_id            = data.terraform_remote_state.foundation.outputs.runtime.tasks_sg_id
+  referenced_security_group_id = each.value
+  ip_protocol                  = "tcp"
+  from_port                    = var.backend_internal_port
+  to_port                      = var.backend_internal_port
+}
 resource "aws_instance" "worker" {
   for_each               = var.workers
   ami                    = nonsensitive(data.aws_ssm_parameter.ami.value)
@@ -96,7 +119,8 @@ resource "aws_instance" "worker" {
     http_put_response_hop_limit = 1
     instance_metadata_tags      = "disabled"
   }
-  credit_specification { cpu_credits = "standard" }
+  # A fixed worker cannot scale out, so running above baseline bills instead of throttling sync and sends.
+  credit_specification { cpu_credits = "unlimited" }
   root_block_device {
     volume_size           = 16
     volume_type           = "gp3"

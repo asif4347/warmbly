@@ -8,7 +8,12 @@ import setToken from "@/lib/helper/setToken";
 import reviveDates from "@/lib/helper/reviveDates";
 import { isRequestCancelled, type AppError } from "./normalizeError";
 import { announceSessionEnded, endSession } from "@/lib/auth";
+import { isInsufficientBalance, openInsufficientBalance } from "@/lib/insufficientBalance";
 import type Token from "@/lib/api/models/auth/Token";
+import { askForReauth } from "@/lib/reauthPrompt";
+import { queryClient } from "@/lib/queryClient";
+import { currentOrganizationQuery } from "@/lib/api/hooks/app/organizations/useCurrentOrganization";
+import { isPartnerPausedCode, partnerPauseMessage, pausedFromRefusal } from "@/lib/partnerPause";
 
 interface AuthRequestConfig extends AxiosRequestConfig {
     authorization?: boolean
@@ -36,12 +41,16 @@ function promptForReauth(): Promise<void> {
             fn();
         };
 
-        // ReauthModal is mounted under the /app layout. A gated call made from
-        // outside that tree would otherwise leave this promise pending forever
-        // and the mutation spinning with nothing on screen, so a listener that
-        // never answers is treated as a refusal.
+        // ReauthModal is mounted under the /app layout and loads lazily. A call
+        // made before it has mounted is held for it; one made where no prompt
+        // ever mounts would otherwise leave this promise pending forever, so a
+        // request nothing takes is treated as a refusal.
+        let withdraw = () => {};
         const timer = window.setTimeout(
-            once(() => reject(new Error("no confirmation prompt is available here"))),
+            once(() => {
+                withdraw();
+                reject(new Error("no confirmation prompt is available here"));
+            }),
             REAUTH_PROMPT_TIMEOUT_MS,
         );
         const finish = (fn: () => void) =>
@@ -50,16 +59,12 @@ function promptForReauth(): Promise<void> {
                 fn();
             });
 
-        window.dispatchEvent(
-            new CustomEvent("reauth-required", {
-                detail: {
-                    resolve: finish(resolve),
-                    reject: finish(() => reject(new Error("cancelled"))),
-                    // A mounted prompt takes over; the person may take as long as they need.
-                    ack: () => window.clearTimeout(timer),
-                },
-            }),
-        );
+        withdraw = askForReauth({
+            resolve: finish(resolve),
+            reject: finish(() => reject(new Error("cancelled"))),
+            // A mounted prompt takes over; the person may take as long as they need.
+            ack: () => window.clearTimeout(timer),
+        });
     });
 }
 
@@ -137,6 +142,13 @@ export async function ensureValidToken(): Promise<Token> {
     }
 }
 
+// explainPartnerPause swaps the API's sentence for the banner's and refetches the workspace, whose cached state may say active.
+function explainPartnerPause(appErr: AppError) {
+    const partner = queryClient.getQueryData(currentOrganizationQuery.queryKey)?.partner;
+    if (partner && appErr.code) appErr.message = partnerPauseMessage(pausedFromRefusal(partner, appErr.code));
+    void queryClient.invalidateQueries({ queryKey: currentOrganizationQuery.queryKey });
+}
+
 export default async function Request<T>(config: AuthRequestConfig): Promise<T> {
     if (config.authorization) {
         const token = await ensureValidToken();
@@ -191,6 +203,12 @@ export default async function Request<T>(config: AuthRequestConfig): Promise<T> 
             const res = await Client.request(config);
             return reviveDates(res.data);
         }
+
+        // The balance ran out: one app-wide dialog offers to add money in place.
+        if (config.authorization && isInsufficientBalance(appErr)) openInsufficientBalance();
+
+        // A write the reseller's pause refused reads like the banner, and the banner catches up with the server.
+        if (config.authorization && isPartnerPausedCode(appErr?.code)) explainPartnerPause(appErr);
 
         // A denied WRITE action (edit/save/delete) gets one clear, app-wide
         // popup explaining the missing permission (or plan). Reads that 403 are

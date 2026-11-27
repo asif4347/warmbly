@@ -10,6 +10,7 @@ import (
 	"github.com/warmbly/warmbly/internal/api/middleware"
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
+	"github.com/warmbly/warmbly/internal/repository"
 )
 
 // Self-hosted side of the warmup pool link: Settings > Warmbly Cloud.
@@ -146,7 +147,7 @@ func (h *Handler) CloudLinkEnroll(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// An empty body keeps an enrolled mailbox's executor; executor switches it.
+	// An empty body keeps an enrolled mailbox's executor; executor cloud hands Cloud a credential kept here.
 	var req struct {
 		Executor models.PoolLinkExecutor `json:"executor"`
 	}
@@ -328,6 +329,7 @@ func (h *Handler) CloudLinkAdopt(c *gin.Context) {
 // InternalCloudLinkToken is the worker's credential for a managed mailbox.
 //
 //	GET /api/v1/internal/cloud-link/token/:id -> 200 {"access_token","expires_at"} | 4xx with the cloud's reason
+//	?purpose=imap asks a delegated Google mailbox for its Gmail IMAP token instead.
 func (h *Handler) InternalCloudLinkToken(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -341,7 +343,11 @@ func (h *Handler) InternalCloudLinkToken(c *gin.Context) {
 	}
 	// A mailbox under an administrator's grant is minted for here, not by the cloud.
 	if h.DelegationService != nil {
-		tok, handled, xerr := h.DelegationService.AccessToken(c.Request.Context(), id)
+		mint := h.DelegationService.AccessToken
+		if c.Query("purpose") == repository.BrokeredTokenPurposeIMAP {
+			mint = h.DelegationService.IMAPAccessToken
+		}
+		tok, handled, xerr := mint(c.Request.Context(), id)
 		if handled {
 			if xerr != nil {
 				logBrokerAccess(c, "cloud_link.token.delegated", id.String(), false, xerr.ResponseCode())
@@ -351,6 +357,21 @@ func (h *Handler) InternalCloudLinkToken(c *gin.Context) {
 			logBrokerAccess(c, "cloud_link.token.delegated", id.String(), true, "")
 			c.Header("Cache-Control", "no-store")
 			c.JSON(http.StatusOK, tok)
+			return
+		}
+	}
+	// A mailbox a workspace's own OAuth app signed in is refreshed here, where that app's secret is.
+	if h.EmailService != nil {
+		tok, handled, xerr := h.EmailService.WorkspaceGrantToken(c.Request.Context(), id)
+		if handled {
+			if xerr != nil {
+				logBrokerAccess(c, "cloud_link.token.workspace_app", id.String(), false, xerr.ResponseCode())
+				errx.JSON(c, xerr)
+				return
+			}
+			logBrokerAccess(c, "cloud_link.token.workspace_app", id.String(), true, "")
+			c.Header("Cache-Control", "no-store")
+			c.JSON(http.StatusOK, gin.H{"access_token": tok.AccessToken, "expires_at": tok.Expiry})
 			return
 		}
 	}

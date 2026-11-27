@@ -5,6 +5,7 @@
 
 "use client";
 
+import HelpLink from "@/components/shared/HelpLink";
 import React from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -49,6 +50,42 @@ const FIELDS_BY_PROVIDER: Record<string, FieldDef[]> = {
             type: "password",
             required: true,
             helper: "Settings → Integrations → API in Apollo. Use a master key, or one with access to lists, contact search and people enrichment. It is checked before it is saved.",
+        },
+    ],
+    google_places: [
+        {
+            key: "api_key",
+            label: "Google Maps Platform API key",
+            type: "password",
+            required: true,
+            helper: "Google Cloud console → APIs and services → Credentials. Enable Places API (New) for the key. One small search checks it before it is saved.",
+        },
+    ],
+    foursquare: [
+        {
+            key: "api_key",
+            label: "Foursquare service key",
+            type: "password",
+            required: true,
+            helper: "Foursquare developer console → your project → Service API keys. One small search checks it before it is saved.",
+        },
+    ],
+    outscraper: [
+        {
+            key: "api_key",
+            label: "Outscraper API key",
+            type: "password",
+            required: true,
+            helper: "Outscraper → Profile → API token. Searches and the email lookup are billed to your Outscraper balance.",
+        },
+    ],
+    jina: [
+        {
+            key: "api_key",
+            label: "Jina AI API key",
+            type: "password",
+            required: true,
+            helper: "From jina.ai, in the API key section. Reads and searches are billed to your Jina account.",
         },
     ],
     cleanmylist: [
@@ -98,6 +135,10 @@ const NEXT_STEP: Record<string, string> = {
     pipedrive: "Finish the CRM setup: what syncs, and in which direction.",
     salesforce: "Finish the setup: sync rules, field mapping and the first import.",
     apollo: "Import your first Apollo list, or enrich contacts you already have.",
+    google_places: "Open the Lead finder and pick Google Places as the source.",
+    foursquare: "Open the Lead finder and pick Foursquare as the source.",
+    outscraper: "Open the Lead finder and pick Outscraper as the source.",
+    jina: "Enrich leads in the Lead finder; blocked sites are read through Jina Reader.",
     discord: "Choose which Warmbly events post to the channel.",
 };
 
@@ -498,15 +539,14 @@ export default function ConnectDialog({
                             Back
                         </button>
                     ) : entry.docs_url && phase === "overview" ? (
-                        <a
+                        <HelpLink
                             href={entry.docs_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                            portalLabel={<>Get help <ExternalLinkIcon className="w-3 h-3" /></>}
                             className="inline-flex items-center gap-1 text-[12px] text-slate-500 hover:text-sky-700 transition-colors"
                         >
                             Docs
                             <ExternalLinkIcon className="w-3 h-3" />
-                        </a>
+                        </HelpLink>
                     ) : null}
                     <div className="ml-auto flex items-center gap-2">
                         {phase === "overview" && (

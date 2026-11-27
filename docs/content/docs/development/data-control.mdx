@@ -30,6 +30,8 @@ An [install from `install.sh`](/development/install/) points all six under one d
 
 Only the first two carry anything you cannot rebuild. The other four are state a fresh container reconstructs, which is why a backup does not include them.
 
+The [portal service](/development/configuration/#portal-service), which serves client connect pages and shared reports, has no variable here because it stores nothing: no volume, no database and no file. Every link and report is read from the backend when it is opened. It keeps whether a host is a portal domain for a minute, a report's answer for a minute and per-visitor request counts for a minute, all in its own memory, and a restart clears them. Nothing about it needs backing up or moving.
+
 ### Encryption
 
 Two keys, and they are not interchangeable.
@@ -69,6 +71,8 @@ Every window below lives in the database, not the environment, and is edited und
 | `sync.backfill_messages` | 5,000 | 1 to 100,000 | The most messages that import stores per mailbox |
 | `sync.daily_messages_per_mailbox` | 2,000 | 1 to 100,000 | New mail one mailbox may store per UTC day |
 | `sync.daily_messages_per_org` | 25,000 | 1 to 2,000,000 | New plus imported mail across one workspace per UTC day |
+| `sync.full_check_min_minutes` | 15 | 5 to 180 | How often a workspace with room left under its plan has every folder of its mailboxes checked |
+| `sync.full_check_max_minutes` | 60 | 5 to 180 | How often a workspace using its whole mailbox allowance has every folder checked |
 
 Mail over a daily budget is deferred, never dropped: the provider cursor is held and the mail is re-offered on the next pass. Replies to the mailbox's own outreach ride a separate budget of the same size and keep landing regardless.
 
@@ -80,7 +84,7 @@ Mail over a daily budget is deferred, never dropped: the provider cursor is held
 |---|---|---|---|
 | Automatic inbox tagging | `INBOX_TAGGING_ENABLED=true` | The inbound subject and bounded plain-text body (for a notification recognised offline by its sender, only while the workspace asks notifications whether they need action, or asks one of its own questions of them), plus the previous outbound message in the thread and the name of the campaign it belongs to when one exists, the workspace's own tagging questions, and the names of its tagging languages when any are chosen | `inbox_tag_results`, with the raw probabilities and the actions taken. Completed results travel with the Inbox group in a workspace export; processing claims do not |
 | Reply classification | The key alone | The subject and body of a reply to a campaign, only when no tagging verdict exists for it and the offline layers could not decide | `campaign_contact_progress.reply_class` and `reply_intent` |
-| Copy judgment | The key alone | The subject and body of a campaign step, at Advisor evaluation and on the editor's re-check | `copy_judgments`, keyed by a hash of the copy and never exported |
+| Copy judgment | The key alone | The subject and body of a campaign step, on the editor's re-check | Nothing stored |
 | Warmup content lint | The key alone | A generated warmup thread before it enters the bank | Review state is stored with the generated thread; rejected threads stay archived and are counted on the generation job |
 | Bounce classification | The key alone | The bounce reason text (the status code and the receiving server's reply), only when its status code and wording do not already say whether the address is at fault | `deliverability_events.metadata` |
 | Import column mapping | The key alone | For an import or Google Sheets preview with columns no header matched: every column header, the kind of value each column holds (email addresses, dates, short text and so on, worked out on the instance), and the workspace's custom field names. Never a cell value, and nothing at all unless the first row is clearly headers: none of its cells may be an address, a date or a number, and the Email column must have a header of its own. A contact's row fails that, since its Email cell is the address or blank | Nothing is stored; the answer only fills in the suggested mapping |
@@ -100,7 +104,7 @@ See [Automatic inbox tagging](/guides/inbox-tagging/), [Advisor](/guides/advisor
 | `retention.form_event_days` | 180 | Form funnel events: views, starts, field-level drop-off |
 | `retention.audit_log_days` | 90 | The audit trail: actor, IP address, user agent, change payload |
 | `retention.warmup_mail_days` | 30 | Warmup mail in the mailboxes themselves, and the stored copy of each message's body. Deleted by the platform once older than this, wherever the mailbox files it; a mailbox can set its own window |
-| `retention.warmup_event_days` | 365 | Per-message warmup records: tokens, receipts, tampering events, spam moves and their attribution, spam reports, and which messages belong to a warmup thread, and for a linked instance that runs its own mailboxes, the commands Cloud queued for it once they are closed and the warmup mail it reported once retired. The daily sent and received counts behind the analytics are kept. When each mailbox's owner last acted in it (five-minute marks, no message content) is kept 30 days whatever this is set to |
+| `retention.warmup_event_days` | 365 | Per-message warmup records: tokens, receipts, tampering events, spam moves and their attribution, spam reports, which messages belong to a warmup thread, and linked instances' retired warmup commands and reports. The daily sent and received counts behind the analytics are kept. When each mailbox's owner last acted in it (five-minute marks, no message content) is kept 30 days whatever this is set to |
 | `retention.campaign_log_days` | 0 (kept) | Each campaign's activity feed: failed and deferred sends, pauses and their reasons |
 | `retention.notification_days` | 0 (kept) | In-app notifications, read or unread. One still waiting to be emailed is kept until it is sent or skipped |
 | `retention.webhook_delivery_days` | 0 (kept) | Each webhook endpoint's delivery log of settled deliveries, with the payload and the response excerpt. A delivery still being retried is kept until it settles |
@@ -159,6 +163,12 @@ A [mailbox import](/guides/mailbox-import/) keeps each row's credentials in `mai
 
 The column mappings an import saves (`mailbox_import_mappings`: which field each header of a file means, no values) are kept until the workspace is deleted, and travel in a [workspace export](/guides/workspace-export-import/). Imports themselves do not.
 
+### Partnership sign-in links and OAuth apps
+
+A [sign-in link](/guides/partnership/#google-and-microsoft-mailboxes-sign-in-links) is a row in `mailbox_connect_links` holding the SHA-256 of its secret, never the secret, with its provider, the address it names, its warmup settings, its return page and its outcome. Links are kept until the workspace is deleted, and do not travel in a workspace export. The provider round trip a link starts lives in Redis for 15 minutes.
+
+A workspace's own Google and Microsoft OAuth apps (`organization_oauth_apps`) keep their client secret sealed with the workspace's own data key until the app is removed. They travel in a workspace export, the secret only when the export includes credentials. Each OAuth mailbox records which app issued its grant (`email_accounts_oauth.oauth_app_id`), so a removed app cannot strand a mailbox: removal is refused while one still uses it.
+
 ### Contact import files
 
 A [contact import](/guides/contacts-crm/#importing) keeps every row of the uploaded file, as uploaded, in `contact_import_rows`, with what became of it (the address, whether it was imported, updated, skipped or failed, and why). Contact data is stored the same way the contacts themselves are. A file uploaded but never started is deleted 24 hours after the upload, or after it was discarded; a finished or stopped import and its rows, which feed the failed-rows download, are deleted 30 days after it finished. Both windows are fixed rather than settings, and the sweep that applies them runs every hour. The contacts an import created are ordinary contacts and are not affected.
@@ -172,6 +182,8 @@ Three things a workspace can set up alongside its mailboxes, each kept until the
 | Table | Holds | Secrets |
 |---|---|---|
 | `mailbox_vendor_connections` | An [inbox vendor](/guides/mailbox-import/#import-from-an-inbox-vendor) account: which vendor, a label, its status and last error | The API key and account IDs, sealed with the workspace's data key. No response returns them |
+| `agency_vendor_connections` | An inbox vendor account [an agency holds](/guides/agencies/#vendor-accounts-held-by-the-agency) for its clients: which vendor and a label | The API key and account IDs, sealed with `CREDENTIALS_ENCRYPTION_KEY` (an agency has no data key of its own). A client workspace that uses the account gets a `mailbox_vendor_connections` row that names it and holds no key: the key is read through the account, and only while the workspace is the agency's client. No response returns them |
+| Cache: `mailbox_vendor_hold:*` | A vendor key a client typed on a [connect link](/guides/agencies/#client-connect-links), for up to 15 minutes while the client picks mailboxes | The key and account IDs, sealed with the workspace's data key, bound to the workspace and the link, read once and then deleted |
 | `mailbox_domain_grants` | A [Google Workspace or Microsoft 365 admin grant](/guides/mailbox-import/#connect-a-whole-google-workspace-domain): the provider, the Workspace domain or Microsoft tenant ID, the domains it covers, and for Google the admin address used to read the directory | None. No token is stored for a grant or for any mailbox it connected; the backend mints a short-lived one from the instance's own Google service account or Microsoft app each time a worker needs it |
 | `domain_redirects` | A [root redirect](/guides/sending-domains/#root-redirects): the domain, the website it sends visitors to, the ownership value for its `_warmbly` `TXT` record, the result of the last DNS check and of the last visit to the domain (what answered, and the proxy when it named itself), and whether this instance or Warmbly Cloud serves it. For one Cloud serves, a copy of the records and the tracking host Cloud listed | None. The ownership value is derived from `AUTH_SECRET`, the workspace and the domain, so it stays the same for that workspace and differs for every other workspace and instance |
 
@@ -180,6 +192,42 @@ A mailbox records which vendor account or grant it came from, and for a grant th
 Vendor connections and redirects travel in a [workspace export](/guides/workspace-export-import/); a redirect Warmbly Cloud served arrives served by the destination. Grants do not: a grant is recorded only after the workspace proves the domain (Google) or completes the administrator's consent (Microsoft) on the instance that holds it, and a row from an archive proves neither. The mailboxes a grant connected travel without it. On the destination the workspace makes the grant again and connects the same users, which relinks those mailboxes instead of adding new ones.
 
 Forwarding a domain through an inbox vendor, and a tracking `CNAME` written through one, are stored at the vendor, not here. Warmbly keeps only the vendor's domain list, in memory for five minutes.
+
+### Purchased domains and mailboxes
+
+Only an instance with the [domain and mailbox store](/development/configuration/#domain-and-mailbox-store) configured writes these. Each row is kept until the workspace is deleted, except quotes, which are cleared a day after they expire unless an order was paid from them, and applied webhook event ids, which are kept 31 days.
+
+| Table | Holds | Secrets |
+|---|---|---|
+| `store_accounts` | The workspace's account id at GraphKit and the registrant its domains are registered to (name, organization, email, phone and postal address) | None |
+| `store_quotes` | Each quote's retail prices as shown to the buyer, so an order charges exactly what was on screen | None |
+| `store_orders` | Each order: the quote it was paid from, its setup steps, what was charged and refunded, and who placed it | None |
+| `store_domains` | Each purchased domain: its status, expiry, auto-renew, renewal price, forwarding URL and mail record checks | None |
+| `store_mailboxes` | Each purchased mailbox: its address, names, provider, monthly price, the date it is paid through, any pending cancellation, and the Warmbly mailbox it connected | None. A mailbox that connects over IMAP and SMTP stores its password on the connected mailbox, sealed like any other |
+| `store_webhook_events` | The id and arrival time of each GraphKit event already applied, so a redelivery is applied once | None |
+| `store_graphkit_connection` | The GraphKit API URL, API key and webhook secrets an operator added under **Setup and health > Integrations**, and who saved them last. At most one row, kept until **Disconnect** removes it; unused while `GRAPHKIT_API_KEY` is set | The API key and both webhook secrets, sealed under `CREDENTIALS_ENCRYPTION_KEY` |
+
+The registrant also lives at GraphKit, which registers domains with it and keeps WHOIS privacy on wherever the extension allows. None of these tables travel in a [workspace export](/guides/workspace-export-import/), because what they describe is bought and billed through this instance's partner account. The mailboxes they connected do travel, and a domain leaves through transfer-out.
+
+### Partners
+
+Only an instance where an operator added a [partner](/development/partners/) writes these.
+
+| Table | Holds | Kept | Secrets |
+|---|---|---|---|
+| `partners` | Each partner's names, status, allowed hosts, webhook and token callback addresses, wholesale prices and rate limit | Until removed | The webhook signing secrets and the token callback key, sealed with `CREDENTIALS_ENCRYPTION_KEY` |
+| `partner_api_keys` | Each partner key's mode, name and display ends | Until the partner is removed | Only a SHA-256 hash of the key |
+| `partner_organizations` | Which workspace a partner manages under which of its ids, its state, per-mailbox send limit and group | Until the workspace is deleted, then until the partner is told | None |
+| `partner_identities` | Which account a partner signs a person in as, with the address and name the partner gave | Until the account is deleted | None |
+| `partner_idempotency_keys` | The answer to each partner write, for a retry with the same key | 24 hours | The whole answer, sealed with `CREDENTIALS_ENCRYPTION_KEY`, since some carry an API key |
+| `partner_events` | Events for the partner and how their delivery went | 30 days | None |
+| `partner_mailboxes` | Each mailbox of a managed workspace: the partner's id for it, its source, enablement, how it connects and whether it was detached | Until the partner is removed, so billed days stay reportable after the mailbox or workspace is gone | None; a password a partner sends is sealed on the mailbox like any other and never stored here |
+| `partner_mailbox_enablements` | When each mailbox was enabled for sending and warmup or warmup only, the history mailbox-days are counted from | As long as its mailbox row | None |
+| `partner_connect_links` | Which mailbox a partner's connect link connects, as what, and where it returns | Until the workspace is deleted | None; the link's secret is a hash on `client_connect_links` |
+| `partner_groups` | Each partner group's brand (name, logo URL, accent colour, website, "Powered by"), its portal domain and whether it resolved | Until the partner is removed | None |
+| `partner_statements`, `partner_statement_lines` | Each closed month of a partner's enabled mailbox-days, per workspace, at the wholesale prices in force when it closed | Until the partner is removed | None |
+
+None of these travel in a [workspace export](/guides/workspace-export-import/). A cancelled workspace is deleted 30 days after the partner cancels it, through the same delayed deletion an owner schedules.
 
 ### Disconnecting a mailbox
 
@@ -235,7 +283,13 @@ docker compose -p warmbly exec backend warmblyctl restore --file /data/blobs/war
 docker compose -p warmbly restart
 ```
 
-The restore empties the schema and replays the dump, so it replaces everything currently on that instance and asks you to type `restore` first. It then runs `ANALYZE`, since a dump carries no planner statistics; a failure there only warns.
+The restore replaces the schema with the dump's, so it replaces everything currently on that instance and asks you to type `restore` first. It runs as one transaction: a load that fails at any point rolls back and leaves the instance exactly as it was. It then runs `ANALYZE`, since a dump carries no planner statistics; a failure there only warns.
+
+Both commands use the PostgreSQL client matching the server's major version. The backend image ships the 16, 17 and 18 clients, so the bundled PostgreSQL 16 and an external 17 or 18 all work. For any other version the nearest newer client is used, and when there is none the command stops and names the package to install. The manifest records which server was dumped and with which `pg_dump`.
+
+A bundle written by a newer `pg_dump` still restores onto an older server. Settings the destination does not have, such as the `transaction_timeout` that PostgreSQL 17 added, are skipped from the dump's header, and the restore lists what it skipped.
+
+Holding the whole replacement in one transaction takes a lock on every table and index it drops and creates. The bundled PostgreSQL in the installer and Compose files runs with `max_locks_per_transaction=256` for this. A server you run yourself with the default lock table usually has room, but one with a smaller lock table (`max_connections` well below the default 100) can refuse with `out of shared memory`. The restore then changes nothing and says to raise `max_locks_per_transaction` (for example to 1024).
 
 Before it does anything it compares the bundle's `CREDENTIALS_ENCRYPTION_KEY` and `KMS_LOCAL_MASTER_KEY` against the destination's and refuses to continue when they differ, printing the two lines to put in `.env`. That check is the point of the command: without it a restore looks like it worked and every mailbox fails to authenticate days later, with no error that names the cause.
 
@@ -350,8 +404,19 @@ These are made only when a workspace uses the feature behind them, so an instanc
 | DNS lookups | A workspace sets up a root redirect or a domain-wide tracking host, or proves a Google Workspace domain by DNS: `TXT`, address and `CNAME` lookups for that domain, through the host's resolver. Pending redirects are re-checked every 10 minutes, verified ones every 6 hours. A redirect or form redirect to a website the workspace does not send from also reads the website's `_warmbly` `TXT` record, on save and on each check; a [confirmed website](/guides/sending-domains/#confirm-your-website) is kept in `website_domains` while the record stays published, read again every 6 hours, and deleted once the record is definitively gone or with the workspace. The sending-domain authentication check (about once a day per domain, and on demand) reads SPF, DKIM and DMARC the same way, and when the host's resolver does not return a record it asks that domain's own nameservers directly on port 53 (never one on a private or loopback address) |
 | The redirect's own domain | Once a root redirect's DNS verifies, the backend opens `http://<domain>/` and `https://<domain>/` like a visitor, without following it off the domain, to see whether the redirect answers. Only public addresses on ports 80 and 443 are opened. Repeated with the DNS check: every 10 minutes while visitors do not get the redirect (for two weeks after it verified), every 6 hours otherwise |
 | Warmbly Cloud (`api.warmbly.com`, or `WARMBLY_CLOUD_URL`) | A linked instance has a root redirect [served from Warmbly Cloud](/guides/sending-domains/#serve-it-from-warmbly-cloud): the domain, the website and the `www` setting, with the instance's link token, when it is saved, moved, checked or removed, and whenever the instance re-reads Cloud's verdict (on the same schedule as its own redirects) |
+| Lead finder map (`tiles.openfreemap.org`, or `LEAD_FINDER_MAP_STYLE_URL`) | While someone has the [lead finder](/guides/lead-finder/) open, their browser (not the server) loads the map's tiles, sprites and fonts. No lead or workspace data is sent |
+| Lead finder sources (Overpass servers or `LEAD_FINDER_OVERPASS_URL`; `places.googleapis.com`, `places-api.foursquare.com`, `api.app.outscraper.com`) | A workspace searches the lead finder: the area's bounding box, the category and the typed words go to the chosen source, with the key of the workspace or the instance |
+| Location search (`photon.komoot.io`, or `LEAD_FINDER_GEOCODER_URL`) | Someone types in the lead finder's **Where** box: the typed text and the map's center, a few times while they type |
+| Business websites | Someone runs **Find people and emails**: the backend reads the selected businesses' own home pages, their `robots.txt` and up to six contact, team, about or legal pages each, as `WarmblyBot/1.0`. For a business listed without a website it first looks up a few domains built from the business's name and reads up to three of their home pages. Only public addresses on ports 80 and 443 are opened. Unless the request turns verification off (it is on by default), up to three addresses per lead are then checked like a contact's; any beyond the third are not checked |
+| Reader services (`WEB_READER`: a Crawl4AI or DDGS server, `r.jina.ai` or another reader; or `r.jina.ai` with a workspace's own Jina AI key) | A business website, or a page the assistant's `fetch_url` asks for, answers `401`, `403`, `406`, `429` or `503`: the page's address goes to the reader, which fetches it from its own network. At most four reader requests per business, whether or not they succeed. Nothing else about the lead or the workspace is sent |
+| Web search for the lead finder (`SEARCH_PROVIDER`, a workspace's MCP search tool, or `s.jina.ai` with its Jina AI key) | A run looks for a missing website, or for addresses when a site could not be read or published none and the lead has none: the business's name with its town or street, or `"@"` and its domain. A run started with `web_search: false` sends none |
+| Business mail servers | The lead finder works out a person's address: each candidate is checked with the business domain's mail server the same way a contact's address is, a few per person and at most fifteen per business in a run, and nothing is sent |
 
 Everything else is you: mail through the mailboxes you connect, DNS lookups for the domains you check, and whatever integrations you configure. There is no telemetry, no phone-home, and no license check.
+
+### Domain and mailbox store
+
+With `GRAPHKIT_API_KEY` unset, the default, the backend never contacts GraphKit. With it set, the backend calls the GraphKit API it is pointed at to search domains, quote and place orders, renew, cancel and transfer out, sending the workspace id, its name, the registrant and the names and addresses of the mailboxes ordered. No mail content and no mailbox credential is sent. The backend also tells GraphKit, at boot and daily, which Gmail scopes and which Microsoft application id and permissions purchased mailboxes should grant, and asks it for short-lived access tokens for purchased Google mailboxes. GraphKit calls back on `/v1/webhooks/graphkit`, once the operator registers that endpoint, with the current state of orders, domains and mailboxes.
 
 ### Error reporting
 
@@ -380,7 +445,7 @@ What a reported error carries is the exception, its stack trace, the service, th
 
 Server-side reports that belong to no request, a scheduled job or a worker, are attributed to the process that raised them and to nobody.
 
-The `warmbly` CLI runs on your own machine and reports nowhere, ever. It has nothing to set.
+The `warmbly` CLI runs on your own machine and reports nowhere, ever. It has nothing to set. Neither has the portal service, nor the connect and report pages it serves: they report no error to anybody and load no reporting code.
 
 ### Usage analytics
 

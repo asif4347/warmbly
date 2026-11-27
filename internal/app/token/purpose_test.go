@@ -13,7 +13,7 @@ func TestWebsocketTicketNamesItsSession(t *testing.T) {
 	userID, ticketID, sessionID := uuid.New(), uuid.New(), uuid.New()
 	now := time.Now()
 
-	tok, err := s.GenerateWebsocketTicket(userID, ticketID, sessionID, "nonce", now, now.Add(time.Minute))
+	tok, err := s.GenerateWebsocketTicket(userID, ticketID, sessionID, "nonce", now, now.Add(time.Minute), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +50,7 @@ func TestTokenPurposeIsEnforced(t *testing.T) {
 		PurposeTwoFAPending,
 		PurposeSSOLink,
 		PurposeInitialPassword,
+		PurposePartnerLogin,
 	}
 
 	for _, minted := range purposes {

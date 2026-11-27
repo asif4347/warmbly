@@ -35,7 +35,7 @@ Choose **Approve** or **Skip** on each approval card Remie shows before a change
 - It acts as you: only what your role allows, only in your workspace.
 - Sending, starting things that send, and changing who has access always ask, even with **Always allow** on.
 - Conversations are private to you unless an admin turns on **Shared history**.
-- Each step costs one AI credit, and the stop button ends a run anytime.
+- Each step is charged to the workspace balance for the tokens it uses, and the stop button ends a run anytime.
 
 <Fold>
 
@@ -51,7 +51,7 @@ The same assistant also answers in Slack, when you mention `@Warmbly` or message
 Remie acts as you: only what your role allows, only in your workspace, never another organization's data. Every change asks first. **Sending, starting things that send, and changing who has access are never auto-approved**, even with "Always allow" on.
 </Callout>
 
-Remie needs a paid plan; a free trial has no credit allowance and the AI surfaces stay locked. Beyond that, access is the **Use AI** role permission (on for admins and managers, off for viewers); without it Remie and AI drafting are hidden. Admins can cap per-member spend by day, week, or month. See [AI credits](/guides/ai-credits/) and [Team and roles](/guides/team-roles/).
+Remie needs a paid plan; a free trial has no AI allowance and the AI surfaces stay locked. Beyond that, access is the **Use AI** role permission (on for admins and managers, off for viewers); without it Remie and AI drafting are hidden. Admins can cap per-member spend by day, week, or month. See [Balance and usage](/guides/ai-credits/) and [Team and roles](/guides/team-roles/).
 
 </Fold>
 
@@ -113,10 +113,18 @@ These preferences are yours alone, kept in your browser for each workspace.
 - Manage the team, workspace and voice settings, plan and limits, API keys, and webhooks
 - List connected integrations, give you a link to connect one, and set up [Slack](/guides/slack/): notification channels, the inbox channel, and where the assistant answers
 - Search the web and read a public page
+- Explain how a feature works from these docs, with a link to the page it read
+- Reach anything else your role allows through the [Warmbly API](/api/), described below
 
 It knows what page you are on, so "summarize this campaign" and "draft a reply here" resolve correctly.
 
-When the available tools exceed the OpenAI-compatible provider's 128-tool limit, Remie discovers the tools it needs on demand, including tools from connected MCP servers. Discovery results include each tool's argument schema, so its usage remains available in the conversation after another search. No permitted capability is removed. Discovery is a read-only step; the action itself keeps its normal permissions and approval requirements. Like other model steps, discovery counts toward the run's step budget and AI credits.
+Remie keeps a core set of tools in view and finds the rest on demand by searching, including tools from connected MCP servers, so a workspace never runs into a model provider's tool limit. Found tools stay available for the rest of the conversation, and no permitted capability is removed. Discovery is a read-only step; the action itself keeps its normal permissions and approval requirements. Like other model steps, discovery counts toward the run's step budget and is charged to the balance.
+
+### Everything else, through the API
+
+When no dedicated tool covers a request (reply templates, A/B variants, sending domains, lead searches, imports, integration settings and so on), Remie looks up the matching [API endpoint](/api/), reads its documentation, and calls it as you. The call goes through the same checks as the dashboard: your role's permissions, your workspace, your rate limits. Reads run on their own; every change asks, and **Always allow** is never offered for it.
+
+Some things stay out of reach on purpose. Remie cannot send mail, start a campaign or run a placement test this way (each has its own tool, which shows you exactly what goes out), approve leads waiting for [review](/guides/campaigns/#review-before-sending) or turn review off (do that on an email step's **Review** tab under **Steps**, or, when no step sends an email, from the waiting leads' **Review** panel on **Steps**), sign in or change account security, manage API keys, webhooks or OAuth apps, upload files, or enter a credential such as a password or API key, which belongs in the dashboard where it is sealed. Fields that hold a credential are withheld from anything Remie reads.
 
 </Fold>
 
@@ -131,6 +139,7 @@ Some actions always ask, and **Always allow** is never offered for them:
 - sending a reply or a new email, and placement tests
 - starting or stopping a campaign, enabling an automation, starting warmup, releasing a mailbox's send hold or a lead's hold, and adding leads to a campaign, since each puts mail in motion
 - inviting a member, changing a member's role, and creating or editing an API key
+- changes made through the general API tool (`api_write`)
 
 Inviting or removing a member, changing a member's role, creating or editing an API key or a webhook endpoint, and rotating a webhook signing secret also need the same recent confirmation as doing it in Settings: if you have not confirmed it is you in the last five minutes, Remie stops and asks you to confirm in the dashboard first. From Slack, do these in the dashboard.
 - tools from [connected MCP servers](/guides/connect-mcp-tools/)
@@ -147,9 +156,9 @@ Settings > Workspace > Remie lists every action that is always allowed, who allo
 
 <Fold>
 
-## Credits and privacy
+## Cost and privacy
 
-Each model turn costs one AI credit, and a run is capped at 20 model turns between approval pauses. A turn can call several tools, so the activity list can show more than 20 tool steps. Remie reserves the last turn for an answer from the evidence already gathered, without calling more tools. If it cannot verify the answer, it is instructed to explain what remains unknown and what to check next. An empty provider answer is reported as an error. Remaining credits show at the panel's bottom, and the stop button ends a run anytime. On a self-hosted install with a free or local model, runs are not charged and a "free model" notice appears.
+Each model turn is charged to the workspace balance for the tokens it uses, and a run is capped at 20 model turns between approval pauses. A turn can call several tools, so the activity list can show more than 20 tool steps. Remie reserves the last turn for an answer from the evidence already gathered, without calling more tools. If it cannot verify the answer, it is instructed to explain what remains unknown and what to check next. An empty provider answer is reported as an error. The remaining balance shows at the panel's bottom, and the stop button ends a run anytime. On a self-hosted install with a free or local model, runs are not charged and a "free model" notice appears.
 
 Completed tool steps stay in the conversation history if a later provider call fails or you stop the run. Remie gives recording those steps and refunding a failed model turn up to five seconds to finish after cancellation. Changes Remie makes (a created task, an updated contact) appear in the shared activity feed like any other edit, so teammates' views stay current.
 

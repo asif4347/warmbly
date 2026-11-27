@@ -15,6 +15,7 @@ import (
 	"github.com/warmbly/warmbly/internal/errx"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/notify/templates"
+	"github.com/warmbly/warmbly/internal/observability/errs"
 	"github.com/warmbly/warmbly/internal/pkg/displayname"
 )
 
@@ -40,6 +41,13 @@ func (h *Handler) CreateOrganization(c *gin.Context) {
 
 	h.auditOrg(c, models.AuditActionCreate, models.AuditEntityOrganization, &org.ID, nil, map[string]string{"name": org.Name})
 
+	// An owner who has never had a trial gets it here; every later workspace starts unpaid.
+	if h.TrialService != nil {
+		if terr := h.TrialService.StartFreeTrialWithOrg(c.Request.Context(), userID, org.ID); terr != nil {
+			errs.CaptureException(terr)
+		}
+	}
+
 	c.JSON(http.StatusCreated, org)
 }
 
@@ -56,8 +64,19 @@ func (h *Handler) GetUserOrganizations(c *gin.Context) {
 		errx.JSON(c, xerr)
 		return
 	}
+	reachable := members[:0]
+	for _, m := range members {
+		ok, xerr := middleware.PortalAllowsWorkspace(c, m.OrganizationID)
+		if xerr != nil {
+			errx.JSON(c, xerr)
+			return
+		}
+		if ok {
+			reachable = append(reachable, m)
+		}
+	}
 
-	c.JSON(http.StatusOK, gin.H{"data": members})
+	c.JSON(http.StatusOK, gin.H{"data": reachable})
 }
 
 // SwitchOrganization switches the current organization in the session
@@ -167,6 +186,14 @@ func (h *Handler) GetCurrentOrganization(c *gin.Context) {
 		Organization: *org,
 		Limits:       limits,
 		Counts:       counts,
+	}
+	if h.AgencyService != nil {
+		result.Agency = h.AgencyService.AgencyOf(c.Request.Context(), *orgID)
+	}
+	if h.Partners != nil {
+		if ref, err := h.Partners.ManagedRef(c.Request.Context(), *orgID); err == nil {
+			result.Partner = ref
+		}
 	}
 	if restricted {
 		c.JSON(http.StatusOK, scopedOrganizationWithLimits{
@@ -286,7 +313,7 @@ func (h *Handler) InviteMember(c *gin.Context) {
 	// Send invitation email
 	if h.EmailNotificationService != nil {
 		subject := fmt.Sprintf("You've been invited to join %s on %s", orgName, templates.CompanyName())
-		acceptURL := config.GetInviteURL(inv.Token, config.DashboardOriginFromContext(c.Request.Context()))
+		acceptURL := config.GetInviteURL(inv.Token, h.emailLinkOrigin(c.Request.Context(), *orgID))
 		// GenerateInvitationHTML reports its own render errors.
 		if body, gerr := templates.GenerateInvitationHTML(inviterName, orgName, acceptURL, time.Until(inv.ExpiresAt).Round(time.Hour)); gerr == nil {
 			// Detached from the request context: the handler returns before the
@@ -520,6 +547,23 @@ func (h *Handler) AcceptInvitation(c *gin.Context) {
 		return
 	}
 
+	// A portal session joins only its agency's client workspaces; checked before anything is accepted.
+	if middleware.GetPortalAgencyID(c) != nil {
+		invOrg, xerr := h.OrganizationService.InvitationOrganization(c.Request.Context(), req.Token, req.InvitationID)
+		if xerr != nil {
+			errx.JSON(c, xerr)
+			return
+		}
+		if invOrg == nil {
+			errx.JSON(c, errx.New(errx.NotFound, "invitation not found"))
+			return
+		}
+		if xerr := middleware.RefuseOutsidePortal(c, *invOrg); xerr != nil {
+			errx.JSON(c, xerr)
+			return
+		}
+	}
+
 	var member *models.OrganizationMember
 	if req.Token != "" {
 		member, xerr = h.OrganizationService.AcceptInvitation(c.Request.Context(), req.Token, userID, user.Email)
@@ -583,8 +627,19 @@ func (h *Handler) GetMyPendingInvitations(c *gin.Context) {
 		errx.JSON(c, xerr)
 		return
 	}
+	reachable := invitations[:0]
+	for _, inv := range invitations {
+		ok, xerr := middleware.PortalAllowsWorkspace(c, inv.OrganizationID)
+		if xerr != nil {
+			errx.JSON(c, xerr)
+			return
+		}
+		if ok {
+			reachable = append(reachable, inv)
+		}
+	}
 
-	c.JSON(http.StatusOK, gin.H{"data": invitations})
+	c.JSON(http.StatusOK, gin.H{"data": reachable})
 }
 
 // GetOrganizationLimits returns the limits the server actually enforces for

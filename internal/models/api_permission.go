@@ -51,7 +51,52 @@ const (
 	// AI
 	APIPermAIAgent    // Run the AI assistant / agent (dashboard agent + MCP)
 	APIPermAIResearch // Run AI contact research
+
+	// Connect mailboxes with their credentials; Partnership workspaces only.
+	APIPermConnectEmails
+
+	// Client reports: create, share by public link and email on a schedule.
+	APIPermManageReports
+
+	// Agency endpoints; only an agency API key can hold these.
+	APIPermAgencyRead          // Read the agency, its staff, clients, overview, inbox and brand
+	APIPermAgencyManageClients // Create, attach, cap and detach client workspaces
+	APIPermAgencyReadUsage     // Read the send pool and the AI balance
+	APIPermAgencyTransferAI    // Move AI balance from the agency into a client workspace
+
+	// Bring data over from another outreach tool. Appended here so no earlier bit moves.
+	APIPermImportTools
+
+	// Migrate client accounts in from another outreach tool; agency keys only.
+	APIPermAgencyMigrate
+
+	// Store: domains and mailboxes bought in the workspace. Manage spends the workspace balance.
+	APIPermReadStore
+	APIPermManageStore
+
+	// Social: connected accounts on every channel, LinkedIn lead search and conversations. Manage connects seats, which spends the workspace balance.
+	APIPermReadSocial
+	APIPermManageSocial
 )
+
+// AgencyAPIPermissionsMask is every agency bit; a workspace key never holds one.
+const AgencyAPIPermissionsMask uint64 = APIPermAgencyRead | APIPermAgencyManageClients |
+	APIPermAgencyReadUsage | APIPermAgencyTransferAI | APIPermAgencyMigrate
+
+// AgencyKeyWorkspaceScopes are the workspace bits an agency key may hold: it manages no keys, opens no socket and takes no mailbox credentials.
+const AgencyKeyWorkspaceScopes = AllAPIPermissionsMask &^ (APIPermAPIKeys | APIPermRealtimeSubscribe | APIPermConnectEmails)
+
+// AgencyKeyGrantable is every bit an agency key may carry.
+const AgencyKeyGrantable = AgencyKeyWorkspaceScopes | AgencyAPIPermissionsMask
+
+// AllAgencyAPIPermissions lists the agency bits for the key form and the docs.
+var AllAgencyAPIPermissions = []APIPermission{
+	{"AGENCY_READ", APIPermAgencyRead, "View the agency, its staff, clients, overview, inbox and brand", "agency"},
+	{"AGENCY_MANAGE_CLIENTS", APIPermAgencyManageClients, "Create, attach, cap and detach client workspaces", "agency"},
+	{"AGENCY_READ_USAGE", APIPermAgencyReadUsage, "View the shared send pool and AI balance", "agency"},
+	{"AGENCY_TRANSFER_AI", APIPermAgencyTransferAI, "Move AI balance from the agency into a client workspace", "agency"},
+	{"AGENCY_MIGRATE", APIPermAgencyMigrate, "Migrate client accounts in from another outreach tool", "agency"},
+}
 
 // AllAPIPermissionsMask is the OR of every defined permission bit.
 // Used to reject CreateAPIKey requests that include unknown bits, so
@@ -68,14 +113,20 @@ const AllAPIPermissionsMask uint64 = APIPermReadEmails | APIPermReadCampaigns |
 	APIPermReadCRM | APIPermWriteCRM |
 	APIPermReadAuditLogs |
 	APIPermIntegrations | APIPermWarmupRouting |
-	APIPermAIAgent | APIPermAIResearch
+	APIPermAIAgent | APIPermAIResearch |
+	APIPermConnectEmails |
+	APIPermManageReports |
+	APIPermImportTools |
+	APIPermReadStore | APIPermManageStore |
+	APIPermReadSocial | APIPermManageSocial
 
 // Preset permission sets surfaced via GET /api-keys/permissions so a
 // caller can grant a sane default without picking bits by hand.
 var (
 	APIPermReadOnly uint64 = APIPermReadEmails | APIPermReadCampaigns |
 		APIPermReadContacts | APIPermReadUnibox | APIPermReadAnalytics |
-		APIPermReadTemplates | APIPermReadCRM | APIPermReadAuditLogs
+		APIPermReadTemplates | APIPermReadCRM | APIPermReadAuditLogs |
+		APIPermReadStore | APIPermReadSocial
 
 	APIPermFullAccess uint64 = APIPermReadOnly |
 		APIPermWriteEmails | APIPermWriteCampaigns | APIPermWriteContacts |
@@ -85,7 +136,10 @@ var (
 		APIPermWriteTemplates | APIPermWriteCRM |
 		APIPermRealtimeSubscribe | APIPermWebhooks | APIPermAPIKeys |
 		APIPermIntegrations | APIPermWarmupRouting |
-		APIPermAIAgent | APIPermAIResearch
+		APIPermAIAgent | APIPermAIResearch |
+		APIPermManageReports |
+		APIPermImportTools |
+		APIPermManageStore | APIPermManageSocial
 )
 
 type APIPermission struct {
@@ -120,6 +174,13 @@ var AllAPIPermissions = []APIPermission{
 	{"WARMUP_ROUTING", APIPermWarmupRouting, "Manage warmup routing rules", "special"},
 	{"AI_AGENT", APIPermAIAgent, "Run the AI assistant and MCP tools", "special"},
 	{"AI_RESEARCH", APIPermAIResearch, "Run AI contact research", "special"},
+	{"CONNECT_EMAILS", APIPermConnectEmails, "Connect mailboxes and create sign-in links (Partnership plan)", "special"},
+	{"MANAGE_REPORTS", APIPermManageReports, "Create, share and schedule client reports", "write"},
+	{"IMPORT_TOOLS", APIPermImportTools, "Migrate data in from another outreach tool", "bulk"},
+	{"READ_STORE", APIPermReadStore, "View purchased domains, mailboxes, orders and store prices", "read"},
+	{"MANAGE_STORE", APIPermManageStore, "Buy, renew and cancel domains and mailboxes, and edit their DNS", "write"},
+	{"READ_SOCIAL", APIPermReadSocial, "View social accounts and conversations, and search LinkedIn for leads", "read"},
+	{"MANAGE_SOCIAL", APIPermManageSocial, "Connect, configure and remove social accounts, upload voice notes, import leads and reply to conversations", "write"},
 }
 
 // HasAPIPermission reports whether the bitmask grants every bit in `required`.
@@ -157,7 +218,16 @@ var apiPermissionRoleNeeds = map[uint64]OrganizationPermission{
 	APIPermIntegrations:      PermUseIntegrations,
 	APIPermWarmupRouting:     PermManageSettings,
 	APIPermAIAgent:           PermUseAI,
+	APIPermConnectEmails:     PermManageEmails,
 	APIPermAIResearch:        PermViewContacts | PermUseAI,
+	APIPermManageReports:     PermViewAnalytics | PermManageCampaigns,
+	APIPermImportTools:       PermManageContacts,
+	// Charging routes also hold the member to manage_billing on every request.
+	APIPermReadStore:   PermManageEmails,
+	APIPermManageStore: PermManageEmails,
+	// Seat charges and removals also hold the member to manage_billing.
+	APIPermReadSocial:   PermManageEmails,
+	APIPermManageSocial: PermManageEmails,
 }
 
 // APIPermissionsForMember is the widest API scope set a member may delegate to a key or an app.
@@ -182,5 +252,5 @@ func APIPermissionsFor(m *OrganizationMember) uint64 {
 	return APIPermissionsForMember(m.Permissions, m.IsOwner())
 }
 
-// AppGrantableScopes is every scope a third-party app may be granted; key management stays with people.
-const AppGrantableScopes = AllAPIPermissionsMask &^ APIPermAPIKeys
+// AppGrantableScopes is every scope a third-party app may be granted; key management and mailbox credentials stay with people.
+const AppGrantableScopes = AllAPIPermissionsMask &^ (APIPermAPIKeys | APIPermConnectEmails)

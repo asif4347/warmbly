@@ -41,6 +41,7 @@ final class TabBarState {
 
 private struct TabBarHiddenModifier: ViewModifier {
     @Environment(TabBarState.self) private var state: TabBarState?
+    @Environment(\.closeDetail) private var closeDetail
     let hidden: Bool
     @State private var key = UUID().uuidString
 
@@ -53,7 +54,8 @@ private struct TabBarHiddenModifier: ViewModifier {
 
     private func apply(_ value: Bool) {
         withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
-            state?.set(value, by: key)
+            // A detail beside its list shares the screen with the tab, which keeps its bar.
+            state?.set(value && closeDetail == nil, by: key)
         }
     }
 }
@@ -109,6 +111,8 @@ struct WTabBar: View {
     let items: [WTabItem]
     @Binding var selection: AppTab
     var action: TabBarAction?
+    /// On an iPad with the sidebar hidden, a leading button brings it back.
+    var onShowSidebar: (() -> Void)?
     var onReselect: (AppTab) -> Void = { _ in }
 
     @Namespace private var activeNS
@@ -117,6 +121,21 @@ struct WTabBar: View {
     var body: some View {
         GlassEffectContainer(spacing: 14) {
             HStack(spacing: 10) {
+                if let onShowSidebar {
+                    Button(action: onShowSidebar) {
+                        Image(systemName: "sidebar.leading")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(WTheme.ink)
+                            .frame(width: 56, height: 56)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(TabPressStyle())
+                    .background(WTheme.glassTint, in: Circle())
+                    .glassEffect(.regular.tint(WTheme.glassTint).interactive(), in: Circle())
+                    .glassEffectID("sidebar", in: glassNS)
+                    .hoverEffect(.highlight)
+                    .accessibilityLabel("Show sidebar")
+                }
                 HStack(spacing: 2) {
                     ForEach(items) { item in
                         button(item)
@@ -147,9 +166,12 @@ struct WTabBar: View {
                     .background(WTheme.glassTint, in: Circle())
                     .glassEffect(.regular.tint(WTheme.glassTint).interactive(), in: Circle())
                     .glassEffectID("action", in: glassNS)
+                    .keyboardShortcut("n", modifiers: .command)
                     .accessibilityLabel(action.title)
                 }
             }
+            // A phone-width bar; on a wider window it stays that size, centered.
+            .frame(maxWidth: onShowSidebar == nil ? 440 : 506)
         }
         .padding(.horizontal, 18)
         .padding(.bottom, 4)
@@ -180,7 +202,7 @@ struct WTabBar: View {
                             .matchedGeometryEffect(id: "active", in: activeNS)
                     }
                 }
-                .overlay(alignment: .top) { badge(item.badge) }
+                .overlay(alignment: .top) { TabBadge(count: item.badge).offset(x: 12, y: 4) }
                 .contentShape(Capsule())
         }
         .buttonStyle(TabPressStyle())
@@ -188,9 +210,127 @@ struct WTabBar: View {
         .accessibilityValue(item.badge > 0 ? "\(item.badge) unread" : "")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
+}
+
+/// The tab bar stood on its side for iPhone Duo's side strip: the same glass
+/// capsule and round action, anchored at the bottom with the action above the
+/// tabs, as the system stacks its toolbar over its tab bar there.
+struct WTabRail: View {
+    let items: [WTabItem]
+    @Binding var selection: AppTab
+    var action: TabBarAction?
+    var onReselect: (AppTab) -> Void = { _ in }
+
+    @Namespace private var activeNS
+    @Namespace private var glassNS
+
+    var body: some View {
+        GlassEffectContainer(spacing: 14) {
+            VStack(spacing: 10) {
+                actionButton
+                tabs
+            }
+        }
+        .padding(.bottom, 8)
+        .frame(width: ShellLayout.railWidth)
+        .frame(maxHeight: .infinity, alignment: .bottom)
+        .sensoryFeedback(.selection, trigger: selection)
+    }
+
+    private var tabs: some View {
+        VStack(spacing: 2) {
+            ForEach(items) { item in
+                button(item)
+            }
+        }
+        .padding(5)
+        .background(WTheme.glassTint, in: Capsule())
+        .glassEffect(.regular.tint(WTheme.glassTint).interactive(), in: Capsule())
+        .glassEffectID("rail", in: glassNS)
+    }
 
     @ViewBuilder
-    private func badge(_ count: Int) -> some View {
+    private var actionButton: some View {
+        if let action {
+            Button(action: action.perform) {
+                Group {
+                    if action.mark {
+                        RemieMark(size: 24)
+                    } else {
+                        Image(systemName: action.symbol)
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(WTheme.ink)
+                    }
+                }
+                .transition(.scale(scale: 0.5).combined(with: .opacity))
+                .frame(width: 56, height: 56)
+                .contentShape(Circle())
+            }
+            .buttonStyle(TabPressStyle())
+            .background(WTheme.glassTint, in: Circle())
+            .glassEffect(.regular.tint(WTheme.glassTint).interactive(), in: Circle())
+            .glassEffectID("action", in: glassNS)
+            .hoverEffect(.highlight)
+            .keyboardShortcut("n", modifiers: .command)
+            .accessibilityLabel(action.title)
+        }
+    }
+
+    private func button(_ item: WTabItem) -> some View {
+        let selected = item.tab == selection
+        return Button {
+            if selected {
+                onReselect(item.tab)
+            } else {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                    selection = item.tab
+                }
+            }
+        } label: {
+            Image(systemName: selected ? "\(item.symbol).fill" : item.symbol)
+                .font(.system(size: 18, weight: selected ? .medium : .regular))
+                .foregroundStyle(selected ? WTheme.ink : WTheme.inkTertiary)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 46, height: 46)
+                .background {
+                    if selected {
+                        Capsule()
+                            .fill(WTheme.ink.opacity(0.08))
+                            .matchedGeometryEffect(id: "active", in: activeNS)
+                    }
+                }
+                .overlay(alignment: .topTrailing) { TabBadge(count: item.badge).offset(x: 3, y: 1) }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(TabPressStyle())
+        .hoverEffect(.highlight)
+        .help(item.title)
+        .accessibilityLabel(item.title)
+        .accessibilityValue(item.badge > 0 ? "\(item.badge) unread" : "")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Command-number switches tabs on a hardware keyboard, like Mail and Safari.
+/// Mounted on the shell, so it keeps working while a screen hides the bar.
+struct TabShortcuts: View {
+    let items: [WTabItem]
+    @Binding var selection: AppTab
+
+    var body: some View {
+        ForEach(Array(items.prefix(9).enumerated()), id: \.element.id) { index, item in
+            Button(item.title) { selection = item.tab }
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+        }
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+}
+
+struct TabBadge: View {
+    let count: Int
+
+    var body: some View {
         if count > 0 {
             Text(count > 99 ? "99+" : "\(count)")
                 .font(WFont.meta(9.5, weight: .semibold))
@@ -199,7 +339,6 @@ struct WTabBar: View {
                 .frame(minWidth: 16, minHeight: 16)
                 .background(WTheme.accent, in: Capsule())
                 .overlay(Capsule().strokeBorder(.white.opacity(0.9), lineWidth: 1.5))
-                .offset(x: 12, y: 4)
                 .contentTransition(.numericText())
                 .transition(.scale.combined(with: .opacity))
         }

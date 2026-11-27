@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,6 +42,9 @@ type ConsentState struct {
 	Verifier     string `json:"verifier,omitempty"`
 	Nonce        string `json:"nonce,omitempty"`
 	ReturnOrigin string `json:"return_origin,omitempty"`
+	// Tenant and ReturnURL belong to a purchased mailbox's tenant consent: who must consent, and where its owner goes back to.
+	Tenant    string `json:"tenant,omitempty"`
+	ReturnURL string `json:"return_url,omitempty"`
 }
 
 func (s *Service) OAuthReturnOrigin(ctx context.Context, state string) string {
@@ -54,7 +58,7 @@ func (s *Service) OAuthReturnOrigin(ctx context.Context, state string) string {
 	if st.ReturnOrigin == "" {
 		return config.PrimaryDashboardOrigin()
 	}
-	return config.DashboardOrigin(st.ReturnOrigin)
+	return config.TrustedOrigin(st.ReturnOrigin)
 }
 
 // TXTLookup reads a domain's TXT records, for the DNS proof.
@@ -166,13 +170,39 @@ func cleanDomainAdmin(domain, admin string) (string, string, *errx.Error) {
 	return domain, admin, nil
 }
 
-// StartGoogle begins the proof for a Workspace domain.
+// googleRetired refuses a Google grant for a domain the workspace holds no grant for; an existing or imported one may be proved again.
+func (s *Service) googleRetired(ctx context.Context, orgID uuid.UUID, domain string) *errx.Error {
+	list, err := s.repo.List(ctx, orgID)
+	if err != nil {
+		return errx.InternalError()
+	}
+	for _, g := range list {
+		if g.Provider == models.GrantProviderGoogle && slices.Contains(g.Domains, domain) {
+			return nil
+		}
+	}
+	// Mailboxes that arrived in a workspace import without their grant are restored by making it again.
+	awaiting, err := s.repo.AwaitsGoogleGrant(ctx, orgID, domain)
+	if err != nil {
+		return errx.InternalError()
+	}
+	if awaiting {
+		return nil
+	}
+	return errx.NewWithIdentifier(errx.Forbidden, ErrIDGoogleRetired,
+		"New Google Workspace domain-wide delegation grants are no longer set up. Have a Workspace administrator mark Warmbly as a trusted app, then sign in each mailbox with Google, or connect it with an app password. Grants already made keep working. See https://docs.warmbly.com/guides/mailboxes/#google-workspace-with-google-sign-in")
+}
+
+// StartGoogle begins the proof for a Workspace domain the workspace already holds a grant for.
 func (s *Service) StartGoogle(ctx context.Context, orgID, userID uuid.UUID, domain, admin string) (*GoogleStart, *errx.Error) {
 	if !s.googleEnabled() {
 		return nil, notConfigured("Google Workspace")
 	}
 	domain, admin, xerr := cleanDomainAdmin(domain, admin)
 	if xerr != nil {
+		return nil, xerr
+	}
+	if xerr := s.googleRetired(ctx, orgID, domain); xerr != nil {
 		return nil, xerr
 	}
 	out := &GoogleStart{Method: "dns", TXTName: domainproof.Name(domain), TXTValue: s.proof.Value(orgID, domain)}
@@ -252,6 +282,9 @@ func (s *Service) FinishGoogle(ctx context.Context, orgID, userID uuid.UUID, in 
 			return nil, errx.NewWithIdentifier(errx.BadRequest, ErrIDProof,
 				"The TXT record "+domainproof.Name(domain)+" with this workspace's value is not there yet. DNS changes can take a while to appear.")
 		}
+	}
+	if xerr := s.googleRetired(ctx, orgID, domain); xerr != nil {
+		return nil, xerr
 	}
 	g, xerr := s.verifyGoogle(ctx, domain, admin)
 	if xerr != nil {
@@ -353,29 +386,9 @@ func (s *Service) FinishMicrosoft(ctx context.Context, orgID, userID uuid.UUID, 
 	if xerr != nil {
 		return nil, xerr
 	}
-	if strings.TrimSpace(code) == "" || st.Verifier == "" {
-		return nil, errx.NewWithIdentifier(errx.BadRequest, ErrIDMicrosoftConsent, "Microsoft did not complete the consent. Start again as a Global Administrator.")
-	}
-	tok, err := s.microsoftSigninConfig().Exchange(context.WithValue(ctx, oauth2.HTTPClient, s.http), code, oauth2.VerifierOption(st.Verifier))
-	if err != nil {
-		return nil, errx.NewWithIdentifier(errx.BadRequest, ErrIDMicrosoftConsent, "Microsoft did not accept the consent. Start again as a Global Administrator.")
-	}
-	claims, ok := idTokenClaims(tok)
-	if ok && !nonceMatches(claims, st) {
-		return nil, errx.NewWithIdentifier(errx.BadRequest, ErrIDMicrosoftConsent, "Microsoft did not accept the consent. Start again as a Global Administrator.")
-	}
-	tenant := claimString(claims, "tid")
-	if _, err := uuid.Parse(tenant); !ok || err != nil {
-		return nil, errx.NewWithIdentifier(errx.BadRequest, ErrIDMicrosoftConsent, "Microsoft did not say which organization consented. Start again.")
-	}
-	// The consent alone proves nothing once another workspace has consented for
-	// the tenant; the person signing in must hold a role that can grant it.
-	// The ID token lists roles only when the app emits them; Graph's token does by default.
-	access, _ := jwtClaims(tok.AccessToken)
-	graphAdmin := strings.EqualFold(claimString(access, "tid"), tenant) && microsoftConsentAdmin(access)
-	if !microsoftConsentAdmin(claims) && !graphAdmin {
-		return nil, errx.NewWithIdentifier(errx.Forbidden, ErrIDProof,
-			"Sign in as a Global Administrator or Privileged Role Administrator of the organization to connect it.")
+	tenant, xerr := s.microsoftAdminTenant(ctx, code, st)
+	if xerr != nil {
+		return nil, xerr
 	}
 	s.forget("m\x00" + tenant)
 	g, xerr := s.verifyMicrosoft(ctx, tenant)
@@ -387,6 +400,36 @@ func (s *Service) FinishMicrosoft(ctx context.Context, orgID, userID uuid.UUID, 
 		return nil, errx.InternalError()
 	}
 	return s.get(ctx, orgID, g.ID)
+}
+
+// microsoftAdminTenant redeems the sign-in that follows a consent and returns
+// the tenant it names, refusing anyone who does not hold a role that grants it.
+func (s *Service) microsoftAdminTenant(ctx context.Context, code string, st ConsentState) (string, *errx.Error) {
+	if strings.TrimSpace(code) == "" || st.Verifier == "" {
+		return "", errx.NewWithIdentifier(errx.BadRequest, ErrIDMicrosoftConsent, "Microsoft did not complete the consent. Start again as a Global Administrator.")
+	}
+	tok, err := s.microsoftSigninConfig().Exchange(context.WithValue(ctx, oauth2.HTTPClient, s.http), code, oauth2.VerifierOption(st.Verifier))
+	if err != nil {
+		return "", errx.NewWithIdentifier(errx.BadRequest, ErrIDMicrosoftConsent, "Microsoft did not accept the consent. Start again as a Global Administrator.")
+	}
+	claims, ok := idTokenClaims(tok)
+	if ok && !nonceMatches(claims, st) {
+		return "", errx.NewWithIdentifier(errx.BadRequest, ErrIDMicrosoftConsent, "Microsoft did not accept the consent. Start again as a Global Administrator.")
+	}
+	tenant := claimString(claims, "tid")
+	if _, err := uuid.Parse(tenant); !ok || err != nil {
+		return "", errx.NewWithIdentifier(errx.BadRequest, ErrIDMicrosoftConsent, "Microsoft did not say which organization consented. Start again.")
+	}
+	// The consent alone proves nothing once another workspace has consented for
+	// the tenant; the person signing in must hold a role that can grant it.
+	// The ID token lists roles only when the app emits them; Graph's token does by default.
+	access, _ := jwtClaims(tok.AccessToken)
+	graphAdmin := strings.EqualFold(claimString(access, "tid"), tenant) && microsoftConsentAdmin(access)
+	if !microsoftConsentAdmin(claims) && !graphAdmin {
+		return "", errx.NewWithIdentifier(errx.Forbidden, ErrIDProof,
+			"Sign in as a Global Administrator or Privileged Role Administrator of the organization to connect it.")
+	}
+	return tenant, nil
 }
 
 // Directory roles that can grant tenant-wide consent to Graph application permissions.

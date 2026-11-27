@@ -76,6 +76,19 @@ their TLS certificates and origin configuration. Put those hostnames in
 the tracking service. The empty default keeps ordinary single-host deployments
 unchanged. Validate each hostname before moving its traffic.
 
+Customer domains that verify later need no list. Set `tracking_serves_unmatched_hosts = true` and the listener sends any host no rule matches to the tracking service instead of answering `404`, and the backend registers each verified domain at the edge itself when the [Cloudflare for SaaS settings](/development/configuration/#customer-domains-behind-cloudflare-for-saas) are set. The tracking service answers an unknown host with its own `404` and remembers the miss for a minute, so the backend is asked about each unknown name about once a minute. Turn it on once the tracking service has running tasks: the listener then sends every customer host to the same target group as the tracking host itself. The default keeps the `404` at the listener.
+
+### The portal service
+
+The shared portal address, `PORTAL_DOMAIN`, and every agency portal domain that `CNAME`s to it never reach this load balancer. Cloudflare connects to an origin with the customer's hostname as the `Host` header, which no listener rule could route, so on Warmbly Cloud the [portal service](/development/configuration/#portal-service) runs as a Cloudflare Worker: it serves client connect pages, shared reports and the embed loader on both, calling the backend's API origin with its own `PORTAL_EDGE_TOKEN`, and fetches the dashboard for agency portal domains from its Pages build. The forms service is not in this path, and workspace forms domains keep pointing at `FORMS_DOMAIN` as before. Nothing in Terraform changes. To set it up:
+
+1. Enable Cloudflare for SaaS on the zone `PORTAL_DOMAIN` is on (`warmbly.com`), create a proxied fallback origin record and set it as the zone's fallback origin, and create `PORTAL_DOMAIN` (`portal.warmbly.com`) as a proxied record in that zone.
+2. Add a generated `PORTAL_EDGE_TOKEN` (at least 32 characters) to the backend's secret, add the name to the backend's `secret_keys` in the runtime var file, apply the runtime stack and roll the backend.
+3. Build the page app with `pnpm --dir portal build` and deploy the Worker with `API_ORIGIN` (the public API origin), `PORTAL_DOMAIN`, `DASHBOARD_ORIGIN` (the dashboard's production Pages origin) and the secret `PORTAL_EDGE_TOKEN` holding the same value. Attach `PORTAL_DOMAIN` to it and leave the zone's other names on their current handling. Rebuild and redeploy it when a release changes `portal/`.
+4. Set `PORTAL_DOMAIN`, `CLOUDFLARE_SAAS_PORTAL_ZONE_ID` and `CLOUDFLARE_SAAS_PORTAL_API_TOKEN` on the backend and roll it. When the zone also holds other customer hostnames, such as tracking domains, set `CLOUDFLARE_SAAS_PORTAL_WORKER` to the Worker's name as well, so each portal domain gets its own route and no other name is sent to the portal; see [configuration](/development/configuration/#agency-portal-domains-behind-cloudflare-for-saas). Connect links and reports are built on the portal address from then on, verified portal domains are registered on the zone within two minutes, and Cloudflare issues each certificate once the domain's records are in place.
+
+The exact routes, checks, rotation and rollback are in `deploy/cloudflare/README.md`; the variables are in [configuration](/development/configuration/#portal-service).
+
 ## Size tasks from measurements
 
 Fargate bills provisioned CPU and memory. Its smallest Linux task has 0.25 vCPU
@@ -112,7 +125,9 @@ memory; the 512 MiB minimum applies to 0.25 vCPU tasks.
 
 Mail workers can remain on existing hosts or use the separate EC2 worker root.
 Graviton `t4g.small` hosts provide 2 vCPUs and 2 GiB of memory with a static public
-IP per worker. The root uses standard CPU credits to cap burst charges. Bootstrap
+IP per worker. The root uses unlimited CPU credits, so a worker that runs above
+its 20% baseline keeps its speed instead of being throttled; CPU time beyond its
+earned credits is billed. Bootstrap
 prepares each host without starting its worker, so identity and credentials can
 be checked before a sequential handover. Check mailbox authentication when the
 outbound IP changes, and preserve each worker ID throughout the move.
@@ -245,8 +260,8 @@ preserves the narrowly scoped attachment setting described below. A deploy:
    service reads.
 3. Runs the dependency validation task, then the migration task on the backend's
    image. Either failing stops the deploy before any service moves.
-4. Rolls backend, then consumer, then forms, tracking and realtime together.
-   Each service is watched for a bake (five minutes by default) after it is
+4. Rolls backend, then consumer, forms, tracking and realtime together.
+   Each service is watched for a bake (two minutes by default) after it is
    stable.
 5. Starts a [canary rollout](/development/warmblyctl/#fleet) of the worker and
    consumer hosts from the `ops` task. The first host moves alone and the rest
@@ -474,6 +489,31 @@ backend, so it serves a certificate you supply, and they trust exactly that
 certificate (`BACKEND_INTERNAL_CA`) rather than any public authority. The
 internal hop stays on the private service-discovery name, so the internal API
 token never leaves the VPC.
+
+### Keep fleet traffic inside the VPC
+
+Fleet workers run in the same VPC but call the backend at its public address,
+so every call leaves AWS through Cloudflare and comes back into the load
+balancer, and AWS bills that transfer out in both directions. Once
+`target_tls` is `both` or later, two settings move them onto the private name
+instead:
+
+1. In the workers root, set `backend_internal_port` to the runtime root's
+   `target_tls_port` (`8443` by default) and apply. Fleet workers and fixed
+   worker hosts may then reach the tasks on that port.
+2. In the runtime root, set `nodes_private_backend = true` and apply. The
+   backend sets `NODE_BACKEND_INTERNAL_URL` to
+   `https://backend.<namespace>:<target_tls_port>` and
+   `NODE_BACKEND_INTERNAL_CA` to `backend_internal_certificate`.
+
+The second step changes every node's rendered env, so nodes that keep their
+env current restart onto it within a few minutes. Each one checks the private
+address when it starts and logs `control plane: using the private address`;
+one that cannot reach it logs why and keeps the public address. Apply them in
+this order, because a node only checks at startup: a node that started before
+the security group rule existed stays on the public address until it restarts.
+Setting `nodes_private_backend` back to `false` returns every refreshed node
+to the public address.
 
 ### Prepare the backend certificate
 
