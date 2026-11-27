@@ -604,7 +604,10 @@
       v.play();
     }
     document.getElementById("tour-play").addEventListener("click", function () { start(); v.play(); });
-    btns.forEach(function (b) { b.addEventListener("click", function () { seek(parseFloat(b.dataset.t)); }); });
+    btns.forEach(function (b) { b.addEventListener("click", function () {
+      btns.forEach(function (x) { x.setAttribute("aria-current", x === b ? "true" : "false"); });
+      seek(parseFloat(b.dataset.t));
+    }); });
     v.addEventListener("timeupdate", function () {
       var i = 0; starts.forEach(function (s, j) { if (v.currentTime >= s) i = j; });
       btns.forEach(function (b, j) { b.setAttribute("aria-current", j === i ? "true" : "false"); });
